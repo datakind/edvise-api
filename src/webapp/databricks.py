@@ -18,6 +18,7 @@ from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
 from databricks.sdk.errors import DatabricksError
 from fastapi import HTTPException
+import json
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -34,7 +35,8 @@ LOGGER = logging.getLogger(__name__)
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match directly.
-PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+PDP_INFERENCE_JOB_NAME = "github_sourced_pdp_inference_pipeline"
+PDP_H2O_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 
 
 class DatabricksInferenceRunRequest(BaseModel):
@@ -201,8 +203,8 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-
         pipeline_type = PDP_INFERENCE_JOB_NAME
+
         try:
             job = next(w.jobs.list(name=pipeline_type), None)
             if not job or job.job_id is None:
@@ -379,14 +381,63 @@ class DatabricksControl(BaseModel):
             raise ValueError("Query succeeded but schema or result data is missing.")
 
         column_names = [str(column.name) for column in response.manifest.schema.columns]
-        data_rows = response.result.data_array
+        rows: List[List[Any]] = []
+        first_chunk = response.result
+        if getattr(first_chunk, "data_array", None):
+            rows.extend(first_chunk.data_array)
 
+        # Warn if server reports truncation (byte_limit/row_limit)
+        if getattr(first_chunk, "truncated", False):
+            LOGGER.warning(
+                "Databricks marked the result as truncated by server limits."
+            )
+
+        next_idx = getattr(first_chunk, "next_chunk_index", None)
+        stmt_id = response.statement_id
+
+        while next_idx is not None:
+            chunk = w.statement_execution.get_statement_result_chunk_n(
+                statement_id=stmt_id,
+                chunk_index=next_idx,
+            )
+            if getattr(chunk, "data_array", None):
+                rows.extend(chunk.data_array)
+
+            if getattr(chunk, "truncated", False):
+                LOGGER.warning("A result chunk was marked truncated by the server.")
+
+            next_idx = getattr(chunk, "next_chunk_index", None)
+
+        LOGGER.info("Fetched %d rows from table: %s", len(rows), fully_qualified_table)
+
+        # Build list of dicts
+        records: List[Dict[str, Any]] = [dict(zip(column_names, r)) for r in rows]
+
+        # Check serialized JSON size (as it would be sent by FastAPI / JSONResponse)
+        # Use compact separators to mirror typical production responses (no extra spaces).
+        try:
+            encoded = json.dumps(
+                records, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        except Exception as e:
+            LOGGER.exception("Failed to serialize records to JSON.")
+            raise ValueError(f"Failed to serialize records to JSON: {e}")
+
+        payload_bytes = len(encoded)
         LOGGER.info(
-            f"Fetched {len(data_rows)} rows from table: {fully_qualified_table}"
+            "Final JSON payload size: %.2f MiB (%d bytes)",
+            payload_bytes / (1024 * 1024),
+            payload_bytes,
         )
 
-        # Combine column names with corresponding row values
-        return [dict(zip(column_names, row)) for row in data_rows]
+        max_json_size = 25 * 1024 * 1024
+        if payload_bytes > max_json_size:
+            raise ValueError(
+                f"Result exceeds maximum allowed JSON payload of {max_json_size} bytes "
+                f"({max_json_size / (1024 * 1024):.2f} MiB). Got {payload_bytes} bytes."
+            )
+
+        return records
 
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
