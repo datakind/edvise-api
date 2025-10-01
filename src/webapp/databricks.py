@@ -422,7 +422,10 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"Failed to serialize records to JSON: {e}")
 
         payload_bytes = len(encoded)
-        print("Final JSON payload size: %.2f MiB (%d bytes)", payload_bytes / (1024 * 1024), payload_bytes,
+        print(
+            "Final JSON payload size: %.2f MiB (%d bytes)",
+            payload_bytes / (1024 * 1024),
+            payload_bytes,
         )
         LOGGER.info(
             "Final JSON payload size: %.2f MiB (%d bytes)",
