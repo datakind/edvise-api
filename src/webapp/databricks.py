@@ -9,6 +9,7 @@ from databricks.sdk.service.sql import (
     Format,
     ExecuteStatementRequestOnWaitTimeout,
     Disposition,
+    StatementState,
 )
 from google.cloud import storage
 from .validation_extension import generate_extension_schema
@@ -343,7 +344,7 @@ class DatabricksControl(BaseModel):
             raise ValueError("Databricks returned a null statement_id")
 
         # No client-side polling; require SUCCEEDED within 30s.
-        if not resp.status or resp.status.state != "SUCCEEDED":
+        if (resp.status is None) or (resp.status.state != StatementState.SUCCEEDED):
             state = resp.status.state if resp.status else "UNKNOWN"
             msg = (
                 resp.status.error.message
