@@ -407,6 +407,7 @@ class DatabricksControl(BaseModel):
 
             next_idx = getattr(chunk, "next_chunk_index", None)
 
+        print("Fetched %d rows from table: %s", len(rows), fully_qualified_table)
         LOGGER.info("Fetched %d rows from table: %s", len(rows), fully_qualified_table)
 
         # Build list of dicts
@@ -421,6 +422,8 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"Failed to serialize records to JSON: {e}")
 
         payload_bytes = len(encoded)
+        print("Final JSON payload size: %.2f MiB (%d bytes)", payload_bytes / (1024 * 1024), payload_bytes,
+        )
         LOGGER.info(
             "Final JSON payload size: %.2f MiB (%d bytes)",
             payload_bytes / (1024 * 1024),
