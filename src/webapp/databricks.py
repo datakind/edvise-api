@@ -18,7 +18,7 @@ from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
 from databricks.sdk.errors import DatabricksError
 from fastapi import HTTPException
-import json
+import json, time, requests
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -309,136 +309,121 @@ class DatabricksControl(BaseModel):
                     f"Tables or schemas could not be deleted for {medallion}  — {e}"
                 )
 
-    def fetch_table_data(
-        self,
-        catalog_name: str,
-        inst_name: str,
-        table_name: str,
-        warehouse_id: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Executes a SELECT * query on the specified table within the given catalog and schema,
-        using the provided SQL warehouse. Returns the result as a list of dictionaries.
-        """
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            LOGGER.info("Successfully created Databricks WorkspaceClient.")
-        except Exception as e:
-            LOGGER.exception(
-                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
-                databricks_vars["DATABRICKS_HOST_URL"],
-                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            raise ValueError(
-                f"fetch_table_data(): Workspace client initialization failed: {e}"
-            )
-
-        # Construct the fully qualified table name
-        schema_name = databricksify_inst_name(inst_name)
-        fully_qualified_table = (
-            f"`{catalog_name}`.`{schema_name}_silver`.`{table_name}`"
+    def fetch_table_data(self, catalog_name: str, inst_name: str, table_name: str, warehouse_id: str) -> List[Dict[str, Any]]:
+        w = WorkspaceClient(
+            host=databricks_vars["DATABRICKS_HOST_URL"],
+            google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
         )
-        sql_query = f"SELECT * FROM {fully_qualified_table}"
-        LOGGER.info(f"Executing SQL: {sql_query}")
+        schema = databricksify_inst_name(inst_name)
+        table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
+        sql = f"SELECT * FROM {table_fqn}"
 
-        try:
-            # Execute the SQL statement
-            response = w.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=sql_query,
-                disposition=Disposition.INLINE,  # Use Enum member
-                format=Format.JSON_ARRAY,  # Use Enum member
-                wait_timeout="30s",  # Wait up to 30 seconds for execution
-                on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,  # Use Enum member
-            )
-            LOGGER.info("Databricks SQL execution successful.")
-        except DatabricksError as e:
-            LOGGER.exception("Databricks API call failed.")
-            raise ValueError(f"Databricks API call failed: {e}")
+        #1) Execute INLINE + poll until SUCCEEDED
+        resp = w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id, statement=sql,
+            disposition=Disposition.INLINE, format=Format.JSON_ARRAY,
+            wait_timeout="30s", on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+        )
 
-        # Check if the query execution was successful
-        status = response.status
-        if not status or status.state != StatementState.SUCCEEDED:
-            error_message = (
-                status.error.message
-                if status and status.error
-                else "No additional error info."
-            )
-            raise ValueError(
-                f"Query did not succeed (state={status.state if status else 'None'}): {error_message}"
-            )
+        MAX_BYTES = 20 * 1024 * 1024        # 20 MiB
+        POLL_INTERVAL_S = 1.0
+        POLL_TIMEOUT_S  = 300.0             # 5 minutes
 
-        if (
-            not response.manifest
-            or not response.manifest.schema
-            or not response.manifest.schema.columns
-            or not response.result
-            or not response.result.data_array
-        ):
-            raise ValueError("Query succeeded but schema or result data is missing.")
+        start = time.time()
+        while not resp.status or resp.status.state not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+            if time.time() - start > POLL_TIMEOUT_S:
+                raise TimeoutError("Timed out waiting for statement to finish (INLINE)")
+            time.sleep(POLL_INTERVAL_S)
+            resp = w.statement_execution.get_statement(statement_id=resp.statement_id)
+        if resp.status.state != "SUCCEEDED":
+            msg = resp.status.error.message if resp.status and resp.status.error else "no details"
+            raise ValueError(f"Statement ended in {resp.status.state}: {msg}")
 
-        column_names = [str(column.name) for column in response.manifest.schema.columns]
-        rows: List[List[Any]] = []
-        first_chunk = response.result
-        if getattr(first_chunk, "data_array", None):
-            rows.extend(first_chunk.data_array)
+        if not (resp.manifest and resp.manifest.schema and resp.manifest.schema.columns):
+            raise ValueError("Schema/columns missing.")
+        cols = [c.name for c in resp.manifest.schema.columns]
 
-        if getattr(first_chunk, "truncated", False):
-            LOGGER.warning(
-                "Databricks marked the result as truncated by server limits."
-            )
+        #2) Build INLINE records until ~20 MiB; if projected to exceed, switch to EXTERNAL_LINKS ---
+        records: List[Dict[str, Any]] = []
+        bytes_so_far, have_items = 0, False
 
-        next_idx = getattr(first_chunk, "next_chunk_index", None)
-        stmt_id = response.statement_id
+        def add_row(rd: Dict[str, Any]) -> bool:
+            nonlocal bytes_so_far, have_items
+            b = json.dumps(rd, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            projected = bytes_so_far + (1 if have_items else 0) + len(b) + 2
+            if projected > MAX_BYTES:
+                return False
+            records.append(rd)
+            bytes_so_far += (1 if have_items else 0) + len(b)
+            have_items = True
+            return True
+
+        # Consume INLINE chunks
+        def consume_inline_chunk(chunk_obj) -> bool:
+            if getattr(chunk_obj, "truncated", False):
+                raise ValueError("Server truncated INLINE result.")
+            arr = getattr(chunk_obj, "data_array", None) or []
+            for row in arr:
+                if not add_row(dict(zip(cols, row))):
+                    return False
+            return True
+
+        first = resp.result
+        if first and not consume_inline_chunk(first):
+            inline_over_limit = True
+        else:
+            inline_over_limit = False
+            next_idx = getattr(first, "next_chunk_index", None) if first else None
+            while next_idx is not None:
+                chunk = w.statement_execution.get_statement_result_chunk_n(
+                    statement_id=resp.statement_id, chunk_index=next_idx
+                )
+                if not consume_inline_chunk(chunk):
+                    inline_over_limit = True
+                    break
+                next_idx = getattr(chunk, "next_chunk_index", None)
+
+        if not inline_over_limit:
+            return records  # INLINE fit under 20 MiB
+
+        #3) Re-execute with EXTERNAL_LINKS, then download each presigned URL (no auth header) ---
+        resp = w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id, statement=sql,
+            disposition=Disposition.EXTERNAL_LINKS, format=Format.JSON_ARRAY,
+            wait_timeout="30s", on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+        )
+        start = time.time()
+        while not resp.status or resp.status.state not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+            if time.time() - start > POLL_TIMEOUT_S:
+                raise TimeoutError("Timed out waiting for statement to finish (EXTERNAL_LINKS)")
+            time.sleep(POLL_INTERVAL_S)
+            resp = w.statement_execution.get_statement(statement_id=resp.statement_id)
+        if resp.status.state != "SUCCEEDED":
+            msg = resp.status.error.message if resp.status and resp.status.error else "no details"
+            raise ValueError(f"Statement (EXTERNAL_LINKS) ended in {resp.status.state}: {msg}")
+
+        if not (resp.manifest and resp.manifest.schema and resp.manifest.schema.columns):
+            raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
+        cols = [c.name for c in resp.manifest.schema.columns]
+
+        def consume_external_result(result_obj):
+            links = getattr(result_obj, "external_links", None) or []
+            for l in links:
+                url = l.external_link if hasattr(l, "external_link") else l.get("external_link")
+                r = requests.get(url, timeout=120)
+                r.raise_for_status()
+                for row in r.json():
+                    records.append(dict(zip(cols, row)))
+            return getattr(result_obj, "next_chunk_index", None)
+
+        records.clear()
+        next_idx = consume_external_result(resp.result)
 
         while next_idx is not None:
             chunk = w.statement_execution.get_statement_result_chunk_n(
-                statement_id=stmt_id,
-                chunk_index=next_idx,
+                statement_id=resp.statement_id, chunk_index=next_idx
             )
-            if getattr(chunk, "data_array", None):
-                rows.extend(chunk.data_array)
-
-            if getattr(chunk, "truncated", False):
-                LOGGER.warning("A result chunk was marked truncated by the server.")
-
-            next_idx = getattr(chunk, "next_chunk_index", None)
-
-        print("Fetched %d rows from table: %s", len(rows), fully_qualified_table)
-        LOGGER.info("Fetched %d rows from table: %s", len(rows), fully_qualified_table)
-
-        # Build list of dicts
-        records: List[Dict[str, Any]] = [dict(zip(column_names, r)) for r in rows]
-
-        try:
-            encoded = json.dumps(
-                records, ensure_ascii=False, separators=(",", ":")
-            ).encode("utf-8")
-        except Exception as e:
-            LOGGER.exception("Failed to serialize records to JSON.")
-            raise ValueError(f"Failed to serialize records to JSON: {e}")
-
-        payload_bytes = len(encoded)
-        print(
-            "Final JSON payload size: %.2f MiB (%d bytes)",
-            payload_bytes / (1024 * 1024),
-            payload_bytes,
-        )
-        LOGGER.info(
-            "Final JSON payload size: %.2f MiB (%d bytes)",
-            payload_bytes / (1024 * 1024),
-            payload_bytes,
-        )
-
-        max_json_size = 25 * 1024 * 1024
-        if payload_bytes > max_json_size:
-            raise ValueError(
-                f"Result exceeds maximum allowed JSON payload of {max_json_size} bytes "
-                f"({max_json_size / (1024 * 1024):.2f} MiB). Got {payload_bytes} bytes."
-            )
+            next_idx = consume_external_result(chunk)
 
         return records
 
