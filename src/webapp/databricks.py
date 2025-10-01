@@ -9,16 +9,16 @@ from databricks.sdk.service.sql import (
     Format,
     ExecuteStatementRequestOnWaitTimeout,
     Disposition,
-    StatementState,
 )
 from google.cloud import storage
 from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
-from databricks.sdk.errors import DatabricksError
 from fastapi import HTTPException
-import json, time, requests
+import json
+import time
+import requests
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -442,11 +442,11 @@ class DatabricksControl(BaseModel):
 
         def consume_external_result(result_obj):
             links = getattr(result_obj, "external_links", None) or []
-            for l in links:
+            for link in links:
                 url = (
-                    l.external_link
-                    if hasattr(l, "external_link")
-                    else l.get("external_link")
+                    link.external_link
+                    if hasattr(link, "external_link")
+                    else link.get("external_link")
                 )
                 r = requests.get(url, timeout=120)
                 r.raise_for_status()
