@@ -16,8 +16,6 @@ from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
 from fastapi import HTTPException
-import json
-import time
 import requests
 
 try:
@@ -347,11 +345,19 @@ class DatabricksControl(BaseModel):
         # No client-side polling; require SUCCEEDED within 30s.
         if not resp.status or resp.status.state != "SUCCEEDED":
             state = resp.status.state if resp.status else "UNKNOWN"
-            msg = resp.status.error.message if (resp.status and resp.status.error) else "Query not finished within wait_timeout"
-            raise TimeoutError(f"Statement {stmt_id} not finished (state={state}): {msg}")
+            msg = (
+                resp.status.error.message
+                if (resp.status and resp.status.error)
+                else "Query not finished within wait_timeout"
+            )
+            raise TimeoutError(
+                f"Statement {stmt_id} not finished (state={state}): {msg}"
+            )
 
         # Columns (ensure List[str] for type-checkers)
-        if not (resp.manifest and resp.manifest.schema and resp.manifest.schema.columns):
+        if not (
+            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
+        ):
             raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
         cols: List[str] = []
         for c in resp.manifest.schema.columns:
@@ -375,7 +381,9 @@ class DatabricksControl(BaseModel):
                 r.raise_for_status()
                 rows = r.json()
                 if not isinstance(rows, list):
-                    raise ValueError("Unexpected external link payload (expected JSON array).")
+                    raise ValueError(
+                        "Unexpected external link payload (expected JSON array)."
+                    )
                 for row in rows:
                     if not isinstance(row, list):
                         raise ValueError("Unexpected row shape (expected list).")
@@ -396,7 +404,6 @@ class DatabricksControl(BaseModel):
             next_idx = _consume_chunk(chunk)
 
         return records
-
 
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
