@@ -310,100 +310,27 @@ class DatabricksControl(BaseModel):
                 )
 
     def fetch_table_data(
-        self, catalog_name: str, inst_name: str, table_name: str, warehouse_id: str
+        self,
+        catalog_name: str,
+        inst_name: str,
+        table_name: str,
+        warehouse_id: str,
     ) -> List[Dict[str, Any]]:
+        """
+        Execute SELECT * via Databricks SQL Statement Execution API using EXTERNAL_LINKS.
+        Blocks server-side for up to 30s; if not SUCCEEDED, raises. Downloads presigned
+        URLs in-memory and returns rows as List[Dict[str, Any]].
+        """
         w = WorkspaceClient(
             host=databricks_vars["DATABRICKS_HOST_URL"],
             google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
         )
+
         schema = databricksify_inst_name(inst_name)
         table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
         sql = f"SELECT * FROM {table_fqn}"
 
-        # 1) Execute INLINE + poll until SUCCEEDED
-        resp = w.statement_execution.execute_statement(
-            warehouse_id=warehouse_id,
-            statement=sql,
-            disposition=Disposition.INLINE,
-            format=Format.JSON_ARRAY,
-            wait_timeout="30s",
-            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
-        )
-
-        MAX_BYTES = 20 * 1024 * 1024  # 20 MiB
-        POLL_INTERVAL_S = 1.0
-        POLL_TIMEOUT_S = 300.0  # 5 minutes
-
-        start = time.time()
-        while not resp.status or resp.status.state not in {
-            "SUCCEEDED",
-            "FAILED",
-            "CANCELED",
-        }:
-            if time.time() - start > POLL_TIMEOUT_S:
-                raise TimeoutError("Timed out waiting for statement to finish (INLINE)")
-            time.sleep(POLL_INTERVAL_S)
-            resp = w.statement_execution.get_statement(statement_id=resp.statement_id)
-        if resp.status.state != "SUCCEEDED":
-            msg = (
-                resp.status.error.message
-                if resp.status and resp.status.error
-                else "no details"
-            )
-            raise ValueError(f"Statement ended in {resp.status.state}: {msg}")
-
-        if not (
-            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
-        ):
-            raise ValueError("Schema/columns missing.")
-        cols = [c.name for c in resp.manifest.schema.columns]
-
-        # 2) Build INLINE records until ~20 MiB; if projected to exceed, switch to EXTERNAL_LINKS ---
-        records: List[Dict[str, Any]] = []
-        bytes_so_far, have_items = 0, False
-
-        def add_row(rd: Dict[str, Any]) -> bool:
-            nonlocal bytes_so_far, have_items
-            b = json.dumps(rd, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
-            )
-            projected = bytes_so_far + (1 if have_items else 0) + len(b) + 2
-            if projected > MAX_BYTES:
-                return False
-            records.append(rd)
-            bytes_so_far += (1 if have_items else 0) + len(b)
-            have_items = True
-            return True
-
-        # Consume INLINE chunks
-        def consume_inline_chunk(chunk_obj) -> bool:
-            if getattr(chunk_obj, "truncated", False):
-                raise ValueError("Server truncated INLINE result.")
-            arr = getattr(chunk_obj, "data_array", None) or []
-            for row in arr:
-                if not add_row(dict(zip(cols, row))):
-                    return False
-            return True
-
-        first = resp.result
-        if first and not consume_inline_chunk(first):
-            inline_over_limit = True
-        else:
-            inline_over_limit = False
-            next_idx = getattr(first, "next_chunk_index", None) if first else None
-            while next_idx is not None:
-                chunk = w.statement_execution.get_statement_result_chunk_n(
-                    statement_id=resp.statement_id, chunk_index=next_idx
-                )
-                if not consume_inline_chunk(chunk):
-                    inline_over_limit = True
-                    break
-                next_idx = getattr(chunk, "next_chunk_index", None)
-
-        if not inline_over_limit:
-            return records  # INLINE fit under 20 MiB
-
-        # 3) Re-execute with EXTERNAL_LINKS, then download each presigned URL (no auth header) ---
+        # Start with EXTERNAL_LINKS and let the server block up to 30s.
         resp = w.statement_execution.execute_statement(
             warehouse_id=warehouse_id,
             statement=sql,
@@ -412,58 +339,64 @@ class DatabricksControl(BaseModel):
             wait_timeout="30s",
             on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
         )
-        start = time.time()
-        while not resp.status or resp.status.state not in {
-            "SUCCEEDED",
-            "FAILED",
-            "CANCELED",
-        }:
-            if time.time() - start > POLL_TIMEOUT_S:
-                raise TimeoutError(
-                    "Timed out waiting for statement to finish (EXTERNAL_LINKS)"
-                )
-            time.sleep(POLL_INTERVAL_S)
-            resp = w.statement_execution.get_statement(statement_id=resp.statement_id)
-        if resp.status.state != "SUCCEEDED":
-            msg = (
-                resp.status.error.message
-                if resp.status and resp.status.error
-                else "no details"
-            )
-            raise ValueError(
-                f"Statement (EXTERNAL_LINKS) ended in {resp.status.state}: {msg}"
-            )
 
-        if not (
-            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
-        ):
+        stmt_id = resp.statement_id
+        if stmt_id is None:
+            raise ValueError("Databricks returned a null statement_id")
+
+        # No client-side polling; require SUCCEEDED within 30s.
+        if not resp.status or resp.status.state != "SUCCEEDED":
+            state = resp.status.state if resp.status else "UNKNOWN"
+            msg = resp.status.error.message if (resp.status and resp.status.error) else "Query not finished within wait_timeout"
+            raise TimeoutError(f"Statement {stmt_id} not finished (state={state}): {msg}")
+
+        # Columns (ensure List[str] for type-checkers)
+        if not (resp.manifest and resp.manifest.schema and resp.manifest.schema.columns):
             raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
-        cols = [c.name for c in resp.manifest.schema.columns]
+        cols: List[str] = []
+        for c in resp.manifest.schema.columns:
+            if c.name is None:
+                raise ValueError("Encountered a column without a name.")
+            cols.append(c.name)
 
-        def consume_external_result(result_obj):
-            links = getattr(result_obj, "external_links", None) or []
-            for link in links:
-                url = (
-                    link.external_link
-                    if hasattr(link, "external_link")
-                    else link.get("external_link")
-                )
+        records: List[Dict[str, Any]] = []
+
+        # Helper: consume one chunk-like object (first result or subsequent chunk)
+        def _consume_chunk(chunk_obj: Any) -> int | None:
+            links = getattr(chunk_obj, "external_links", None) or []
+            for link_obj in links:
+                url = getattr(link_obj, "external_link", None)
+                if url is None and isinstance(link_obj, dict):
+                    url = link_obj.get("external_link")
+                if not url:
+                    continue
+                # IMPORTANT: do not send Databricks auth header to presigned URLs.
                 r = requests.get(url, timeout=120)
                 r.raise_for_status()
-                for row in r.json():
+                rows = r.json()
+                if not isinstance(rows, list):
+                    raise ValueError("Unexpected external link payload (expected JSON array).")
+                for row in rows:
+                    if not isinstance(row, list):
+                        raise ValueError("Unexpected row shape (expected list).")
                     records.append(dict(zip(cols, row)))
-            return getattr(result_obj, "next_chunk_index", None)
+            return getattr(chunk_obj, "next_chunk_index", None)
 
-        records.clear()
-        next_idx = consume_external_result(resp.result)
+        # First batch is in resp.result
+        if not resp.result:
+            return records
+        next_idx = _consume_chunk(resp.result)
 
+        # Remaining batches by chunk index
         while next_idx is not None:
             chunk = w.statement_execution.get_statement_result_chunk_n(
-                statement_id=resp.statement_id, chunk_index=next_idx
+                statement_id=stmt_id,
+                chunk_index=next_idx,
             )
-            next_idx = consume_external_result(chunk)
+            next_idx = _consume_chunk(chunk)
 
         return records
+
 
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
