@@ -386,7 +386,6 @@ class DatabricksControl(BaseModel):
         if getattr(first_chunk, "data_array", None):
             rows.extend(first_chunk.data_array)
 
-        # Warn if server reports truncation (byte_limit/row_limit)
         if getattr(first_chunk, "truncated", False):
             LOGGER.warning(
                 "Databricks marked the result as truncated by server limits."
@@ -413,8 +412,6 @@ class DatabricksControl(BaseModel):
         # Build list of dicts
         records: List[Dict[str, Any]] = [dict(zip(column_names, r)) for r in rows]
 
-        # Check serialized JSON size (as it would be sent by FastAPI / JSONResponse)
-        # Use compact separators to mirror typical production responses (no extra spaces).
         try:
             encoded = json.dumps(
                 records, ensure_ascii=False, separators=(",", ":")
