@@ -309,7 +309,9 @@ class DatabricksControl(BaseModel):
                     f"Tables or schemas could not be deleted for {medallion}  — {e}"
                 )
 
-    def fetch_table_data(self, catalog_name: str, inst_name: str, table_name: str, warehouse_id: str) -> List[Dict[str, Any]]:
+    def fetch_table_data(
+        self, catalog_name: str, inst_name: str, table_name: str, warehouse_id: str
+    ) -> List[Dict[str, Any]]:
         w = WorkspaceClient(
             host=databricks_vars["DATABRICKS_HOST_URL"],
             google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
@@ -318,38 +320,53 @@ class DatabricksControl(BaseModel):
         table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
         sql = f"SELECT * FROM {table_fqn}"
 
-        #1) Execute INLINE + poll until SUCCEEDED
+        # 1) Execute INLINE + poll until SUCCEEDED
         resp = w.statement_execution.execute_statement(
-            warehouse_id=warehouse_id, statement=sql,
-            disposition=Disposition.INLINE, format=Format.JSON_ARRAY,
-            wait_timeout="30s", on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+            warehouse_id=warehouse_id,
+            statement=sql,
+            disposition=Disposition.INLINE,
+            format=Format.JSON_ARRAY,
+            wait_timeout="30s",
+            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
         )
 
-        MAX_BYTES = 20 * 1024 * 1024        # 20 MiB
+        MAX_BYTES = 20 * 1024 * 1024  # 20 MiB
         POLL_INTERVAL_S = 1.0
-        POLL_TIMEOUT_S  = 300.0             # 5 minutes
+        POLL_TIMEOUT_S = 300.0  # 5 minutes
 
         start = time.time()
-        while not resp.status or resp.status.state not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+        while not resp.status or resp.status.state not in {
+            "SUCCEEDED",
+            "FAILED",
+            "CANCELED",
+        }:
             if time.time() - start > POLL_TIMEOUT_S:
                 raise TimeoutError("Timed out waiting for statement to finish (INLINE)")
             time.sleep(POLL_INTERVAL_S)
             resp = w.statement_execution.get_statement(statement_id=resp.statement_id)
         if resp.status.state != "SUCCEEDED":
-            msg = resp.status.error.message if resp.status and resp.status.error else "no details"
+            msg = (
+                resp.status.error.message
+                if resp.status and resp.status.error
+                else "no details"
+            )
             raise ValueError(f"Statement ended in {resp.status.state}: {msg}")
 
-        if not (resp.manifest and resp.manifest.schema and resp.manifest.schema.columns):
+        if not (
+            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
+        ):
             raise ValueError("Schema/columns missing.")
         cols = [c.name for c in resp.manifest.schema.columns]
 
-        #2) Build INLINE records until ~20 MiB; if projected to exceed, switch to EXTERNAL_LINKS ---
+        # 2) Build INLINE records until ~20 MiB; if projected to exceed, switch to EXTERNAL_LINKS ---
         records: List[Dict[str, Any]] = []
         bytes_so_far, have_items = 0, False
 
         def add_row(rd: Dict[str, Any]) -> bool:
             nonlocal bytes_so_far, have_items
-            b = json.dumps(rd, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            b = json.dumps(rd, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
             projected = bytes_so_far + (1 if have_items else 0) + len(b) + 2
             if projected > MAX_BYTES:
                 return False
@@ -386,30 +403,51 @@ class DatabricksControl(BaseModel):
         if not inline_over_limit:
             return records  # INLINE fit under 20 MiB
 
-        #3) Re-execute with EXTERNAL_LINKS, then download each presigned URL (no auth header) ---
+        # 3) Re-execute with EXTERNAL_LINKS, then download each presigned URL (no auth header) ---
         resp = w.statement_execution.execute_statement(
-            warehouse_id=warehouse_id, statement=sql,
-            disposition=Disposition.EXTERNAL_LINKS, format=Format.JSON_ARRAY,
-            wait_timeout="30s", on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+            warehouse_id=warehouse_id,
+            statement=sql,
+            disposition=Disposition.EXTERNAL_LINKS,
+            format=Format.JSON_ARRAY,
+            wait_timeout="30s",
+            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
         )
         start = time.time()
-        while not resp.status or resp.status.state not in {"SUCCEEDED", "FAILED", "CANCELED"}:
+        while not resp.status or resp.status.state not in {
+            "SUCCEEDED",
+            "FAILED",
+            "CANCELED",
+        }:
             if time.time() - start > POLL_TIMEOUT_S:
-                raise TimeoutError("Timed out waiting for statement to finish (EXTERNAL_LINKS)")
+                raise TimeoutError(
+                    "Timed out waiting for statement to finish (EXTERNAL_LINKS)"
+                )
             time.sleep(POLL_INTERVAL_S)
             resp = w.statement_execution.get_statement(statement_id=resp.statement_id)
         if resp.status.state != "SUCCEEDED":
-            msg = resp.status.error.message if resp.status and resp.status.error else "no details"
-            raise ValueError(f"Statement (EXTERNAL_LINKS) ended in {resp.status.state}: {msg}")
+            msg = (
+                resp.status.error.message
+                if resp.status and resp.status.error
+                else "no details"
+            )
+            raise ValueError(
+                f"Statement (EXTERNAL_LINKS) ended in {resp.status.state}: {msg}"
+            )
 
-        if not (resp.manifest and resp.manifest.schema and resp.manifest.schema.columns):
+        if not (
+            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
+        ):
             raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
         cols = [c.name for c in resp.manifest.schema.columns]
 
         def consume_external_result(result_obj):
             links = getattr(result_obj, "external_links", None) or []
             for l in links:
-                url = l.external_link if hasattr(l, "external_link") else l.get("external_link")
+                url = (
+                    l.external_link
+                    if hasattr(l, "external_link")
+                    else l.get("external_link")
+                )
                 r = requests.get(url, timeout=120)
                 r.raise_for_status()
                 for row in r.json():
