@@ -16,8 +16,8 @@ from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
-from databricks.sdk.errors import DatabricksError
 from fastapi import HTTPException
+import requests
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -201,8 +201,8 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-
         pipeline_type = PDP_INFERENCE_JOB_NAME
+
         try:
             job = next(w.jobs.list(name=pipeline_type), None)
             if not job or job.job_id is None:
@@ -315,78 +315,95 @@ class DatabricksControl(BaseModel):
         warehouse_id: str,
     ) -> List[Dict[str, Any]]:
         """
-        Executes a SELECT * query on the specified table within the given catalog and schema,
-        using the provided SQL warehouse. Returns the result as a list of dictionaries.
+        Execute SELECT * via Databricks SQL Statement Execution API using EXTERNAL_LINKS.
+        Blocks server-side for up to 30s; if not SUCCEEDED, raises. Downloads presigned
+        URLs in-memory and returns rows as List[Dict[str, Any]].
         """
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            LOGGER.info("Successfully created Databricks WorkspaceClient.")
-        except Exception as e:
-            LOGGER.exception(
-                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
-                databricks_vars["DATABRICKS_HOST_URL"],
-                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            raise ValueError(
-                f"fetch_table_data(): Workspace client initialization failed: {e}"
-            )
-
-        # Construct the fully qualified table name
-        schema_name = databricksify_inst_name(inst_name)
-        fully_qualified_table = (
-            f"`{catalog_name}`.`{schema_name}_silver`.`{table_name}`"
+        w = WorkspaceClient(
+            host=databricks_vars["DATABRICKS_HOST_URL"],
+            google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
         )
-        sql_query = f"SELECT * FROM {fully_qualified_table}"
-        LOGGER.info(f"Executing SQL: {sql_query}")
 
-        try:
-            # Execute the SQL statement
-            response = w.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=sql_query,
-                disposition=Disposition.INLINE,  # Use Enum member
-                format=Format.JSON_ARRAY,  # Use Enum member
-                wait_timeout="30s",  # Wait up to 30 seconds for execution
-                on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,  # Use Enum member
-            )
-            LOGGER.info("Databricks SQL execution successful.")
-        except DatabricksError as e:
-            LOGGER.exception("Databricks API call failed.")
-            raise ValueError(f"Databricks API call failed: {e}")
+        schema = databricksify_inst_name(inst_name)
+        table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
+        sql = f"SELECT * FROM {table_fqn}"
 
-        # Check if the query execution was successful
-        status = response.status
-        if not status or status.state != StatementState.SUCCEEDED:
-            error_message = (
-                status.error.message
-                if status and status.error
-                else "No additional error info."
+        # Start with EXTERNAL_LINKS and let the server block up to 30s.
+        resp = w.statement_execution.execute_statement(
+            warehouse_id=warehouse_id,
+            statement=sql,
+            disposition=Disposition.EXTERNAL_LINKS,
+            format=Format.JSON_ARRAY,
+            wait_timeout="30s",
+            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+        )
+
+        stmt_id = resp.statement_id
+        if stmt_id is None:
+            raise ValueError("Databricks returned a null statement_id")
+
+        # No client-side polling; require SUCCEEDED within 30s.
+        if (resp.status is None) or (resp.status.state != StatementState.SUCCEEDED):
+            state = resp.status.state if resp.status else "UNKNOWN"
+            msg = (
+                resp.status.error.message
+                if (resp.status and resp.status.error)
+                else "Query not finished within wait_timeout"
             )
-            raise ValueError(
-                f"Query did not succeed (state={status.state if status else 'None'}): {error_message}"
+            raise TimeoutError(
+                f"Statement {stmt_id} not finished (state={state}): {msg}"
             )
 
-        if (
-            not response.manifest
-            or not response.manifest.schema
-            or not response.manifest.schema.columns
-            or not response.result
-            or not response.result.data_array
+        # Columns (ensure List[str] for type-checkers)
+        if not (
+            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
         ):
-            raise ValueError("Query succeeded but schema or result data is missing.")
+            raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
+        cols: List[str] = []
+        for c in resp.manifest.schema.columns:
+            if c.name is None:
+                raise ValueError("Encountered a column without a name.")
+            cols.append(c.name)
 
-        column_names = [str(column.name) for column in response.manifest.schema.columns]
-        data_rows = response.result.data_array
+        records: List[Dict[str, Any]] = []
 
-        LOGGER.info(
-            f"Fetched {len(data_rows)} rows from table: {fully_qualified_table}"
-        )
+        # Helper: consume one chunk-like object (first result or subsequent chunk)
+        def _consume_chunk(chunk_obj: Any) -> int | None:
+            links = getattr(chunk_obj, "external_links", None) or []
+            for link_obj in links:
+                url = getattr(link_obj, "external_link", None)
+                if url is None and isinstance(link_obj, dict):
+                    url = link_obj.get("external_link")
+                if not url:
+                    continue
+                # IMPORTANT: do not send Databricks auth header to presigned URLs.
+                r = requests.get(url, timeout=120)
+                r.raise_for_status()
+                rows = r.json()
+                if not isinstance(rows, list):
+                    raise ValueError(
+                        "Unexpected external link payload (expected JSON array)."
+                    )
+                for row in rows:
+                    if not isinstance(row, list):
+                        raise ValueError("Unexpected row shape (expected list).")
+                    records.append(dict(zip(cols, row)))
+            return getattr(chunk_obj, "next_chunk_index", None)
 
-        # Combine column names with corresponding row values
-        return [dict(zip(column_names, row)) for row in data_rows]
+        # First batch is in resp.result
+        if not resp.result:
+            return records
+        next_idx = _consume_chunk(resp.result)
+
+        # Remaining batches by chunk index
+        while next_idx is not None:
+            chunk = w.statement_execution.get_statement_result_chunk_n(
+                statement_id=stmt_id,
+                chunk_index=next_idx,
+            )
+            next_idx = _consume_chunk(chunk)
+
+        return records
 
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
