@@ -34,8 +34,7 @@ LOGGER = logging.getLogger(__name__)
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match directly.
-PDP_INFERENCE_JOB_NAME = "github_sourced_pdp_inference_pipeline"
-PDP_H2O_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 
 
 class DatabricksInferenceRunRequest(BaseModel):
