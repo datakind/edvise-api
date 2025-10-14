@@ -88,11 +88,13 @@ def _sha256_json(obj: Any) -> str:
         ).encode("utf-8")
     ).hexdigest()
 
+
 L1_RESP_CACHE_TTL = int("120")  # seconds
-L1_VER_CACHE_TTL  = int("60")    # seconds
+L1_VER_CACHE_TTL = int("60")  # seconds
 L1_RESP_CACHE = TTLCache(maxsize=128, ttl=L1_RESP_CACHE_TTL)
-L1_VER_CACHE  = TTLCache(maxsize=256, ttl=L1_VER_CACHE_TTL)
+L1_VER_CACHE = TTLCache(maxsize=256, ttl=L1_VER_CACHE_TTL)
 _L1_LOCK = threading.RLock()
+
 
 # Wrapping the usages in a class makes it easier to unit test via mocks.
 class DatabricksControl(BaseModel):
@@ -376,13 +378,13 @@ class DatabricksControl(BaseModel):
                 L1_VER_CACHE[ver_cache_key] = table_version
         sql_h = _sha256_json({"sql": sql})
         l1_key = f"v1:{warehouse_id}:{catalog_name}.{schema}.{table_name}:{sql_h}:{table_version}"
-        
+
         with _L1_LOCK:
             cached_records = L1_RESP_CACHE.get(l1_key)
         if cached_records is not None:
             return cached_records
 
-        try:                
+        try:
             object_name = f"{warehouse_id}/{catalog_name}.{schema}.{table_name}/{sql_h}/{table_version}.json.gz"
             storage_client = storage.Client()
             bucket = storage_client.bucket(bucket_name)
