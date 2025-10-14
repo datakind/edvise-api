@@ -22,6 +22,8 @@ import requests
 import hashlib
 import json
 import gzip
+from cachetools import TTLCache
+import threading
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -85,6 +87,13 @@ def _sha256_json(obj: Any) -> str:
             obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
+
+
+L1_RESP_CACHE_TTL = int("120")  # seconds
+L1_VER_CACHE_TTL = int("60")  # seconds
+L1_RESP_CACHE = TTLCache(maxsize=128, ttl=L1_RESP_CACHE_TTL)
+L1_VER_CACHE = TTLCache(maxsize=256, ttl=L1_VER_CACHE_TTL)
+_L1_LOCK = threading.RLock()
 
 
 # Wrapping the usages in a class makes it easier to unit test via mocks.
@@ -341,7 +350,11 @@ class DatabricksControl(BaseModel):
         table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
         sql = f"SELECT * FROM {table_fqn}"
 
-        try:
+        ver_cache_key = f"ver:{table_fqn}"
+        with _L1_LOCK:
+            table_version = L1_VER_CACHE.get(ver_cache_key)
+
+        if table_version is None:
             ver_sql = f"DESCRIBE HISTORY {table_fqn} LIMIT 1"
             ver_resp = w.statement_execution.execute_statement(
                 warehouse_id=warehouse_id,
@@ -361,9 +374,19 @@ class DatabricksControl(BaseModel):
                 raise ValueError("DESCRIBE HISTORY returned no version")
             table_version = str(rows[0][idx["version"]])
 
-            sql_h = _sha256_json({"sql": sql})
-            object_name = f"{warehouse_id}/{catalog_name}.{schema}.{table_name}/{sql_h}/{table_version}.json.gz"
+            with _L1_LOCK:
+                L1_VER_CACHE[ver_cache_key] = table_version
 
+        sql_h = _sha256_json({"sql": sql})
+        l1_key = f"v1:{warehouse_id}:{catalog_name}.{schema}.{table_name}:{sql_h}:{table_version}"
+
+        with _L1_LOCK:
+            cached_records = L1_RESP_CACHE.get(l1_key)
+        if cached_records is not None:
+            return cached_records
+
+        try:
+            object_name = f"{warehouse_id}/{catalog_name}.{schema}.{table_name}/{sql_h}/{table_version}.json.gz"
             storage_client = storage.Client()
             bucket = storage_client.bucket(bucket_name)
             blob = bucket.blob(object_name)
@@ -372,6 +395,8 @@ class DatabricksControl(BaseModel):
                 body = blob.download_as_bytes(raw_download=False)
                 data = json.loads(body)
                 if isinstance(data, list):
+                    with _L1_LOCK:
+                        L1_RESP_CACHE[l1_key] = data
                     return data  # cache hit
             except gcs_errors.NotFound:
                 pass
@@ -451,6 +476,10 @@ class DatabricksControl(BaseModel):
                 chunk_index=next_idx,
             )
             next_idx = _consume_chunk(chunk)
+
+        with _L1_LOCK:
+            if records:
+                L1_RESP_CACHE[l1_key] = records
 
         if bucket_name and object_name and records:
             try:
