@@ -336,7 +336,7 @@ class DatabricksControl(BaseModel):
             google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
         )
 
-        bucket_name = "edvise_databricks_results_api_cache"
+        bucket_name = databricks_vars["GCP_CACHE_BUCKET"]
         schema = databricksify_inst_name(inst_name)
         table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
         sql = f"SELECT * FROM {table_fqn}"
