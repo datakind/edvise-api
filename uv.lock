@@ -3708,6 +3708,7 @@ version = "0.2.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "bcrypt" },
+    { name = "cachetools" },
     { name = "cloud-sql-python-connector", extra = ["pymysql"] },
     { name = "databricks-sdk" },
     { name = "databricks-sql-connector" },
@@ -3748,6 +3749,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bcrypt", specifier = "~=4.2.0" },
+    { name = "cachetools" },
     { name = "cloud-sql-python-connector", extras = ["pymysql"], specifier = "~=1.14.0" },
     { name = "databricks-sdk", specifier = "~=0.38.0" },
     { name = "databricks-sql-connector", specifier = "~=3.5.0" },
