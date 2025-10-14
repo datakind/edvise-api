@@ -19,7 +19,9 @@ from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
 from fastapi import HTTPException
 import requests
-import hashlib, json, gzip
+import hashlib
+import json
+import gzip
 
 try:
     import tomllib as _toml  # Py 3.11+
