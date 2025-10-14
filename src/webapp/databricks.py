@@ -76,10 +76,14 @@ def check_types(dict_values: list[list[SchemaType]], file_type: SchemaType) -> b
             return True
     return False
 
+
 def _sha256_json(obj: Any) -> str:
-        return hashlib.sha256(
-            json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        ).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
+
 
 # Wrapping the usages in a class makes it easier to unit test via mocks.
 class DatabricksControl(BaseModel):
@@ -334,7 +338,7 @@ class DatabricksControl(BaseModel):
         schema = databricksify_inst_name(inst_name)
         table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
         sql = f"SELECT * FROM {table_fqn}"
-    
+
         try:
             ver_sql = f"DESCRIBE HISTORY {table_fqn} LIMIT 1"
             ver_resp = w.statement_execution.execute_statement(
@@ -357,7 +361,7 @@ class DatabricksControl(BaseModel):
 
             sql_h = _sha256_json({"sql": sql})
             object_name = f"{warehouse_id}/{catalog_name}.{schema}.{table_name}/{sql_h}/{table_version}.json.gz"
-            
+
             storage_client = storage.Client()
             bucket = storage_client.bucket(bucket_name)
             blob = bucket.blob(object_name)
@@ -448,7 +452,9 @@ class DatabricksControl(BaseModel):
 
         if bucket_name and object_name and records:
             try:
-                raw = json.dumps(records, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                raw = json.dumps(
+                    records, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
                 gz = gzip.compress(raw, compresslevel=6)
                 storage_client = storage.Client()
                 bucket = storage_client.bucket(bucket_name)
