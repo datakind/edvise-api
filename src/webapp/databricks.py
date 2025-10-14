@@ -459,11 +459,11 @@ class DatabricksControl(BaseModel):
                 storage_client = storage.Client()
                 bucket = storage_client.bucket(bucket_name)
                 blob = bucket.blob(object_name)
+                blob.content_encoding = "gzip"
                 try:
                     blob.upload_from_string(
                         gz,
                         content_type="application/json",
-                        content_encoding="gzip",
                         if_generation_match=0,  # write-once; 412 if someone beat us
                     )
                 except gcs_errors.PreconditionFailed:
