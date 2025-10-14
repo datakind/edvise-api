@@ -12,12 +12,16 @@ from databricks.sdk.service.sql import (
     StatementState,
 )
 from google.cloud import storage
+from google.api_core import exceptions as gcs_errors
 from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, IO, cast, Optional
 from fastapi import HTTPException
 import requests
+import hashlib
+import json
+import gzip
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -73,6 +77,14 @@ def check_types(dict_values: list[list[SchemaType]], file_type: SchemaType) -> b
         if file_type in elem:
             return True
     return False
+
+
+def _sha256_json(obj: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 # Wrapping the usages in a class makes it easier to unit test via mocks.
@@ -324,11 +336,48 @@ class DatabricksControl(BaseModel):
             google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
         )
 
+        bucket_name = "edvise_databricks_results_api_cache"
         schema = databricksify_inst_name(inst_name)
         table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
         sql = f"SELECT * FROM {table_fqn}"
 
-        # Start with EXTERNAL_LINKS and let the server block up to 30s.
+        try:
+            ver_sql = f"DESCRIBE HISTORY {table_fqn} LIMIT 1"
+            ver_resp = w.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=ver_sql,
+                disposition=Disposition.INLINE,
+                format=Format.JSON_ARRAY,
+                wait_timeout="30s",
+                on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+            )
+
+            if not ver_resp.status or ver_resp.status.state != StatementState.SUCCEEDED:
+                raise TimeoutError("DESCRIBE HISTORY did not finish within 30s")
+            cols = [c.name for c in ver_resp.manifest.schema.columns]
+            idx = {n: i for i, n in enumerate(cols)}
+            rows = ver_resp.result.data_array or []
+            if not rows or "version" not in idx:
+                raise ValueError("DESCRIBE HISTORY returned no version")
+            table_version = str(rows[0][idx["version"]])
+
+            sql_h = _sha256_json({"sql": sql})
+            object_name = f"{warehouse_id}/{catalog_name}.{schema}.{table_name}/{sql_h}/{table_version}.json.gz"
+
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(object_name)
+            try:
+                blob.reload()  # HEAD for metadata (ETag, etc.)
+                body = blob.download_as_bytes(raw_download=False)
+                data = json.loads(body)
+                if isinstance(data, list):
+                    return data  # cache hit
+            except gcs_errors.NotFound:
+                pass
+        except Exception:
+            pass
+
         resp = w.statement_execution.execute_statement(
             warehouse_id=warehouse_id,
             statement=sql,
@@ -403,6 +452,28 @@ class DatabricksControl(BaseModel):
             )
             next_idx = _consume_chunk(chunk)
 
+        if bucket_name and object_name and records:
+            try:
+                raw = json.dumps(
+                    records, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+                gz = gzip.compress(raw, compresslevel=6)
+                storage_client = storage.Client()
+                bucket = storage_client.bucket(bucket_name)
+                blob = bucket.blob(object_name)
+                blob.content_encoding = "gzip"
+                try:
+                    blob.upload_from_string(
+                        gz,
+                        content_type="application/json",
+                        if_generation_match=0,  # write-once; 412 if someone beat us
+                    )
+                except gcs_errors.PreconditionFailed:
+                    # Another writer won; fine—object exists now.
+                    pass
+            except Exception:
+                # Cache write failures must not impact the request
+                pass
         return records
 
     def get_key_for_file(
