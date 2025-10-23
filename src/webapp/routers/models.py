@@ -628,7 +628,7 @@ def get_model_versions(
     print(f"Converted model name {transformed_model_name}")
 
     latest_model_version = databricks_control.fetch_model_version(
-        catalog_name= str(env_vars["CATALOG_NAME"]),
+        catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{query_result[0][0].name}",
         model_name=transformed_model_name,
     )
