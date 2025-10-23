@@ -551,8 +551,8 @@ class JobTable(Base):
         String(VAR_CHAR_STANDARD_LENGTH), nullable=True
     )
     completed: Mapped[bool] = mapped_column(nullable=True)
-    framework: Mapped[str | None] = mapped_column(
-        String(VAR_CHAR_STANDARD_LENGTH), nullable=False, default="sklearn"
+    model_run_id: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_STANDARD_LENGTH), nullable=True
     )
 
 

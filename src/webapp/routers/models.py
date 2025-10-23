@@ -556,7 +556,6 @@ def trigger_inference_run(
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
-        model_type=query_result[0][0].framework,
     )
     try:
         res = databricks_control.run_pdp_inference(db_req)
@@ -568,6 +567,11 @@ def trigger_inference_run(
             detail=f"Databricks run_pdp_inference error. Error = {str(e)}",
         ) from e
     triggered_timestamp = datetime.now()
+    latest_model_version = databricks_control.fetch_model_version(
+        catalog_name=env_vars["CATALOG_NAME"],
+        inst_name=inst_result[0][0].name,
+        model_name=model_name,
+    )
     job = JobTable(
         id=res.job_run_id,
         triggered_at=triggered_timestamp,
@@ -575,7 +579,7 @@ def trigger_inference_run(
         batch_name=req.batch_name,
         model_id=query_result[0][0].id,
         output_valid=False,
-        framework=query_result[0][0].framework,
+        model_run_id=latest_model_version.run_id,
     )
     local_session.get().add(job)
     return {
@@ -586,7 +590,7 @@ def trigger_inference_run(
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,
         "output_valid": False,
-        "framework": query_result[0][0].framework,
+        "model_run_id": latest_model_version.run_id,
     }
 
 

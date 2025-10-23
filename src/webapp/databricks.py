@@ -523,9 +523,11 @@ class DatabricksControl(BaseModel):
             )
             raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
 
-        model_versions = list(w.model_versions.list(
-            full_name=model_name_path,
-        ))
+        model_versions = list(
+            w.model_versions.list(
+                full_name=model_name_path,
+            )
+        )
 
         if not model_versions:
             raise ValueError(f"No versions found for model: {model_name_path}")
