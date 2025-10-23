@@ -636,7 +636,7 @@ def get_model_versions(
     return latest_model_version
 
 
-@router.get("/{inst_id}/models/{model_name}/backfill-model-runs")
+@router.post("/{inst_id}/models/{model_name}/backfill-model-runs")
 def backfill_model_runs(
     inst_id: str,
     model_name: str,
