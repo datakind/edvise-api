@@ -50,7 +50,6 @@ class DatabricksInferenceRunRequest(BaseModel):
     # Note that the following should be the filepath.
     filepath_to_type: dict[str, list[SchemaType]]
     model_name: str
-    model_type: str
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
