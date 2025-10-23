@@ -505,7 +505,11 @@ class DatabricksControl(BaseModel):
                 pass
         return records
 
-    def fetch_model_version(self, model_name: str):
+    def fetch_model_version(self, catalog_name: str, inst_name: str, model_name: str):
+
+        schema = databricksify_inst_name(inst_name)
+        model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
+
         try:
             w = WorkspaceClient(
                 host=databricks_vars["DATABRICKS_HOST_URL"],
@@ -520,7 +524,7 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
 
         model_info = w.model_versions.list(
-            full_name=model_name,
+            full_name=model_name_path,
         )
 
         return model_info

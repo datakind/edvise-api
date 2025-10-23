@@ -33,6 +33,7 @@ from ..database import (
 import traceback
 import logging
 from ..gcsdbutils import update_db_from_bucket
+from ..config import env_vars
 
 from ..gcsutil import StorageControl
 
@@ -601,9 +602,30 @@ def get_model_versions(
     transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
     print(f"Initial model name = {model_name}")
     print(f"Converted model name {transformed_model_name}")
 
-    model_version_info = databricks_control.fetch_model_version(transformed_model_name)
+    model_version_info = databricks_control.fetch_model_version(
+        catalog_name=env_vars["CATALOG_NAME"],
+        inst_name=f"{query_result[0][0].name}",
+        model_name=transformed_model_name,
+    )
 
     return model_version_info
