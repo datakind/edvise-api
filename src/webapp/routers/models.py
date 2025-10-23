@@ -568,7 +568,7 @@ def trigger_inference_run(
         ) from e
     triggered_timestamp = datetime.now()
     latest_model_version = databricks_control.fetch_model_version(
-        catalog_name=env_vars["CATALOG_NAME"],
+        catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=inst_result[0][0].name,
         model_name=model_name,
     )
@@ -628,7 +628,7 @@ def get_model_versions(
     print(f"Converted model name {transformed_model_name}")
 
     latest_model_version = databricks_control.fetch_model_version(
-        catalog_name=env_vars["CATALOG_NAME"],
+        catalog_name= str(env_vars["CATALOG_NAME"]),
         inst_name=f"{query_result[0][0].name}",
         model_name=transformed_model_name,
     )
@@ -681,7 +681,7 @@ def backfill_model_runs(
 
     # Get latest model version from Databricks
     latest_mv = databricks_control.fetch_model_version(
-        catalog_name=env_vars["CATALOG_NAME"],
+        catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{inst_row[0][0].name}",
         model_name=transformed_model_name,
     )
