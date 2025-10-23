@@ -644,6 +644,11 @@ def backfill_model_runs(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
+    """Backfills missing model run metadata and returns the latest model version info.
+
+    Temporary endpoint to populate model_run_id and model_version on existing jobs for this model.
+    Use only when backfilling historical job runs, not for regular operation.
+    """
     transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
@@ -679,14 +684,12 @@ def backfill_model_runs(
             detail="Institution duplicates found.",
         )
 
-    # Get latest model version from Databricks
     latest_mv = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{inst_row[0][0].name}",
         model_name=transformed_model_name,
     )
 
-    # Coerce types as needed
     mv_version = str(latest_mv.version)
     mv_run_id = str(latest_mv.run_id)
 
