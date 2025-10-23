@@ -604,7 +604,6 @@ def get_model_versions(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
-
     transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
