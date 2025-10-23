@@ -598,12 +598,12 @@ def get_model_versions(
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
 
-    transformed_model_name = decode_url_piece(model_name)
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
     print(f"Initial model name = {model_name}")
     print(f"Converted model name {transformed_model_name}")
 
-    model_version_info = databricks_control.fetch_model_version(model_name)
+    model_version_info = databricks_control.fetch_model_version(transformed_model_name)
 
     return model_version_info
