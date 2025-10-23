@@ -521,7 +521,7 @@ class DatabricksControl(BaseModel):
             )
             raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
 
-        model_info = w.registered_models.list(
+        model_info = w.model_versions.list(
             full_name=model_name,
             include_aliases = True,
             )

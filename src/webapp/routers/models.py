@@ -592,8 +592,8 @@ def trigger_inference_run(
     "/{inst_id}/models/{model_name}/get-model-versions"
 )
 def get_model_versions(
-    model_name: str,
     inst_id: str,
+    model_name: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
