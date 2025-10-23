@@ -505,6 +505,29 @@ class DatabricksControl(BaseModel):
                 pass
         return records
 
+    def fetch_model_version(
+            self,
+            model_name: str):
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
+
+        model_info = w.registered_models.list(
+            full_name=model_name,
+            include_aliases = True,
+            )
+
+        return model_info
+    
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
     ) -> Optional[str]:
