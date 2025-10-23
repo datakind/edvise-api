@@ -579,6 +579,7 @@ def trigger_inference_run(
         batch_name=req.batch_name,
         model_id=query_result[0][0].id,
         output_valid=False,
+        model_version=latest_model_version.version,
         model_run_id=latest_model_version.run_id,
     )
     local_session.get().add(job)
@@ -590,6 +591,7 @@ def trigger_inference_run(
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,
         "output_valid": False,
+        "model_version": latest_model_version.version,
         "model_run_id": latest_model_version.run_id,
     }
 
