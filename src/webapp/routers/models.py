@@ -588,9 +588,8 @@ def trigger_inference_run(
         "framework": query_result[0][0].framework,
     }
 
-@router.get(
-    "/{inst_id}/models/{model_name}/get-model-versions"
-)
+
+@router.get("/{inst_id}/models/{model_name}/get-model-versions")
 def get_model_versions(
     inst_id: str,
     model_name: str,
@@ -598,10 +597,10 @@ def get_model_versions(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
-    
+
     model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
-    
+
     model_version_info = databricks_control.fetch_model_version(model_name)
-    
+
     return model_version_info

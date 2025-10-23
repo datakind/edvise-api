@@ -505,9 +505,7 @@ class DatabricksControl(BaseModel):
                 pass
         return records
 
-    def fetch_model_version(
-            self,
-            model_name: str):
+    def fetch_model_version(self, model_name: str):
         try:
             w = WorkspaceClient(
                 host=databricks_vars["DATABRICKS_HOST_URL"],
@@ -523,10 +521,10 @@ class DatabricksControl(BaseModel):
 
         model_info = w.model_versions.list(
             full_name=model_name,
-            )
+        )
 
         return model_info
-    
+
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
     ) -> Optional[str]:
