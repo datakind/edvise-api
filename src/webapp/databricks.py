@@ -523,7 +523,6 @@ class DatabricksControl(BaseModel):
 
         model_info = w.model_versions.list(
             full_name=model_name,
-            include_aliases = True,
             )
 
         return model_info
