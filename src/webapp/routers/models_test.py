@@ -162,7 +162,7 @@ def session_fixture():
         completed=True,
         output_filename="file_output_one",
         created_by=created_by_UUID,
-        framework="sklearn",
+        model_run_id="T2UFD",
     )
     try:
         with sqlalchemy.orm.Session(engine) as session:
