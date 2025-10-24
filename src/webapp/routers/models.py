@@ -697,21 +697,14 @@ def backfill_model_runs(
     stmt = (
         update(JobTable)
         .where(JobTable.model_id == model_id[0][0].id)
-        .where(
-            or_(
-                JobTable.model_run_id.is_(None),
-                JobTable.model_run_id == "",
-                JobTable.model_version.is_(None),
-                JobTable.model_version == "",
-            )
+        .where(or_(
+            JobTable.model_run_id.is_(None),
+            JobTable.model_run_id == "",
+            JobTable.model_version.is_(None),
+            JobTable.model_version == "",
         )
+    )
         .values(model_run_id=mv_run_id, model_version=mv_version)
-        .returning(
-            JobTable.id,
-            JobTable.model_id,
-            JobTable.model_run_id,
-            JobTable.model_version,
-        )
     )
 
     result = local_session.get().execute(stmt)
