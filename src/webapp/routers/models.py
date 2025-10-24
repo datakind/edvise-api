@@ -712,9 +712,9 @@ def backfill_model_runs(
     local_session.get().commit()
 
     return {
-            "inst_id": str(inst_id),
-            "model_id": str(model_id[0][0].id),
-            "model_name": model_name,
-            "latest_model_version": {"version": mv_version, "run_id": mv_run_id},
-            "updated_count": updated_count,
-        }
+        "inst_id": str(inst_id),
+        "model_id": str(model_id[0][0].id),
+        "model_name": model_name,
+        "latest_model_version": {"version": mv_version, "run_id": mv_run_id},
+        "updated_count": updated_count,
+    }
