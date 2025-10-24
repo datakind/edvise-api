@@ -649,7 +649,7 @@ def backfill_model_runs(
     Temporary endpoint to populate model_run_id and model_version on existing jobs for this model.
     Use only when backfilling historical job runs, not for regular operation.
     """
-    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
     # Load institution
@@ -666,7 +666,7 @@ def backfill_model_runs(
             select(ModelTable).where(
                 and_(
                     ModelTable.inst_id == str_to_uuid(inst_id),
-                    ModelTable.name == f"{inst_row[0][0].name}",
+                    ModelTable.name == model_name,
                 )
             )
         )
@@ -687,7 +687,7 @@ def backfill_model_runs(
     latest_mv = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{inst_row[0][0].name}",
-        model_name=transformed_model_name,
+        model_name=model_name,
     )
 
     mv_version = str(latest_mv.version)
