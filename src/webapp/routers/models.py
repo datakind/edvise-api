@@ -708,14 +708,13 @@ def backfill_model_runs(
         .values(model_run_id=mv_run_id, model_version=mv_version)
     )
     result = local_session.get().execute(stmt)
-    updated_rows = [dict(r._mapping) for r in result.fetchall()]
+    updated_count = result.rowcount or 0
     local_session.get().commit()
 
     return {
-        "updated_count": len(updated_rows),
-        "updated_rows": updated_rows,
-        "latest_model_version": {
-            "version": mv_version,
-            "run_id": mv_run_id,
-        },
-    }
+            "inst_id": str(inst_id),
+            "model_id": str(model_id[0][0].id),
+            "model_name": model_name,
+            "latest_model_version": {"version": mv_version, "run_id": mv_run_id},
+            "updated_count": updated_count,
+        }
