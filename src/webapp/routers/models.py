@@ -706,7 +706,6 @@ def backfill_model_runs(
     )
         .values(model_run_id=mv_run_id, model_version=mv_version)
     )
-
     result = local_session.get().execute(stmt)
     updated_rows = [dict(r._mapping) for r in result.fetchall()]
     local_session.get().commit()
