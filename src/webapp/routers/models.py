@@ -365,6 +365,8 @@ def read_inst_model_outputs(
                 "inst_id": uuid_to_str(query_result[0][0].inst_id),
                 "m_name": query_result[0][0].name,
                 "run_id": elem.id,
+                "model_run_id": elem.model_run_id,
+                "model_version": elem.model_version,
                 "created_by": uuid_to_str(elem.created_by),
                 "triggered_at": elem.triggered_at,
                 "batch_name": elem.batch_name,
