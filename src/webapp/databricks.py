@@ -90,8 +90,8 @@ def _sha256_json(obj: Any) -> str:
 
 L1_RESP_CACHE_TTL = int("600")  # seconds
 L1_VER_CACHE_TTL = int("3600")  # seconds
-L1_RESP_CACHE = TTLCache(maxsize=128, ttl=L1_RESP_CACHE_TTL)
-L1_VER_CACHE = TTLCache(maxsize=256, ttl=L1_VER_CACHE_TTL)
+L1_RESP_CACHE: Any = TTLCache(maxsize=128, ttl=L1_RESP_CACHE_TTL)
+L1_VER_CACHE: Any = TTLCache(maxsize=256, ttl=L1_VER_CACHE_TTL)
 _L1_LOCK = threading.RLock()
 
 
