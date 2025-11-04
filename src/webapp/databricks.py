@@ -503,7 +503,9 @@ class DatabricksControl(BaseModel):
                 pass
         return records
 
-    def fetch_model_version(self, catalog_name: str, inst_name: str, model_name: str) -> Any:
+    def fetch_model_version(
+        self, catalog_name: str, inst_name: str, model_name: str
+    ) -> Any:
         schema = databricksify_inst_name(inst_name)
         model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
 
