@@ -533,6 +533,30 @@ class DatabricksControl(BaseModel):
         latest_version = max(model_versions, key=lambda v: int(v.version))
 
         return latest_version
+    
+    def delete_model(self, catalog_name: str, inst_name: str, model_name: str):
+        schema = databricksify_inst_name(inst_name)
+        model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
+
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
+
+        try:
+            w.registered_models.delete(full_name=model_name_path)
+            LOGGER.info("Deleted registration model: %s", model_name_path)
+        except Exception as e:
+            LOGGER.exception("Failed to delete registered model: %s", model_name_path)
+            raise
 
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
