@@ -311,7 +311,7 @@ def read_inst_model(
     }
 
 
-@router.delete("/{inst_id}/models/{model_name}", response_model=ModelInfo)
+@router.delete("/{inst_id}/models/{model_name}")
 def delete_model(
     inst_id: str,
     model_name: str,

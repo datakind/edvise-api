@@ -251,7 +251,6 @@ class DatabricksControl(BaseModel):
                     ],  # is this value the same PER environ? dev/staging/prod
                     "gcp_bucket_name": req.gcp_external_bucket_name,
                     "model_name": req.model_name,
-                    "model_type": req.model_type,
                     "notification_email": req.email,
                 },
             )
@@ -333,7 +332,7 @@ class DatabricksControl(BaseModel):
         inst_name: str,
         table_name: str,
         warehouse_id: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> Any:
         """
         Execute SELECT * via Databricks SQL Statement Execution API using EXTERNAL_LINKS.
         Blocks server-side for up to 30s; if not SUCCEEDED, raises. Downloads presigned
@@ -366,9 +365,9 @@ class DatabricksControl(BaseModel):
 
             if not ver_resp.status or ver_resp.status.state != StatementState.SUCCEEDED:
                 raise TimeoutError("DESCRIBE HISTORY did not finish within 30s")
-            cols = [c.name for c in ver_resp.manifest.schema.columns]
+            cols = [c.name for c in ver_resp.manifest.schema.columns] # type: ignore
             idx = {n: i for i, n in enumerate(cols)}
-            rows = ver_resp.result.data_array or []
+            rows = ver_resp.result.data_array or [] # type: ignore
             if not rows or "version" not in idx:
                 raise ValueError("DESCRIBE HISTORY returned no version")
             table_version = str(rows[0][idx["version"]])
@@ -432,13 +431,13 @@ class DatabricksControl(BaseModel):
             resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
         ):
             raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
-        cols: List[str] = []
+        cols: List[str] = [] # type: ignore
         for c in resp.manifest.schema.columns:
             if c.name is None:
                 raise ValueError("Encountered a column without a name.")
             cols.append(c.name)
 
-        records: List[Dict[str, Any]] = []
+        records: Any = []
 
         # Helper: consume one chunk-like object (first result or subsequent chunk)
         def _consume_chunk(chunk_obj: Any) -> int | None:
