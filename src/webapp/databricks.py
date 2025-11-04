@@ -365,9 +365,9 @@ class DatabricksControl(BaseModel):
 
             if not ver_resp.status or ver_resp.status.state != StatementState.SUCCEEDED:
                 raise TimeoutError("DESCRIBE HISTORY did not finish within 30s")
-            cols = [c.name for c in ver_resp.manifest.schema.columns] # type: ignore
+            cols = [c.name for c in ver_resp.manifest.schema.columns]  # type: ignore
             idx = {n: i for i, n in enumerate(cols)}
-            rows = ver_resp.result.data_array or [] # type: ignore
+            rows = ver_resp.result.data_array or []  # type: ignore
             if not rows or "version" not in idx:
                 raise ValueError("DESCRIBE HISTORY returned no version")
             table_version = str(rows[0][idx["version"]])
@@ -431,7 +431,7 @@ class DatabricksControl(BaseModel):
             resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
         ):
             raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
-        cols: List[str] = [] # type: ignore
+        cols: List[str] = []  # type: ignore
         for c in resp.manifest.schema.columns:
             if c.name is None:
                 raise ValueError("Encountered a column without a name.")
@@ -503,7 +503,7 @@ class DatabricksControl(BaseModel):
                 pass
         return records
 
-    def fetch_model_version(self, catalog_name: str, inst_name: str, model_name: str):
+    def fetch_model_version(self, catalog_name: str, inst_name: str, model_name: str) -> Any:
         schema = databricksify_inst_name(inst_name)
         model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
 
