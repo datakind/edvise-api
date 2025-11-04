@@ -520,7 +520,7 @@ class DatabricksControl(BaseModel):
             )
             raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
 
-        model_versions = list(
+        model_versions: Any = list(
             w.model_versions.list(
                 full_name=model_name_path,
             )
@@ -533,7 +533,7 @@ class DatabricksControl(BaseModel):
 
         return latest_version
 
-    def delete_model(self, catalog_name: str, inst_name: str, model_name: str):
+    def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:
         schema = databricksify_inst_name(inst_name)
         model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
 
