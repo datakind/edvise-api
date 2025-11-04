@@ -310,6 +310,7 @@ def read_inst_model(
         "framework": query_result[0][0].framework,
     }
 
+
 @router.delete("/{inst_id}/models/{model_name}", response_model=ModelInfo)
 def delete_model(
     inst_id: str,
@@ -319,7 +320,6 @@ def delete_model(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
-    
     transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
     model_owner_and_higher_or_err(current_user, "modify batch")
@@ -327,18 +327,16 @@ def delete_model(
     local_session.set(sql_session)
     sess = local_session.get()
 
-    query_result = (
-        sess.execute(
-            select(InstTable).where(
-                InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
+    query_result = sess.execute(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    ).all()
 
     model_list = sess.execute(
-        select(ModelTable.where(
-            ModelTable.name == str_to_uuid(model_name),
-            ModelTable.inst_id == str_to_uuid(inst_id),
-        )
+        select(
+            ModelTable.where(
+                ModelTable.name == str_to_uuid(model_name),
+                ModelTable.inst_id == str_to_uuid(inst_id),
+            )
         )
     ).scalar_one_or_none()
     if model_list is None:
@@ -361,6 +359,7 @@ def delete_model(
         "model_name": transformed_model_name,
         "deleted_from_databricks": delete_from_databricks,
     }
+
 
 @router.get("/{inst_id}/models/{model_name}/runs", response_model=list[RunInfo])
 def read_inst_model_outputs(

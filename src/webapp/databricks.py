@@ -533,7 +533,7 @@ class DatabricksControl(BaseModel):
         latest_version = max(model_versions, key=lambda v: int(v.version))
 
         return latest_version
-    
+
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str):
         schema = databricksify_inst_name(inst_name)
         model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
