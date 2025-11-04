@@ -758,7 +758,7 @@ def backfill_model_runs(
         .values(model_run_id=mv_run_id, model_version=mv_version)
     )
     result = local_session.get().execute(stmt)
-    updated_count = result.rowcount or 0
+    updated_count = result.rowcount or 0 # type: ignore
     local_session.get().commit()
 
     return {
