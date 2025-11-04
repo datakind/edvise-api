@@ -554,7 +554,7 @@ class DatabricksControl(BaseModel):
         try:
             w.registered_models.delete(full_name=model_name_path)
             LOGGER.info("Deleted registration model: %s", model_name_path)
-        except Exception as e:
+        except Exception:
             LOGGER.exception("Failed to delete registered model: %s", model_name_path)
             raise
 
