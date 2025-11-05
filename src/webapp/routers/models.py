@@ -320,13 +320,22 @@ def delete_model(
 ) -> Any:
     transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
-    model_owner_and_higher_or_err(current_user, "modify batch")
 
     local_session.set(sql_session)
     sess = local_session.get()
 
+    query_result = sess.execute(
+        select(ModelTable).where(
+            and_(
+                ModelTable.name == transformed_model_name,
+                ModelTable.inst_id == str_to_uuid(inst_id),
+            )
+        )
+    ).all()
+
     model_list = sess.execute(
         select(ModelTable).where(
+            ModelTable.id == query_result[0][0].id,
             ModelTable.name == transformed_model_name,
             ModelTable.inst_id == str_to_uuid(inst_id),
         )
