@@ -324,18 +324,8 @@ def delete_model(
     local_session.set(sql_session)
     sess = local_session.get()
 
-    query_result = sess.execute(
-        select(ModelTable).where(
-            and_(
-                ModelTable.name == transformed_model_name,
-                ModelTable.inst_id == str_to_uuid(inst_id),
-            )
-        )
-    ).all()
-
     model_list = sess.execute(
         select(ModelTable).where(
-            ModelTable.id == query_result[0][0].id,
             ModelTable.name == transformed_model_name,
             ModelTable.inst_id == str_to_uuid(inst_id),
         )
