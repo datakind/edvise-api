@@ -342,13 +342,8 @@ def delete_model(
             status_code=status.HTTP_404_NOT_FOUND, detail="Model not found."
         )
 
-    if delete_from_databricks:
-        # 2) Optionally Delete models from databricks itself
-        databricks_control.delete_model(
-            catalog_name=str(env_vars["CATALOG_NAME"]),
-            inst_name=f"{query_result[0][0].name}",
-            model_name=transformed_model_name,
-        )
+    # 2) Optionally Delete models from databricks itself
+    # TODO: Add databricks deletion functionality
 
     sess.delete(model_list)
     sess.commit()
