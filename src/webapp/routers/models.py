@@ -344,6 +344,7 @@ def delete_model(
     return {
         "inst_id": inst_id,
         "model_name": transformed_model_name,
+        "status": "Model deleted",
     }
 
 
