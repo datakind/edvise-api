@@ -311,6 +311,54 @@ def read_inst_model(
     }
 
 
+@router.delete("/{inst_id}/models/{model_name}")
+def delete_model(
+    inst_id: str,
+    model_name: str,
+    delete_from_databricks: bool,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    has_access_to_inst_or_err(inst_id, current_user)
+    model_owner_and_higher_or_err(current_user, "modify batch")
+
+    local_session.set(sql_session)
+    sess = local_session.get()
+
+    query_result = sess.execute(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    ).all()
+
+    model_list = sess.execute(
+        select(ModelTable).where(
+            ModelTable.name == str_to_uuid(model_name),
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
+    ).scalar_one_or_none()
+    if model_list is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Model not found."
+        )
+
+    if delete_from_databricks:
+        # 2) Optionally Delete models from databricks itself
+        databricks_control.delete_model(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=f"{query_result[0][0].name}",
+            model_name=transformed_model_name,
+        )
+
+    sess.delete(model_list)
+    sess.commit()
+    return {
+        "inst_id": inst_id,
+        "model_name": transformed_model_name,
+        "deleted_from_databricks": delete_from_databricks,
+    }
+
+
 @router.get("/{inst_id}/models/{model_name}/runs", response_model=list[RunInfo])
 def read_inst_model_outputs(
     inst_id: str,
@@ -710,7 +758,7 @@ def backfill_model_runs(
         .values(model_run_id=mv_run_id, model_version=mv_version)
     )
     result = local_session.get().execute(stmt)
-    updated_count = result.rowcount or 0
+    updated_count = result.rowcount or 0  # type: ignore
     local_session.get().commit()
 
     return {
