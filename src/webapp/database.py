@@ -483,7 +483,10 @@ class ModelTable(Base):
     )
     inst: Mapped["InstTable"] = relationship(back_populates="models")
 
-    jobs: Mapped[Set["JobTable"]] = relationship(back_populates="model")
+    jobs: Mapped[Set["JobTable"]] = relationship(
+        back_populates="model",
+        passive_deletes=True,
+    )
 
     name: Mapped[str] = mapped_column(String(VAR_CHAR_STANDARD_LENGTH), nullable=False)
     # What configuration of schemas are allowed (list of maps e.g. [PDP Course : 1 + PDP Cohort : 1, X_schema :1 + Y_schema: 2])
@@ -551,8 +554,11 @@ class JobTable(Base):
         String(VAR_CHAR_STANDARD_LENGTH), nullable=True
     )
     completed: Mapped[bool] = mapped_column(nullable=True)
-    framework: Mapped[str | None] = mapped_column(
-        String(VAR_CHAR_STANDARD_LENGTH), nullable=False, default="sklearn"
+    model_version: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_STANDARD_LENGTH), nullable=True
+    )
+    model_run_id: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_STANDARD_LENGTH), nullable=True
     )
 
 

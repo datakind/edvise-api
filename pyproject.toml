@@ -30,6 +30,7 @@ dependencies = [
     "pandera~=0.13",
     "mlflow~=2.15.0",
     "cachetools",
+    "types-cachetools",
 ]
 
 [project.urls]
