@@ -339,8 +339,15 @@ def delete_model(
     # 2) Optionally Delete models from databricks itself
     # TODO: Add databricks deletion functionality
 
-    sess.delete(model_list)
-    sess.commit()
+    try:
+        sess.delete(model_list)
+        sess.commit()
+    except Exception as e:
+        sess.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"DB batch delete failed after file cleanup: {e}"
+        )
+    
     return {
         "inst_id": inst_id,
         "model_name": transformed_model_name,
