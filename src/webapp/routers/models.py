@@ -315,10 +315,8 @@ def read_inst_model(
 def delete_model(
     inst_id: str,
     model_name: str,
-    delete_from_databricks: bool,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
     transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
@@ -346,7 +344,6 @@ def delete_model(
     return {
         "inst_id": inst_id,
         "model_name": transformed_model_name,
-        "deleted_from_databricks": delete_from_databricks,
     }
 
 
