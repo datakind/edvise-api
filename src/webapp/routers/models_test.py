@@ -152,7 +152,6 @@ def session_fixture():
             ]
         ),
         valid=True,
-        framework="sklearn",
     )
     run_1 = JobTable(
         id=RUN_ID,
@@ -343,7 +342,6 @@ def test_create_model(client: TestClient) -> None:
         json={
             "name": "my_model",
             "schema_configs": [[schema_config_1, schema_config_2]],
-            "framework": "h2o",
         },
     )
 
