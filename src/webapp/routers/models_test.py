@@ -152,7 +152,6 @@ def session_fixture():
             ]
         ),
         valid=True,
-        framework="sklearn",
     )
     run_1 = JobTable(
         id=RUN_ID,
