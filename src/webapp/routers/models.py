@@ -347,7 +347,7 @@ def delete_model(
         raise HTTPException(
             status_code=500, detail=f"DB batch delete failed after file cleanup: {e}"
         )
-    
+
     return {
         "inst_id": inst_id,
         "model_name": transformed_model_name,
