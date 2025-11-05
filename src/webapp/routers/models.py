@@ -333,7 +333,7 @@ def delete_model(
 
     model_list = sess.execute(
         select(ModelTable).where(
-            ModelTable.name == str_to_uuid(model_name),
+            ModelTable.name == transformed_model_name,
             ModelTable.inst_id == str_to_uuid(inst_id),
         )
     ).scalar_one_or_none()
