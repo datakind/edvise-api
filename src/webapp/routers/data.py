@@ -1363,7 +1363,7 @@ def get_inference_top_features(
     job_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns top n features table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1409,7 +1409,7 @@ def get_inference_feature_boxstats(
     feature_name: Optional[str] = Query(
         None, description="If provided, filter by this feature name"
     ),
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns box-plot stats for an institution/run. If `feature_name` is supplied,
     only rows for that feature are returned."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
@@ -1479,7 +1479,7 @@ def get_inference_support_overview(
     job_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns support score distribution table for a  specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1521,7 +1521,7 @@ def get_inference_feature_importance(
     job_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns feature importance table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1566,7 +1566,7 @@ def get_training_feature_importance(
     model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training feature importance table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1608,7 +1608,7 @@ def get_training_confusion_matrix(
     model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training confusion matrix table for a specific instituion."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1650,7 +1650,7 @@ def get_training_roc_curve(
     model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training roc curve table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1692,7 +1692,7 @@ def get_training_support_overview(
     model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training support overview table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
