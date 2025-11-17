@@ -1363,7 +1363,7 @@ def get_inference_top_features(
     job_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns top n features table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1409,7 +1409,7 @@ def get_inference_feature_boxstats(
     feature_name: Optional[str] = Query(
         None, description="If provided, filter by this feature name"
     ),
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns box-plot stats for an institution/run. If `feature_name` is supplied,
     only rows for that feature are returned."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
@@ -1479,7 +1479,7 @@ def get_inference_support_overview(
     job_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns support score distribution table for a  specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1521,7 +1521,7 @@ def get_inference_feature_importance(
     job_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns feature importance table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1560,13 +1560,13 @@ def get_inference_feature_importance(
 ## FE Training Tables
 
 
-@router.get("/{inst_id}/training/feature_importance/{experiment_run_id}")
+@router.get("/{inst_id}/training/feature_importance/{model_run_id}")
 def get_training_feature_importance(
     inst_id: str,
-    experiment_run_id: str,
+    model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training feature importance table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1592,7 +1592,7 @@ def get_training_feature_importance(
         rows = dbc.fetch_table_data(
             catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
             inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_shap_feature_importance",
+            table_name=f"training_{model_run_id}_shap_feature_importance",
             warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
         )
 
@@ -1602,13 +1602,13 @@ def get_training_feature_importance(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-@router.get("/{inst_id}/training/confusion_matrix/{experiment_run_id}")
+@router.get("/{inst_id}/training/confusion_matrix/{model_run_id}")
 def get_training_confusion_matrix(
     inst_id: str,
-    experiment_run_id: str,
+    model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training confusion matrix table for a specific instituion."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1634,7 +1634,7 @@ def get_training_confusion_matrix(
         rows = dbc.fetch_table_data(
             catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
             inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_confusion_matrix",
+            table_name=f"training_{model_run_id}_confusion_matrix",
             warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
         )
 
@@ -1644,13 +1644,13 @@ def get_training_confusion_matrix(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-@router.get("/{inst_id}/training/roc_curve/{experiment_run_id}")
+@router.get("/{inst_id}/training/roc_curve/{model_run_id}")
 def get_training_roc_curve(
     inst_id: str,
-    experiment_run_id: str,
+    model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training roc curve table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1676,7 +1676,7 @@ def get_training_roc_curve(
         rows = dbc.fetch_table_data(
             catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
             inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_roc_curve",
+            table_name=f"training_{model_run_id}_roc_curve",
             warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
         )
 
@@ -1686,13 +1686,13 @@ def get_training_roc_curve(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-@router.get("/{inst_id}/training/support-overview/{experiment_run_id}")
+@router.get("/{inst_id}/training/support-overview/{model_run_id}")
 def get_training_support_overview(
     inst_id: str,
-    experiment_run_id: str,
+    model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
+) -> Any:
     """Returns training support overview table for a specific institution."""
     # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
@@ -1718,7 +1718,7 @@ def get_training_support_overview(
         rows = dbc.fetch_table_data(
             catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
             inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_support_overview",
+            table_name=f"training_{model_run_id}_support_overview",
             warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
         )
 
