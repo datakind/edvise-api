@@ -473,6 +473,196 @@ def read_batch_info(
     return {"batches": [batch_info], "files": data_infos}
 
 
+## EDA (Exploratory Data Analysis) Endpoints
+
+
+class SummaryStats(BaseModel):
+    """Summary statistics for the EDA dashboard."""
+    total_students: str
+    transfer_students: str
+    avg_year1_gpa_all_students: str
+
+
+class GpaSeriesData(BaseModel):
+    """GPA data series for a chart."""
+    name: str
+    data: List[float]
+
+
+class GpaChartData(BaseModel):
+    """GPA chart data with cohort years and series."""
+    cohort_years: List[str]
+    series: List[GpaSeriesData]
+
+
+class TermData(BaseModel):
+    """Term-based data (fall, winter, spring, summer)."""
+    fall: List[int]
+    winter: List[int]
+    spring: List[int]
+    summer: List[int]
+
+
+class DegreeTypeData(BaseModel):
+    """Degree type data for donut chart."""
+    value: int
+    name: str
+    color: str
+
+
+class StackedBarSeries(BaseModel):
+    """Series data for stacked bar charts."""
+    name: str
+    type: str = "bar"
+    stack: str
+    data: List[int]
+    color: str
+
+
+class EdaDataResponse(BaseModel):
+    """Complete EDA data response matching frontend expectations."""
+    summary_stats: SummaryStats
+    gpa_by_enrollment_type: GpaChartData
+    gpa_by_enrollment_intensity: GpaChartData
+    students_by_cohort_term: TermData
+    course_enrollments: TermData
+    degree_types: List[DegreeTypeData]
+    enrollment_type_by_intensity: Dict[str, Any]  # Categories and series
+    pell_recipient_by_first_gen: Dict[str, Any]  # Categories and series
+    student_age_by_gender: Dict[str, Any]  # Categories and series
+    race_by_pell_status: Dict[str, Any]  # Categories and series
+
+
+@router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
+def get_eda_data(
+    inst_id: str,
+    batch_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+) -> Any:
+    """Returns EDA (Exploratory Data Analysis) data for a specific batch.
+    
+    This endpoint provides all the data needed to populate the EDA dashboard,
+    including summary statistics, GPA charts, enrollment data, and demographic breakdowns.
+    Analyzes all files in the batch together to provide comprehensive insights.
+    """
+    has_access_to_inst_or_err(inst_id, current_user)
+    has_full_data_access_or_err(current_user, "EDA data")
+    local_session.set(sql_session)
+    
+    # Verify batch exists and belongs to institution
+    batch_result = (
+        local_session.get()
+        .execute(
+            select(BatchTable).where(
+                and_(
+                    BatchTable.id == str_to_uuid(batch_id),
+                    BatchTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .all()
+    )
+    
+    if not batch_result or len(batch_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found.",
+        )
+    
+    if len(batch_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Batch duplicates found.",
+        )
+    
+    batch_record = batch_result[0][0]
+    batch_files = batch_record.files
+    
+    if not batch_files or len(batch_files) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch contains no files.",
+        )
+    
+    # TODO: Implement actual data fetching from GCS/Databricks
+    # For now, return mock data matching the frontend structure
+    # This should be replaced with actual data analysis from all files in the batch
+    # Files can be accessed via batch_files (Set[FileTable])
+    # Each file has: name, id, schemas, inst_id, etc.
+    
+    return EdaDataResponse(
+        summary_stats=SummaryStats(
+            total_students="15,203",
+            transfer_students="806",
+            avg_year1_gpa_all_students="3.1",
+        ),
+        gpa_by_enrollment_type=GpaChartData(
+            cohort_years=['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24'],
+            series=[
+                GpaSeriesData(name="First Time Student", data=[2.6, 2.7, 2.5, 2.7, 2.7, 2.7, 2.8]),
+                GpaSeriesData(name="Transfer Student", data=[3.3, 3.6, 3.1, 3.4, 3.1, 3.5, 3.6]),
+            ],
+        ),
+        gpa_by_enrollment_intensity=GpaChartData(
+            cohort_years=['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24'],
+            series=[
+                GpaSeriesData(name="Full Time Student", data=[3.25, 3.15, 3.0, 3.4, 3.25, 3.4, 3.5]),
+                GpaSeriesData(name="Part Time Student", data=[2.55, 2.9, 2.75, 3.15, 3.0, 3.15, 3.25]),
+            ],
+        ),
+        students_by_cohort_term=TermData(
+            fall=[180, 200, 220, 250, 270, 290, 320],
+            winter=[60, 65, 70, 75, 80, 85, 90],
+            spring=[50, 55, 60, 65, 70, 75, 80],
+            summer=[10, 12, 15, 18, 20, 22, 25],
+        ),
+        course_enrollments=TermData(
+            fall=[3000, 3200, 3400, 3600, 3800, 4000, 4200],
+            winter=[2000, 2100, 2200, 2300, 2400, 2500, 2600],
+            spring=[1000, 1100, 1200, 1300, 1400, 1500, 1600],
+            summer=[500, 550, 600, 650, 700, 750, 800],
+        ),
+        degree_types=[
+            DegreeTypeData(value=67, name="Associate's Degree", color="#F79222"),
+            DegreeTypeData(value=15, name="1 - 2 year certificate", color="#00CFEA"),
+            DegreeTypeData(value=8, name="2 - 4 year certificate", color="#25A95A"),
+            DegreeTypeData(value=7, name="Degree seeking", color="#A92532"),
+            DegreeTypeData(value=3, name="Unknown", color="#385981"),
+        ],
+        enrollment_type_by_intensity={
+            "categories": ['First-Time', 'Re-Admit', 'Transfer-In'],
+            "series": [
+                {"name": "Full Time", "type": "bar", "stack": "intensity", "data": [9800, 600, 8500], "color": "#F79222"},
+                {"name": "Part Time", "type": "bar", "stack": "intensity", "data": [200, 1100, 1200], "color": "#00CFEA"},
+            ],
+        },
+        pell_recipient_by_first_gen={
+            "categories": ['Yes', 'No'],
+            "series": [
+                {"name": "Yes", "type": "bar", "stack": "firstGen", "data": [3000, 3700], "color": "#F79222"},
+                {"name": "No", "type": "bar", "stack": "firstGen", "data": [4200, 3000], "color": "#00CFEA"},
+                {"name": "Nan", "type": "bar", "stack": "firstGen", "data": [1800, 1800], "color": "#25A95A"},
+            ],
+        },
+        student_age_by_gender={
+            "categories": ['Female', 'Male', 'Nonbinary, intersex, and gender-nonconforming', 'Prefer not to specify', 'Unknown'],
+            "series": [
+                {"name": "20 or younger", "type": "bar", "stack": "age", "data": [5000, 5000, 800, 2000, 1500], "color": "#F79222"},
+                {"name": "20 - 24", "type": "bar", "stack": "age", "data": [2500, 2500, 100, 1000, 1000], "color": "#00CFEA"},
+                {"name": "Older than 24", "type": "bar", "stack": "age", "data": [2000, 1300, 100, 500, 1000], "color": "#25A95A"},
+            ],
+        },
+        race_by_pell_status={
+            "categories": ['American Indian or Alaska Native', 'Asian', 'Black or African American', 'Native Hawaiian or other Pacific Islander', 'Nonresident Alien', 'Two or More Races', 'Unknown', 'White'],
+            "series": [
+                {"name": "Yes", "type": "bar", "stack": "pell", "data": [30, 250, 400, 20, 50, 100, 150, 2000], "color": "#F79222"},
+                {"name": "No", "type": "bar", "stack": "pell", "data": [20, 50, 200, 10, 25, 50, 50, 250], "color": "#00CFEA"},
+            ],
+        },
+    )
+
 @router.post("/{inst_id}/batch", response_model=BatchInfo)
 def create_batch(
     inst_id: str,
