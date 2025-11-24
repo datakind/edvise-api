@@ -118,6 +118,48 @@ def init_db(env: str) -> None:
                     valid=True,
                 )
             )
+            # Create test files and batches for LOCAL environment
+            if env == "LOCAL":
+                # Create test files
+                test_file_1 = FileTable(
+                    id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a"),
+                    inst_id=LOCAL_INST_UUID,
+                    name="test_course_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=["COURSE"],  # Using string literal to avoid circular import
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                test_file_2 = FileTable(
+                    id=uuid.UUID("cb02d06c-2a59-486a-9bdd-d394a4fcb833"),
+                    inst_id=LOCAL_INST_UUID,
+                    name="test_cohort_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=["STUDENT"],  # Using string literal to avoid circular import
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                # Create test batch
+                test_batch = BatchTable(
+                    id=uuid.UUID("5b2420f3-1035-46ab-90eb-74d5df97de43"),
+                    inst_id=LOCAL_INST_UUID,
+                    name="test_batch_1",
+                    created_by=LOCAL_USER_UUID,
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                # Associate files with batch
+                test_batch.files.add(test_file_1)
+                test_batch.files.add(test_file_2)
+                session.merge(test_file_1)
+                session.merge(test_file_2)
+                session.merge(test_batch)
             session.commit()
     except Exception as e:
         session.rollback()
