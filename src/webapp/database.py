@@ -59,6 +59,10 @@ LOCAL_USER_EMAIL = "tester@datakind.org"
 LOCAL_PASSWORD = "tester_password"
 DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
 
+# Test institution ID for EDA dashboard
+TEST_INST_UUID = uuid.UUID("942d4b0e-12e7-4d2a-9187-9508ae3cef7c")
+TEST_BATCH_UUID = uuid.UUID("5b2420f3-1035-46ab-90eb-74d5df97de43")
+
 
 @event.listens_for(Mapper, "before_insert")
 @event.listens_for(Mapper, "before_update")
@@ -106,6 +110,15 @@ def init_db(env: str) -> None:
                     updated_at=DATETIME_TESTING,
                 )
             )
+            # Create test institution for EDA dashboard
+            session.merge(
+                InstTable(
+                    id=TEST_INST_UUID,
+                    name="Test Institution for EDA",
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+            )
             session.merge(
                 ApiKeyTable(
                     id=LOCAL_APIKEY_UUID,
@@ -145,9 +158,9 @@ def init_db(env: str) -> None:
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
                 )
-                # Create test batch
+                # Create test batch for LOCAL_INST_UUID (using a different ID)
                 test_batch = BatchTable(
-                    id=uuid.UUID("5b2420f3-1035-46ab-90eb-74d5df97de43"),
+                    id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562b"),
                     inst_id=LOCAL_INST_UUID,
                     name="test_batch_1",
                     created_by=LOCAL_USER_UUID,
@@ -160,6 +173,63 @@ def init_db(env: str) -> None:
                 session.merge(test_file_1)
                 session.merge(test_file_2)
                 session.merge(test_batch)
+                
+                # Create test files for EDA test institution (TEST_INST_UUID)
+                eda_test_file_1 = FileTable(
+                    id=uuid.UUID("a1b2c3d4-5e6f-7890-abcd-ef1234567890"),
+                    inst_id=TEST_INST_UUID,
+                    name="eda_test_course_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=["COURSE"],
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                eda_test_file_2 = FileTable(
+                    id=uuid.UUID("b2c3d4e5-6f78-9012-bcde-f23456789012"),
+                    inst_id=TEST_INST_UUID,
+                    name="eda_test_cohort_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=["STUDENT"],
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                eda_test_file_3 = FileTable(
+                    id=uuid.UUID("c3d4e5f6-7890-1234-cdef-345678901234"),
+                    inst_id=TEST_INST_UUID,
+                    name="eda_test_financial_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=["FINANCIAL"],
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                
+                # Create test batch for EDA dashboard
+                eda_test_batch = BatchTable(
+                    id=TEST_BATCH_UUID,
+                    inst_id=TEST_INST_UUID,
+                    name="eda_test_batch",
+                    completed=True,
+                    created_by=LOCAL_USER_UUID,
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                # Associate files with EDA test batch
+                eda_test_batch.files.add(eda_test_file_1)
+                eda_test_batch.files.add(eda_test_file_2)
+                eda_test_batch.files.add(eda_test_file_3)
+                session.merge(eda_test_file_1)
+                session.merge(eda_test_file_2)
+                session.merge(eda_test_file_3)
+                session.merge(eda_test_batch)
             session.commit()
     except Exception as e:
         session.rollback()
