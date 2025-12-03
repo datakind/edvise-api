@@ -743,11 +743,12 @@ def get_eda_data(
             summer=get_term_counts(df_course, cohort_years, 'SUMMER'),
         ),
         degree_types=[
-            DegreeTypeData(value=67, name="Associate's Degree", color="#F79222"),
-            DegreeTypeData(value=15, name="1 - 2 year certificate", color="#00CFEA"),
-            DegreeTypeData(value=8, name="2 - 4 year certificate", color="#25A95A"),
-            DegreeTypeData(value=7, name="Degree seeking", color="#A92532"),
-            DegreeTypeData(value=3, name="Unknown", color="#385981"),
+            DegreeTypeData(
+                value=int(round(count / df_cohort['Credential Type Sought Year 1'].count() * 100)),
+                name=str(degree_type),
+                color=["#F79222", "#00CFEA", "#25A95A", "#A92532", "#385981"][i % 5]
+            )
+            for i, (degree_type, count) in enumerate(df_cohort['Credential Type Sought Year 1'].value_counts().items())
         ],
         enrollment_type_by_intensity={
             "categories": ['First-Time', 'Re-Admit', 'Transfer-In'],
