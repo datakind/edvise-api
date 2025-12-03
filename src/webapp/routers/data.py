@@ -638,6 +638,23 @@ def calculate_gpa_series(df: pd.DataFrame, cohort_years: List[str], grouping_col
     return data
 
 
+def get_term_counts(df: pd.DataFrame, cohort_years: List[str], term_name: str) -> List[int]:
+    """Get student counts for a specific term across cohort years.
+    
+    Args:
+        df: DataFrame (cohort or course data)
+        cohort_years: List of cohort years
+        term_name: Term name to filter for (e.g., 'FALL', 'WINTER')
+    
+    Returns:
+        List of student counts, one per cohort year
+    """
+    return (df[df['Cohort Term'] == term_name]
+            .groupby('Cohort').size()
+            .reindex(cohort_years, fill_value=0)
+            .astype(int).tolist())
+
+
 @router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
 def get_eda_data(
     inst_id: str,
@@ -690,8 +707,7 @@ def get_eda_data(
         inst_id, batch_files, storage_control
     )
     df_cohort = file_dataframes['eda_test_cohort_file.csv']
-    
-    # Calculate cohort years
+    df_course = file_dataframes['eda_test_course_file.csv']
     cohort_years = sorted(df_cohort['Cohort'].unique().tolist())
     
     return EdaDataResponse(
@@ -715,16 +731,16 @@ def get_eda_data(
             ],
         ),
         students_by_cohort_term=TermData(
-            fall=[180, 200, 220, 250, 270, 290, 320],
-            winter=[60, 65, 70, 75, 80, 85, 90],
-            spring=[50, 55, 60, 65, 70, 75, 80],
-            summer=[10, 12, 15, 18, 20, 22, 25],
+            fall=get_term_counts(df_cohort, cohort_years, 'FALL'),
+            winter=get_term_counts(df_cohort, cohort_years, 'WINTER'),
+            spring=get_term_counts(df_cohort, cohort_years, 'SPRING'),
+            summer=get_term_counts(df_cohort, cohort_years, 'SUMMER'),
         ),
         course_enrollments=TermData(
-            fall=[3000, 3200, 3400, 3600, 3800, 4000, 4200],
-            winter=[2000, 2100, 2200, 2300, 2400, 2500, 2600],
-            spring=[1000, 1100, 1200, 1300, 1400, 1500, 1600],
-            summer=[500, 550, 600, 650, 700, 750, 800],
+            fall=get_term_counts(df_course, cohort_years, 'FALL'),
+            winter=get_term_counts(df_course, cohort_years, 'WINTER'),
+            spring=get_term_counts(df_course, cohort_years, 'SPRING'),
+            summer=get_term_counts(df_course, cohort_years, 'SUMMER'),
         ),
         degree_types=[
             DegreeTypeData(value=67, name="Associate's Degree", color="#F79222"),
