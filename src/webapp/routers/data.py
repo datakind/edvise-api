@@ -18,6 +18,7 @@ import tempfile
 import pathlib
 import re
 from ..validation import HardValidationError
+import pandas as pd
 
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -533,6 +534,110 @@ class EdaDataResponse(BaseModel):
     race_by_pell_status: Dict[str, Any]  # Categories and series
 
 
+def read_batch_files_as_dataframes(
+    inst_id: str,
+    batch_files: Any,  # Set[FileTable]
+    storage_control: StorageControl,
+) -> Dict[str, pd.DataFrame]:
+    """Read CSV files from a batch and return as DataFrames.
+    
+    In LOCAL mode, checks ../test_cloud_storage/validated/ first, then falls back to GCS.
+    In deployed environments (DEV/STAGING/PROD), only reads from GCS.
+    
+    Args:
+        inst_id: Institution ID
+        batch_files: Set of FileTable objects from the batch
+        storage_control: StorageControl instance for GCS access
+        
+    Returns:
+        Dictionary mapping file_name -> pandas.DataFrame
+        
+    Raises:
+        HTTPException: If no valid files found
+    """
+    file_dataframes: Dict[str, pd.DataFrame] = {}
+    is_local = env_vars.get("ENV", "").upper() == "LOCAL"
+    bucket_name = get_external_bucket_name(inst_id)
+    
+    # For LOCAL mode, set up local test storage path
+    local_test_storage_path = None
+    if is_local:
+        project_root = pathlib.Path(__file__).parent.parent.parent.parent
+        local_test_storage_path = project_root.parent / "test_cloud_storage" / "validated"
+        logger.info(f"LOCAL mode: Will check local storage at {local_test_storage_path}")
+    
+    for file_record in batch_files:
+        file_name = file_record.name
+        
+        # Skip SST-generated output files (only process input files)
+        if file_record.sst_generated:
+            logger.debug(f"Skipping SST-generated file: {file_name}")
+            continue
+        
+        df = None
+        
+        # Try local filesystem first in LOCAL mode
+        if is_local and local_test_storage_path:
+            local_file_path = local_test_storage_path / file_name
+            if local_file_path.exists():
+                try:
+                    df = pd.read_csv(local_file_path)
+                    logger.info(f"Loaded {file_name} from local filesystem ({len(df)} rows)")
+                except Exception as e:
+                    logger.warning(f"Failed to read local file {local_file_path}: {e}")
+        
+        # Fall back to GCS using StorageControl
+        if df is None:
+            try:
+                blob_path = f"validated/{file_name}"
+                df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
+                logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
+            except ValueError as e:
+                logger.warning(f"File not found in GCS: {e}")
+            except Exception as e:
+                logger.error(f"Failed to read from GCS: {e}")
+        
+        if df is not None:
+            file_dataframes[file_name] = df
+    
+    if not file_dataframes:
+        error_msg = f"No valid input files found in batch"
+        if is_local and local_test_storage_path:
+            error_msg += f" (checked local: {local_test_storage_path} and GCS: {bucket_name}/validated/)"
+        else:
+            error_msg += f" (checked GCS: {bucket_name}/validated/)"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_msg,
+        )
+    
+    return file_dataframes
+
+
+def calculate_gpa_series(df: pd.DataFrame, cohort_years: List[str], grouping_col: str, category_value: str) -> List[float]:
+    """Calculate GPA data for one category across cohort years.
+    
+    Args:
+        df: DataFrame (cohort data)
+        cohort_years: List of cohort years
+        grouping_col: Column to filter by (e.g., 'Enrollment Type')
+        category_value: Specific value to filter for (e.g., 'First-Time')
+    
+    Returns:
+        List of GPA values, one per cohort year
+    """
+    # Filter by category
+    filtered = df[df[grouping_col] == category_value]
+    
+    # Group by cohort and calculate mean GPA
+    gpa_by_cohort = filtered.groupby('Cohort')['GPA Group Year 1'].mean()
+    
+    # Convert to list aligned with cohort_years
+    data = [round(gpa_by_cohort.get(year, 0), 1) for year in cohort_years]
+    
+    return data
+
+
 @router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
 def get_eda_data(
     inst_id: str,
@@ -580,36 +685,33 @@ def get_eda_data(
     batch_record = batch_result[0][0]
     batch_files = batch_record.files
     
-    if not batch_files or len(batch_files) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Batch contains no files.",
-        )
+    # Read files from batch using helper function
+    file_dataframes = read_batch_files_as_dataframes(
+        inst_id, batch_files, storage_control
+    )
+    df_cohort = file_dataframes['eda_test_cohort_file.csv']
     
-    # TODO: Implement actual data fetching from GCS/Databricks
-    # For now, return mock data matching the frontend structure
-    # This should be replaced with actual data analysis from all files in the batch
-    # Files can be accessed via batch_files (Set[FileTable])
-    # Each file has: name, id, schemas, inst_id, etc.
+    # Calculate cohort years
+    cohort_years = sorted(df_cohort['Cohort'].unique().tolist())
     
     return EdaDataResponse(
         summary_stats=SummaryStats(
-            total_students="15,203",
-            transfer_students="806",
-            avg_year1_gpa_all_students="3.1",
+            total_students=f"{df_cohort['Student GUID'].nunique():,}",
+            transfer_students=f"{(df_cohort['Enrollment Type'] == 'Transfer-In').sum():,}",
+            avg_year1_gpa_all_students=f"{df_cohort['GPA Group Year 1'].mean():.2f}",
         ),
         gpa_by_enrollment_type=GpaChartData(
-            cohort_years=['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24'],
+            cohort_years=cohort_years,
             series=[
-                GpaSeriesData(name="First Time Student", data=[2.6, 2.7, 2.5, 2.7, 2.7, 2.7, 2.8]),
-                GpaSeriesData(name="Transfer Student", data=[3.3, 3.6, 3.1, 3.4, 3.1, 3.5, 3.6]),
+                GpaSeriesData(name="First Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Type', 'First-Time')),
+                GpaSeriesData(name="Transfer Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Type', 'Transfer-In')),
             ],
         ),
         gpa_by_enrollment_intensity=GpaChartData(
-            cohort_years=['2017-18', '2018-19', '2019-20', '2020-21', '2021-22', '2022-23', '2023-24'],
+            cohort_years=cohort_years,
             series=[
-                GpaSeriesData(name="Full Time Student", data=[3.25, 3.15, 3.0, 3.4, 3.25, 3.4, 3.5]),
-                GpaSeriesData(name="Part Time Student", data=[2.55, 2.9, 2.75, 3.15, 3.0, 3.15, 3.25]),
+                GpaSeriesData(name="Full Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Intensity First Term', 'Full-Time')),
+                GpaSeriesData(name="Part Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Intensity First Term', 'Part-Time')),
             ],
         ),
         students_by_cohort_term=TermData(
