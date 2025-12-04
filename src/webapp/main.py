@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.future import select
 from sqlalchemy import update
-from .routers import models, users, data, institutions
+from .routers import models, users, data, institutions, front_end_tables
 from .database import (
     setup_db,
     db_engine,
@@ -58,7 +58,7 @@ app.include_router(institutions.router)
 app.include_router(models.router)
 app.include_router(users.router)
 app.include_router(data.router)
-
+app.include_router(front_end_tables.router)
 
 class SelfInfo(BaseModel):
     """The user account creation request object."""
