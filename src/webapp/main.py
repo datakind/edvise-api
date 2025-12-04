@@ -60,6 +60,7 @@ app.include_router(users.router)
 app.include_router(data.router)
 app.include_router(front_end_tables.router)
 
+
 class SelfInfo(BaseModel):
     """The user account creation request object."""
 

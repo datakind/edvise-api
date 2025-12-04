@@ -42,6 +42,7 @@ LOGGER = logging.getLogger(__name__)
 
 ## FE Inference Tables
 
+
 # Get SHAP Values for Inference
 @router.get("/{inst_id}/inference/top-features/{job_run_id}")
 def get_inference_top_features(
@@ -244,6 +245,7 @@ def get_inference_feature_importance(
 
 
 ## FE Training Tables
+
 
 @router.get("/{inst_id}/training/feature_importance/{model_run_id}")
 def get_training_feature_importance(
