@@ -1350,7 +1350,7 @@ def get_upload_url(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-@router.get("/{inst_id}/add-custom-school-job/{job_run_id}")
+@router.post("/{inst_id}/add-custom-school-job/{job_run_id}")
 def add_custom_school_job(
     inst_id: str,
     job_run_id: str,
