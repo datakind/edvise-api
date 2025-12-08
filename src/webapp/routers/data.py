@@ -2,9 +2,9 @@
 
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, cast, IO, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
