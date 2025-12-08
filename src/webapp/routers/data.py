@@ -2,9 +2,9 @@
 
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, cast, IO, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -33,6 +33,8 @@ from ..database import (
     BatchTable,
     FileTable,
     InstTable,
+    JobTable,
+    ModelTable,
     SchemaRegistryTable,
     DocType,
 )
@@ -41,6 +43,7 @@ from ..databricks import DatabricksControl
 from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
+from ..config import env_vars
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
@@ -1342,6 +1345,85 @@ def get_upload_url(
             get_external_bucket_name(inst_id), file_name
         )
         return signed_url
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/add-custom-school-job/{job_run_id}")
+def add_custom_school_job(
+    inst_id: str,
+    job_run_id: str,
+    model_name: str,
+    sql_session: Annotated[Session, Depends(get_session)],
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """Fill in a JobTable ."""
+    has_access_to_inst_or_err(inst_id, current_user)
+    has_full_data_access_or_err(current_user, "this model")
+    local_session.set(sql_session)
+
+    model_name = decode_url_piece(model_name)
+    inst_result = (
+        local_session.get()
+        .execute(
+            select(InstTable).where(
+                and_(
+                    InstTable.id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .all()
+    )
+
+    query_result = (
+        local_session.get()
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .all()
+    )
+
+    if not inst_result or not query_result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution or model does not exist.",
+        )
+
+    try:
+        triggered_timestamp = datetime.now()
+        latest_model_version = databricks_control.fetch_model_version(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=inst_result[0][0].name,
+            model_name=model_name,
+        )
+        job = JobTable(
+            id=job_run_id,
+            triggered_at=triggered_timestamp,
+            created_by=str_to_uuid(current_user.user_id),
+            batch_name="No batch name (manual custom school job)",
+            model_id=query_result[0][0].id,
+            output_valid=False,
+            model_version=latest_model_version.version,
+            model_run_id=latest_model_version.run_id,
+        )
+        local_session.get().add(job)
+
+        return {
+            "inst_id": inst_id,
+            "m_name": model_name,
+            "run_id": job_run_id,
+            "created_by": current_user.user_id,
+            "triggered_at": triggered_timestamp,
+            "model_version": latest_model_version.version,
+            "model_run_id": latest_model_version.run_id,
+        }
     except ValueError as ve:
         # Return a 400 error with the specific message from ValueError
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
