@@ -1398,18 +1398,22 @@ def add_custom_school_job(
 
     try:
         triggered_timestamp = datetime.now()
+
         latest_model_version = databricks_control.fetch_model_version(
             catalog_name=str(env_vars["CATALOG_NAME"]),
             inst_name=inst_result[0][0].name,
             model_name=model_name,
         )
+
         job = JobTable(
             id=job_run_id,
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
             batch_name="No batch name (manual custom school job)",
+            output_filename = f"{job_run_id}/inference_output.csv",
             model_id=query_result[0][0].id,
             output_valid=False,
+            completed=True,
             model_version=latest_model_version.version,
             model_run_id=latest_model_version.run_id,
         )
@@ -1419,10 +1423,11 @@ def add_custom_school_job(
             "inst_id": inst_id,
             "m_name": model_name,
             "run_id": job_run_id,
-            "created_by": current_user.user_id,
-            "triggered_at": triggered_timestamp,
+            "output_filename": f"{job_run_id}/inference_output.csv",
             "model_version": latest_model_version.version,
             "model_run_id": latest_model_version.run_id,
+            "created_by": current_user.user_id,
+            "triggered_at": triggered_timestamp,
         }
     except ValueError as ve:
         # Return a 400 error with the specific message from ValueError
