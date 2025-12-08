@@ -1414,7 +1414,7 @@ def add_custom_school_job(
             model_run_id=latest_model_version.run_id,
         )
         local_session.get().add(job)
-        
+
         return {
             "inst_id": inst_id,
             "m_name": model_name,
