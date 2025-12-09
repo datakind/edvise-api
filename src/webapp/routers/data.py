@@ -850,10 +850,32 @@ def get_eda_data(
             ],
         },
         race_by_pell_status={
-            "categories": ['American Indian or Alaska Native', 'Asian', 'Black or African American', 'Native Hawaiian or other Pacific Islander', 'Nonresident Alien', 'Two or More Races', 'Unknown', 'White'],
+            "categories": (race_categories := sorted(df_cohort['race'].dropna().unique().tolist())),
             "series": [
-                {"name": "Yes", "type": "bar", "stack": "pell", "data": [30, 250, 400, 20, 50, 100, 150, 2000], "color": "#F79222"},
-                {"name": "No", "type": "bar", "stack": "pell", "data": [20, 50, 200, 10, 25, 50, 50, 250], "color": "#00CFEA"},
+                {
+                    "name": pell_status_normalized,
+                    "type": "bar",
+                    "stack": "pell",
+                    "data": (
+                        df_cohort.assign(
+                            _pell=df_cohort['pell_status_first_year'].replace({'Y': 'Yes', 'N': 'No', 'y': 'Yes', 'n': 'No'})
+                        )
+                        .query(f"_pell == '{pell_status_normalized}' and _pell in ['Yes', 'No']")
+                        .groupby('race')
+                        .size()
+                        .reindex(race_categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": ["#F79222", "#00CFEA"][i % 2]
+                }
+                for i, pell_status_normalized in enumerate(sorted(
+                    df_cohort['pell_status_first_year']
+                    .dropna()
+                    .replace({'Y': 'Yes', 'N': 'No', 'y': 'Yes', 'n': 'No'})
+                    .loc[lambda x: x.isin(['Yes', 'No'])]
+                    .unique()
+                    .tolist()
+                ))
             ],
         },
     )
