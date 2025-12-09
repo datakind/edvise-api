@@ -817,11 +817,36 @@ def get_eda_data(
             ],
         },
         student_age_by_gender={
-            "categories": ['Female', 'Male', 'Nonbinary, intersex, and gender-nonconforming', 'Prefer not to specify', 'Unknown'],
+            "categories": (gender_categories := sorted(df_cohort['gender'].dropna().unique().tolist())),
             "series": [
-                {"name": "20 or younger", "type": "bar", "stack": "age", "data": [5000, 5000, 800, 2000, 1500], "color": "#F79222"},
-                {"name": "20 - 24", "type": "bar", "stack": "age", "data": [2500, 2500, 100, 1000, 1000], "color": "#00CFEA"},
-                {"name": "Older than 24", "type": "bar", "stack": "age", "data": [2000, 1300, 100, 500, 1000], "color": "#25A95A"},
+                {
+                    "name": age_group,
+                    "type": "bar",
+                    "stack": "age",
+                    "data": (
+                        df_cohort.assign(
+                            _age_group=(
+                                (df_cohort['student_age'] if 'student_age' in df_cohort.columns 
+                                 else df_cohort['age'] if 'age' in df_cohort.columns 
+                                 else pd.Series([None] * len(df_cohort)))
+                                .apply(
+                                    lambda x: (
+                                        "20 or younger" if pd.isna(x) or any(term in str(x).lower() for term in ['20 or younger', '20 or under', 'under 20', '<=20']) or (isinstance(x, (int, float)) and x <= 20)
+                                        else "20 - 24" if any(term in str(x).lower() for term in ['20-24', '20 to 24', '20 - 24']) or (isinstance(x, (int, float)) and 20 < x <= 24)
+                                        else "Older than 24"
+                                    )
+                                )
+                            )
+                        )
+                        .query(f"_age_group == '{age_group}'")
+                        .groupby('gender')
+                        .size()
+                        .reindex(gender_categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": ["#F79222", "#00CFEA", "#25A95A"][i % 3]
+                }
+                for i, age_group in enumerate(["20 or younger", "20 - 24", "Older than 24"])
             ],
         },
         race_by_pell_status={
