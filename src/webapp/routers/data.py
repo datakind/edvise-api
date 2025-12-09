@@ -544,9 +544,6 @@ def read_batch_files_as_dataframes(
 ) -> Dict[str, pd.DataFrame]:
     """Read CSV files from a batch and return as DataFrames.
     
-    In LOCAL mode, checks ../test_cloud_storage/validated/ first, then falls back to GCS.
-    In deployed environments (DEV/STAGING/PROD), only reads from GCS.
-    
     Args:
         inst_id: Institution ID
         batch_files: Set of FileTable objects from the batch
