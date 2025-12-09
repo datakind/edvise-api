@@ -555,7 +555,6 @@ def read_batch_files_as_dataframes(
     Raises:
         HTTPException: If no valid files found
     """
-    file_dataframes: Dict[str, pd.DataFrame] = {}
     bucket_name = get_external_bucket_name(inst_id)
     
     # Temporary storage: file_record -> DataFrame
