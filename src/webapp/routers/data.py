@@ -754,10 +754,34 @@ def get_eda_data(
             for i, (degree_type, count) in enumerate(df_cohort['credential_type_sought_year_1'].value_counts().items())
         ],
         enrollment_type_by_intensity={
-            "categories": ['First-Time', 'Re-Admit', 'Transfer-In'],
+            "categories": (categories := sorted(df_cohort['enrollment_type'].unique().tolist())),
             "series": [
-                {"name": "Full Time", "type": "bar", "stack": "intensity", "data": [9800, 600, 8500], "color": "#F79222"},
-                {"name": "Part Time", "type": "bar", "stack": "intensity", "data": [200, 1100, 1200], "color": "#00CFEA"},
+                {
+                    "name": "Full Time",
+                    "type": "bar",
+                    "stack": "intensity",
+                    "data": (
+                        df_cohort[df_cohort['enrollment_intensity_first_term'] == 'Full-Time']
+                        .groupby('enrollment_type')
+                        .size()
+                        .reindex(categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": "#F79222"
+                },
+                {
+                    "name": "Part Time",
+                    "type": "bar",
+                    "stack": "intensity",
+                    "data": (
+                        df_cohort[df_cohort['enrollment_intensity_first_term'] == 'Part-Time']
+                        .groupby('enrollment_type')
+                        .size()
+                        .reindex(categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": "#00CFEA"
+                },
             ],
         },
         pell_recipient_by_first_gen={
