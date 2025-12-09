@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 import re
 from ..validation import HardValidationError
 import pandas as pd
+from cachetools import TTLCache
 
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -50,6 +51,11 @@ from ..config import env_vars
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+# Cache for EDA data - TTL of 10 minutes (600 seconds)
+# Cache key format: f"{inst_id}:{batch_id}"
+EDA_CACHE_TTL = int(os.getenv("EDA_CACHE_TTL", "600"))  # Default 10 minutes
+EDA_CACHE: Any = TTLCache(maxsize=64, ttl=EDA_CACHE_TTL)
 
 router = APIRouter(
     prefix="/institutions",
@@ -698,6 +704,15 @@ def get_eda_data(
     batch_record = batch_result[0][0]
     batch_files = batch_record.files
     
+    # Check cache first
+    cache_key = f"{inst_id}:{batch_id}"
+    cached_result = EDA_CACHE.get(cache_key)
+    if cached_result is not None:
+        logger.debug(f"EDA cache hit for {cache_key}")
+        return cached_result
+    
+    logger.debug(f"EDA cache miss for {cache_key}, computing...")
+    
     # Read files from batch using helper function
     file_dataframes = read_batch_files_as_dataframes(
         inst_id, batch_files, storage_control
@@ -713,7 +728,7 @@ def get_eda_data(
     
     cohort_years = sorted(df_cohort['cohort'].unique().tolist())
     
-    return EdaDataResponse(
+    result = EdaDataResponse(
         summary_stats=SummaryStats(
             total_students=f"{df_cohort['study_id'].nunique():,}",
             transfer_students=f"{(df_cohort['enrollment_type'] == 'Transfer-In').sum():,}",
@@ -879,6 +894,12 @@ def get_eda_data(
             ],
         },
     )
+    
+    # Cache the result before returning
+    EDA_CACHE[cache_key] = result
+    logger.debug(f"EDA result cached for {cache_key}")
+    
+    return result
 
 @router.post("/{inst_id}/batch", response_model=BatchInfo)
 def create_batch(
