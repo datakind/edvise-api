@@ -785,11 +785,35 @@ def get_eda_data(
             ],
         },
         pell_recipient_by_first_gen={
-            "categories": ['Yes', 'No'],
+            "categories": (pell_categories := sorted(
+                df_cohort['pell_status_first_year']
+                .dropna()
+                .replace({'Y': 'Yes', 'N': 'No', 'y': 'Yes', 'n': 'No'})
+                .loc[lambda x: x.isin(['Yes', 'No'])]
+                .unique()
+                .tolist()
+            )),
             "series": [
-                {"name": "Yes", "type": "bar", "stack": "firstGen", "data": [3000, 3700], "color": "#F79222"},
-                {"name": "No", "type": "bar", "stack": "firstGen", "data": [4200, 3000], "color": "#00CFEA"},
-                {"name": "Nan", "type": "bar", "stack": "firstGen", "data": [1800, 1800], "color": "#25A95A"},
+                {
+                    "name": first_gen_normalized,
+                    "type": "bar",
+                    "stack": "firstGen",
+                    "data": (
+                        df_cohort.assign(
+                            _pell=df_cohort['pell_status_first_year'].replace({'Y': 'Yes', 'N': 'No', 'y': 'Yes', 'n': 'No'}),
+                            _first_gen=df_cohort['first_gen'].fillna("Nan").replace({'Y': 'Yes', 'N': 'No', 'y': 'Yes', 'n': 'No'})
+                        )
+                        .query(f"_first_gen == '{first_gen_normalized}' and _pell in ['Yes', 'No']")
+                        .groupby('_pell')
+                        .size()
+                        .reindex(pell_categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": ["#F79222", "#00CFEA", "#25A95A"][i % 3]
+                }
+                for i, first_gen_normalized in enumerate(sorted(
+                    df_cohort['first_gen'].fillna("Nan").replace({'Y': 'Yes', 'N': 'No', 'y': 'Yes', 'n': 'No'}).unique().tolist()
+                ))
             ],
         },
         student_age_by_gender={
