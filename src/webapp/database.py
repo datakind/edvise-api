@@ -158,7 +158,9 @@ def init_db(env: str) -> None:
                     uploader=LOCAL_USER_UUID,
                     sst_generated=False,
                     valid=True,
-                    schemas=["STUDENT"],  # Using string literal to avoid circular import
+                    schemas=[
+                        "STUDENT"
+                    ],  # Using string literal to avoid circular import
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
                 )
@@ -177,7 +179,7 @@ def init_db(env: str) -> None:
                 session.merge(test_file_1)
                 session.merge(test_file_2)
                 session.merge(test_batch)
-                
+
                 # Create test files for EDA test institution (TEST_INST_UUID)
                 # Real files from DEV batch 3182f472e0794678a0a19ca5ead6c49a
                 test_file_student = FileTable(
@@ -204,7 +206,7 @@ def init_db(env: str) -> None:
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
                 )
-                
+
                 # Test batch - matches DEV USC Beaufort
                 test_batch = BatchTable(
                     id=TEST_BATCH_UUID,

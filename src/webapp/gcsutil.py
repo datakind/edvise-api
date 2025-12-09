@@ -358,28 +358,28 @@ class StorageControl(BaseModel):
         blob = bucket.blob(file_name)
         res = blob.download_as_bytes()
         return res
-    
+
     def read_csv_as_dataframe(self, bucket_name: str, file_name: str) -> Any:
         """Read a CSV file from GCS and return as pandas DataFrame.
-        
+
         Args:
             bucket_name: GCS bucket name
             file_name: Full blob path (e.g., 'validated/filename.csv')
-            
+
         Returns:
             pandas DataFrame
-            
+
         Raises:
             ValueError: If bucket or file not found
         """
         import pandas as pd
-        
+
         storage_client = storage.Client()
         bucket = storage_client.get_bucket(bucket_name)
         blob = bucket.blob(file_name)
-        
+
         if not blob.exists():
             raise ValueError(f"File not found: {file_name}")
-        
+
         with blob.open("r") as fh:
             return pd.read_csv(fh)
