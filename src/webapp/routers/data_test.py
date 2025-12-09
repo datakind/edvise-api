@@ -679,8 +679,6 @@ def test_get_eda_data_batch_not_found(client: TestClient) -> None:
 
 def test_get_eda_data_no_student_files(client: TestClient, session: sqlalchemy.orm.Session) -> None:
     """Test GET /institutions/<uuid>/batch/<uuid>/eda with batch containing no STUDENT files."""
-    import pandas as pd
-    
     # Create a batch with only COURSE files
     batch_with_course = BatchTable(
         id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
