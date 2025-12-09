@@ -556,9 +556,7 @@ def read_batch_files_as_dataframes(
         HTTPException: If no valid files found
     """
     file_dataframes: Dict[str, pd.DataFrame] = {}
-    is_local = env_vars.get("ENV", "").upper() == "LOCAL"
-    # For LOCAL development, use DEV GCS buckets for file storage
-    bucket_name = f"dev_{inst_id}" if is_local else get_external_bucket_name(inst_id)
+    bucket_name = get_external_bucket_name(inst_id)
     
     # Temporary storage: file_record -> DataFrame
     loaded_files: Dict[Any, pd.DataFrame] = {}
