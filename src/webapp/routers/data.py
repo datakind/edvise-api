@@ -646,10 +646,11 @@ def get_term_counts(df: pd.DataFrame, cohort_years: List[str], term_name: str) -
     Returns:
         List of student counts, one per cohort year
     """
-    return (df[df['cohort_term'] == term_name]
-            .groupby('cohort').size()
-            .reindex(cohort_years, fill_value=0)
-            .astype(int).tolist())
+    result_series = (df[df['cohort_term'] == term_name]
+                     .groupby('cohort').size()
+                     .reindex(cohort_years, fill_value=0)
+                     .astype(int))
+    return [int(x) for x in result_series.tolist()]  # Explicitly convert to List[int]
 
 
 @router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
