@@ -554,14 +554,11 @@ def read_batch_files_as_dataframes(
     """
     file_dataframes: Dict[str, pd.DataFrame] = {}
     is_local = env_vars.get("ENV", "").upper() == "LOCAL"
-    bucket_name = get_external_bucket_name(inst_id)
+    # For LOCAL development, use DEV GCS buckets for file storage
+    bucket_name = f"dev_{inst_id}" if is_local else get_external_bucket_name(inst_id)
     
-    # For LOCAL mode, set up local test storage path
-    local_test_storage_path = None
-    if is_local:
-        project_root = pathlib.Path(__file__).parent.parent.parent.parent
-        local_test_storage_path = project_root.parent / "test_cloud_storage" / "validated"
-        logger.info(f"LOCAL mode: Will check local storage at {local_test_storage_path}")
+    # Temporary storage: file_record -> DataFrame
+    loaded_files: Dict[Any, pd.DataFrame] = {}
     
     for file_record in batch_files:
         file_name = file_record.name
@@ -573,42 +570,43 @@ def read_batch_files_as_dataframes(
         
         df = None
         
-        # Try local filesystem first in LOCAL mode
-        if is_local and local_test_storage_path:
-            local_file_path = local_test_storage_path / file_name
-            if local_file_path.exists():
-                try:
-                    df = pd.read_csv(local_file_path)
-                    logger.info(f"Loaded {file_name} from local filesystem ({len(df)} rows)")
-                except Exception as e:
-                    logger.warning(f"Failed to read local file {local_file_path}: {e}")
-        
         # Fall back to GCS using StorageControl
-        if df is None:
-            try:
-                blob_path = f"validated/{file_name}"
-                df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
-                logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
-            except ValueError as e:
-                logger.warning(f"File not found in GCS: {e}")
-            except Exception as e:
-                logger.error(f"Failed to read from GCS: {e}")
+        try:
+            blob_path = f"validated/{file_name}"
+            df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
+            logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
+        except ValueError as e:
+            logger.warning(f"File not found in GCS: {e}")
+        except Exception as e:
+            logger.error(f"Failed to read from GCS: {e}")
         
         if df is not None:
-            file_dataframes[file_name] = df
+            loaded_files[file_record] = df
     
-    if not file_dataframes:
-        error_msg = f"No valid input files found in batch"
-        if is_local and local_test_storage_path:
-            error_msg += f" (checked local: {local_test_storage_path} and GCS: {bucket_name}/validated/)"
-        else:
-            error_msg += f" (checked GCS: {bucket_name}/validated/)"
+    if not loaded_files:
+        error_msg = f"No valid input files found in batch (checked GCS: {bucket_name}/validated/)"
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=error_msg,
         )
     
-    return file_dataframes
+    # Group by schema type and combine DataFrames
+    schema_dataframes: Dict[str, List[pd.DataFrame]] = {}
+    for file_record, df in loaded_files.items():
+        for schema in file_record.schemas:
+            if schema not in schema_dataframes:
+                schema_dataframes[schema] = []
+            schema_dataframes[schema].append(df)
+    
+    result = {}
+    for schema, dfs in schema_dataframes.items():
+        if len(dfs) == 1:
+            result[schema] = dfs[0]
+        else:
+            result[schema] = pd.concat(dfs, ignore_index=True)
+            logger.info(f"Combined {len(dfs)} files for schema {schema} ({len(result[schema])} total rows)")
+    
+    return result
 
 
 def calculate_gpa_series(df: pd.DataFrame, cohort_years: List[str], grouping_col: str, category_value: str) -> List[float]:
@@ -703,8 +701,15 @@ def get_eda_data(
     file_dataframes = read_batch_files_as_dataframes(
         inst_id, batch_files, storage_control
     )
-    df_cohort = file_dataframes['eda_test_cohort_file.csv']
-    df_course = file_dataframes['eda_test_course_file.csv']
+    df_cohort = file_dataframes.get('STUDENT')
+    df_course = file_dataframes.get('COURSE')
+    
+    if df_cohort is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No STUDENT schema files found in batch for EDA.",
+        )
+    
     cohort_years = sorted(df_cohort['Cohort'].unique().tolist())
     
     return EdaDataResponse(
