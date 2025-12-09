@@ -59,9 +59,9 @@ LOCAL_USER_EMAIL = "tester@datakind.org"
 LOCAL_PASSWORD = "tester_password"
 DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
 
-# USC Beaufort - same ID as DEV for testing
-USCB_INST_UUID = uuid.UUID("942d4b0e-12e7-4d2a-9187-9508ae3cef7c")
-USCB_BATCH_UUID = uuid.UUID("3182f472-e079-4678-a0a1-9ca5ead6c49a")
+# Test institution - same ID as DEV USC Beaufort for testing
+TEST_INST_UUID = uuid.UUID("942d4b0e-12e7-4d2a-9187-9508ae3cef7c")
+TEST_BATCH_UUID = uuid.UUID("3182f472-e079-4678-a0a1-9ca5ead6c49a")
 
 
 @event.listens_for(Mapper, "before_insert")
@@ -113,7 +113,7 @@ def init_db(env: str) -> None:
             # USC Beaufort - matches DEV for testing
             session.merge(
                 InstTable(
-                    id=USCB_INST_UUID,
+                    id=TEST_INST_UUID,
                     name="University of South Carolina - Beaufort",
                     state="SC",
                     pdp_id="345000",
@@ -178,62 +178,49 @@ def init_db(env: str) -> None:
                 session.merge(test_file_2)
                 session.merge(test_batch)
                 
-                # Create test files for EDA test institution (USCB_INST_UUID)
-                eda_test_file_1 = FileTable(
-                    id=uuid.UUID("a1b2c3d4-5e6f-7890-abcd-ef1234567890"),
-                    inst_id=USCB_INST_UUID,
-                    name="eda_test_course_file.csv",
+                # Create test files for EDA test institution (TEST_INST_UUID)
+                # Real files from DEV batch 3182f472e0794678a0a19ca5ead6c49a
+                test_file_student = FileTable(
+                    id=uuid.UUID("f1d7c0a4-5211-459f-a79a-a1c2752f45c5"),
+                    inst_id=TEST_INST_UUID,
+                    name="1762967705679_AO1600pdp_AO1600_AR_DEIDENTIFIED_STUDYID_20250522120554.csv",
                     source="MANUAL_UPLOAD",
-                    uploader=LOCAL_USER_UUID,
-                    sst_generated=False,
-                    valid=True,
-                    schemas=["COURSE"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-                eda_test_file_2 = FileTable(
-                    id=uuid.UUID("b2c3d4e5-6f78-9012-bcde-f23456789012"),
-                    inst_id=USCB_INST_UUID,
-                    name="eda_test_cohort_file.csv",
-                    source="MANUAL_UPLOAD",
-                    uploader=LOCAL_USER_UUID,
+                    uploader=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
                     sst_generated=False,
                     valid=True,
                     schemas=["STUDENT"],
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
                 )
-                eda_test_file_3 = FileTable(
-                    id=uuid.UUID("c3d4e5f6-7890-1234-cdef-345678901234"),
-                    inst_id=USCB_INST_UUID,
-                    name="eda_test_financial_file.csv",
+                test_file_course = FileTable(
+                    id=uuid.UUID("d19d0129-96de-464c-98e9-694996965c7b"),
+                    inst_id=TEST_INST_UUID,
+                    name="1762967705683_AO1600pdp_AO1600_COURSE_LEVEL_AR_DEIDENTIFIED_STUDYID_20250522120554.csv",
                     source="MANUAL_UPLOAD",
-                    uploader=LOCAL_USER_UUID,
+                    uploader=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
                     sst_generated=False,
                     valid=True,
-                    schemas=["FINANCIAL"],
+                    schemas=["COURSE"],
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
                 )
                 
-                # Create test batch for EDA dashboard
-                eda_test_batch = BatchTable(
-                    id=USCB_BATCH_UUID,
-                    inst_id=USCB_INST_UUID,
-                    name="eda_test_batch",
-                    completed=True,
-                    created_by=LOCAL_USER_UUID,
+                # Test batch - matches DEV USC Beaufort
+                test_batch = BatchTable(
+                    id=TEST_BATCH_UUID,
+                    inst_id=TEST_INST_UUID,
+                    name="Batch_2025-11-12_1762967767400",
+                    completed=False,
+                    created_by=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
                 )
-                # Associate files with EDA test batch
-                eda_test_batch.files.add(eda_test_file_1)
-                eda_test_batch.files.add(eda_test_file_2)
-                eda_test_batch.files.add(eda_test_file_3)
-                session.merge(eda_test_file_1)
-                session.merge(eda_test_file_2)
-                session.merge(eda_test_file_3)
-                session.merge(eda_test_batch)
+                # Associate files with batch
+                test_batch.files.add(test_file_student)
+                test_batch.files.add(test_file_course)
+                session.merge(test_file_student)
+                session.merge(test_file_course)
+                session.merge(test_batch)
             session.commit()
     except Exception as e:
         session.rollback()
