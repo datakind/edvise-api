@@ -210,7 +210,7 @@ def init_db(env: str) -> None:
                     id=TEST_BATCH_UUID,
                     inst_id=TEST_INST_UUID,
                     name="Batch_2025-11-12_1762967767400",
-                    completed=False,
+                    completed=True,
                     created_by=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
