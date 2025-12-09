@@ -519,12 +519,12 @@ class StackedBarSeries(BaseModel):
 
 class EdaDataResponse(BaseModel):
     """Complete EDA data response matching frontend expectations."""
-    summary_stats: SummaryStats
-    gpa_by_enrollment_type: GpaChartData
-    gpa_by_enrollment_intensity: GpaChartData
-    students_by_cohort_term: TermData
-    course_enrollments: TermData
-    degree_types: List[DegreeTypeData]
+    summary_stats: Optional[SummaryStats] = None
+    gpa_by_enrollment_type: Optional[GpaChartData] = None
+    gpa_by_enrollment_intensity: Optional[GpaChartData] = None
+    students_by_cohort_term: Optional[TermData] = None
+    course_enrollments: Optional[TermData] = None
+    degree_types: Optional[List[DegreeTypeData]] = None
     enrollment_type_by_intensity: Dict[str, Any]  # Categories and series
     pell_recipient_by_first_gen: Dict[str, Any]  # Categories and series
     student_age_by_gender: Dict[str, Any]  # Categories and series
@@ -615,17 +615,18 @@ def calculate_gpa_series(df: pd.DataFrame, cohort_years: List[str], grouping_col
     Args:
         df: DataFrame (cohort data)
         cohort_years: List of cohort years
-        grouping_col: Column to filter by (e.g., 'Enrollment Type')
+        grouping_col: Column to filter by (e.g., 'enrollment_type')
         category_value: Specific value to filter for (e.g., 'First-Time')
     
     Returns:
         List of GPA values, one per cohort year
     """
+
     # Filter by category
     filtered = df[df[grouping_col] == category_value]
     
     # Group by cohort and calculate mean GPA
-    gpa_by_cohort = filtered.groupby('Cohort')['GPA Group Year 1'].mean()
+    gpa_by_cohort = pd.to_numeric(filtered['gpa_group_year_1'], errors='coerce').groupby(filtered['cohort']).mean()
     
     # Convert to list aligned with cohort_years
     data = [round(gpa_by_cohort.get(year, 0), 1) for year in cohort_years]
@@ -644,8 +645,8 @@ def get_term_counts(df: pd.DataFrame, cohort_years: List[str], term_name: str) -
     Returns:
         List of student counts, one per cohort year
     """
-    return (df[df['Cohort Term'] == term_name]
-            .groupby('Cohort').size()
+    return (df[df['cohort_term'] == term_name]
+            .groupby('cohort').size()
             .reindex(cohort_years, fill_value=0)
             .astype(int).tolist())
 
@@ -710,26 +711,26 @@ def get_eda_data(
             detail="No STUDENT schema files found in batch for EDA.",
         )
     
-    cohort_years = sorted(df_cohort['Cohort'].unique().tolist())
+    cohort_years = sorted(df_cohort['cohort'].unique().tolist())
     
     return EdaDataResponse(
         summary_stats=SummaryStats(
-            total_students=f"{df_cohort['Student GUID'].nunique():,}",
-            transfer_students=f"{(df_cohort['Enrollment Type'] == 'Transfer-In').sum():,}",
-            avg_year1_gpa_all_students=f"{df_cohort['GPA Group Year 1'].mean():.2f}",
+            total_students=f"{df_cohort['study_id'].nunique():,}",
+            transfer_students=f"{(df_cohort['enrollment_type'] == 'Transfer-In').sum():,}",
+            avg_year1_gpa_all_students=f"{pd.to_numeric(df_cohort['gpa_group_year_1'], errors='coerce').mean():.2f}",
         ),
         gpa_by_enrollment_type=GpaChartData(
             cohort_years=cohort_years,
             series=[
-                GpaSeriesData(name="First Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Type', 'First-Time')),
-                GpaSeriesData(name="Transfer Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Type', 'Transfer-In')),
+                GpaSeriesData(name="First Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'enrollment_type', 'First-Time')),
+                GpaSeriesData(name="Transfer Student", data=calculate_gpa_series(df_cohort, cohort_years, 'enrollment_type', 'Transfer-In')),
             ],
         ),
         gpa_by_enrollment_intensity=GpaChartData(
             cohort_years=cohort_years,
             series=[
-                GpaSeriesData(name="Full Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Intensity First Term', 'Full-Time')),
-                GpaSeriesData(name="Part Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'Enrollment Intensity First Term', 'Part-Time')),
+                GpaSeriesData(name="Full Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'enrollment_intensity_first_term', 'Full-Time')),
+                GpaSeriesData(name="Part Time Student", data=calculate_gpa_series(df_cohort, cohort_years, 'enrollment_intensity_first_term', 'Part-Time')),
             ],
         ),
         students_by_cohort_term=TermData(
@@ -746,11 +747,11 @@ def get_eda_data(
         ),
         degree_types=[
             DegreeTypeData(
-                value=int(round(count / df_cohort['Credential Type Sought Year 1'].count() * 100)),
+                value=int(round(count / df_cohort['credential_type_sought_year_1'].count() * 100)),
                 name=str(degree_type),
                 color=["#F79222", "#00CFEA", "#25A95A", "#A92532", "#385981"][i % 5]
             )
-            for i, (degree_type, count) in enumerate(df_cohort['Credential Type Sought Year 1'].value_counts().items())
+            for i, (degree_type, count) in enumerate(df_cohort['credential_type_sought_year_1'].value_counts().items())
         ],
         enrollment_type_by_intensity={
             "categories": ['First-Time', 'Re-Admit', 'Transfer-In'],
