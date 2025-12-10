@@ -557,7 +557,7 @@ def read_batch_files_as_dataframes(
         storage_control: StorageControl instance for GCS access
 
     Returns:
-        Dictionary mapping file_name -> pandas.DataFrame
+        Dictionary mapping schema_type -> pandas.DataFrame
 
     Raises:
         HTTPException: If no valid files found
@@ -566,6 +566,7 @@ def read_batch_files_as_dataframes(
 
     # Temporary storage: file_record -> DataFrame
     loaded_files: Dict[Any, pd.DataFrame] = {}
+    missing_files: List[str] = []
 
     for file_record in batch_files:
         file_name = file_record.name
@@ -577,21 +578,30 @@ def read_batch_files_as_dataframes(
 
         df = None
 
-        # Fall back to GCS using StorageControl
+        # Read from GCS
         try:
             blob_path = f"validated/{file_name}"
             df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
             logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
         except ValueError as e:
             logger.warning(f"File not found in GCS: {e}")
+            missing_files.append(file_name)
         except Exception as e:
             logger.error(f"Failed to read from GCS: {e}")
+            missing_files.append(file_name)
 
         if df is not None:
             loaded_files[file_record] = df
 
     if not loaded_files:
         error_msg = f"No valid input files found in batch (checked GCS: {bucket_name}/validated/)"
+        if missing_files:
+            error_msg += f". Expected files not found: {', '.join(missing_files[:5])}"
+            if len(missing_files) > 5:
+                error_msg += f" (and {len(missing_files) - 5} more)"
+        error_msg += (
+            ". Files must be uploaded and validated before they can be used for EDA."
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=error_msg,
