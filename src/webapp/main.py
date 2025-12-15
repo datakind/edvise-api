@@ -116,7 +116,7 @@ async def access_token_from_api_key(
         minutes=int(cast(str, env_vars["ACCESS_TOKEN_EXPIRE_MINUTES"]))
     )
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user.email}, expires_delta=access_token_expires # type: ignore
     )
     return Token(access_token=access_token, token_type="bearer")
 
@@ -125,7 +125,7 @@ async def access_token_from_api_key(
 async def read_cross_inst_users(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-):
+) -> Any:
     """Get users that don't have institution specifications.
     (datakinders or people who haven't set their institution yet)."""
     if not current_user.is_datakinder():
@@ -143,7 +143,7 @@ async def read_cross_inst_users(
         )
         .all()
     )
-    res = []
+    res: list = []
     if not query_result or len(query_result) == 0:
         return res
 
@@ -189,7 +189,7 @@ async def set_datakinders(
         .all()
     )
 
-    res = []
+    res: list = []
     if not query_result:
         return res
     for elem in query_result:
@@ -254,7 +254,7 @@ async def generate_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database write of the API key duplicate entries.",
         )
-    return {
+    return { # type: ignore
         "access_type": query_result[0][0].access_type,
         "key": generated_key_value,
         "inst_id": (
