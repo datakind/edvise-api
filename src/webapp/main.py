@@ -1,7 +1,7 @@
 """Main file for the SST API."""
 
 import logging
-from typing import Any, Annotated
+from typing import Any, Annotated, Optional, cast
 from datetime import timedelta
 import secrets
 from fastapi import FastAPI, Depends, HTTPException, status, Security
@@ -96,7 +96,9 @@ def read_root() -> Any:
 @app.post("/token-from-api-key")
 async def access_token_from_api_key(
     sql_session: Annotated[Session, Depends(get_session)],
-    api_key_enduser_tuple: str = Security(get_api_key),
+    api_key_enduser_tuple: tuple[str, Optional[str], Optional[str]] = Security(
+        get_api_key
+    ),
 ) -> Token:
     """Generate a token from an API key."""
     local_session.set(sql_session)
@@ -111,7 +113,7 @@ async def access_token_from_api_key(
         )
 
     access_token_expires = timedelta(
-        minutes=int(env_vars["ACCESS_TOKEN_EXPIRE_MINUTES"])
+        minutes=int(cast(str, env_vars["ACCESS_TOKEN_EXPIRE_MINUTES"]))
     )
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
