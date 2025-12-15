@@ -116,7 +116,8 @@ async def access_token_from_api_key(
         minutes=int(cast(str, env_vars["ACCESS_TOKEN_EXPIRE_MINUTES"]))
     )
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires  # type: ignore
+        data={"sub": user.email},
+        expires_delta=access_token_expires,  # type: ignore
     )
     return Token(access_token=access_token, token_type="bearer")
 
