@@ -1409,7 +1409,7 @@ def add_custom_school_job(
             id=job_run_id,
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
-            batch_name="No batch name (manual custom school job)",
+            batch_name=f"{model_name}_{triggered_timestamp}",
             output_filename=f"{job_run_id}/inference_output.csv",
             model_id=query_result[0][0].id,
             output_valid=False,
