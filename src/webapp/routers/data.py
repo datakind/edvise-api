@@ -2,20 +2,15 @@
 
 import uuid
 from datetime import datetime, date
-from databricks.sdk import WorkspaceClient
-from typing import Annotated, Any, Dict, List, cast, IO, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 import os
 import logging
 from sqlalchemy.exc import IntegrityError
-from ..config import databricks_vars, env_vars, gcs_vars
-import tempfile
-import pathlib
 import re
 from ..validation import HardValidationError
 
@@ -30,7 +25,6 @@ from ..utilities import (
     DataSource,
     get_external_bucket_name,
     decode_url_piece,
-    databricksify_inst_name,
 )
 
 from ..database import (
@@ -39,6 +33,8 @@ from ..database import (
     BatchTable,
     FileTable,
     InstTable,
+    JobTable,
+    ModelTable,
     SchemaRegistryTable,
     DocType,
 )
@@ -47,6 +43,7 @@ from ..databricks import DatabricksControl
 from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
+from ..config import env_vars
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
@@ -1353,450 +1350,85 @@ def get_upload_url(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-## FE Inference Tables
-
-
-# Get SHAP Values for Inference
-@router.get("/{inst_id}/inference/top-features/{job_run_id}")
-def get_inference_top_features(
+@router.post("/{inst_id}/add-custom-school-job/{job_run_id}")
+def add_custom_school_job(
     inst_id: str,
     job_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns top n features table for a specific institution."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"inference_{job_run_id}_features_with_most_impact",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-# Get Box plot values
-@router.get("/{inst_id}/inference/features-boxplot-stat/{job_run_id}")
-def get_inference_feature_boxstats(
-    inst_id: str,
-    job_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-    feature_name: Optional[str] = Query(
-        None, description="If provided, filter by this feature name"
-    ),
-) -> List[dict[str, Any]]:
-    """Returns box-plot stats for an institution/run. If `feature_name` is supplied,
-    only rows for that feature are returned."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"inference_{job_run_id}_box_plot_table",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-        if not feature_name:
-            return rows
-
-        # Helper: extract feature_name from various shapes (top-level or JSON column)
-        def row_feature_name(row: dict[str, Any]) -> Optional[str]:
-            # common case: it's a top-level column
-            if "feature_name" in row and row["feature_name"] is not None:
-                return str(row["feature_name"])
-            # fallback: search any dict-valued column for a 'feature_name' key
-            for v in row.values():
-                if (
-                    isinstance(v, dict)
-                    and "feature_name" in v
-                    and v["feature_name"] is not None
-                ):
-                    return str(v["feature_name"])
-            return None
-
-        filtered = [r for r in rows if row_feature_name(r) == feature_name]
-
-        if not filtered:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Feature '{feature_name}' not found for run_id '{job_run_id}'.",
-            )
-
-        return filtered
-
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-# Get SHAP Values for Inference
-@router.get("/{inst_id}/inference/support-overview/{job_run_id}")
-def get_inference_support_overview(
-    inst_id: str,
-    job_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns support score distribution table for a  specific institution."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"inference_{job_run_id}_support_overview",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-@router.get("/{inst_id}/inference/feature_importance/{job_run_id}")
-def get_inference_feature_importance(
-    inst_id: str,
-    job_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns feature importance table for a specific institution."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"inference_{job_run_id}_shap_feature_importance",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-## FE Training Tables
-
-
-@router.get("/{inst_id}/training/feature_importance/{experiment_run_id}")
-def get_training_feature_importance(
-    inst_id: str,
-    experiment_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns training feature importance table for a specific institution."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_shap_feature_importance",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-@router.get("/{inst_id}/training/confusion_matrix/{experiment_run_id}")
-def get_training_confusion_matrix(
-    inst_id: str,
-    experiment_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns training confusion matrix table for a specific instituion."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_confusion_matrix",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-@router.get("/{inst_id}/training/roc_curve/{experiment_run_id}")
-def get_training_roc_curve(
-    inst_id: str,
-    experiment_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns training roc curve table for a specific institution."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_roc_curve",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-@router.get("/{inst_id}/training/support-overview/{experiment_run_id}")
-def get_training_support_overview(
-    inst_id: str,
-    experiment_run_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-) -> List[dict[str, Any]]:
-    """Returns training support overview table for a specific institution."""
-    # raise error at this level instead bc otherwise it's getting wrapped as a 200
-    has_access_to_inst_or_err(inst_id, current_user)
-    local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
-    if not query_result or len(query_result) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
-        )
-
-    try:
-        dbc = DatabricksControl()
-        rows = dbc.fetch_table_data(
-            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
-            inst_name=f"{query_result[0][0].name}",
-            table_name=f"training_{experiment_run_id}_support_overview",
-            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
-        )
-
-        return rows
-    except ValueError as ve:
-        # Return a 400 error with the specific message from ValueError
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
-
-
-@router.get("/{inst_id}/training/model-cards/{model_name}")
-def get_model_cards(
-    inst_id: str,
     model_name: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> FileResponse:
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """Fill in a JobTable ."""
     has_access_to_inst_or_err(inst_id, current_user)
+    has_full_data_access_or_err(current_user, "this model")
     local_session.set(sql_session)
-    query_result = (
+
+    model_name = decode_url_piece(model_name)
+    inst_result = (
         local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .execute(
+            select(InstTable).where(
+                and_(
+                    InstTable.id == str_to_uuid(inst_id),
+                )
+            )
+        )
         .all()
     )
-    if not query_result or len(query_result) == 0:
+
+    query_result = (
+        local_session.get()
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .all()
+    )
+
+    if not inst_result or not query_result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found.",
-        )
-    if len(query_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution duplicates found.",
+            detail="Institution or model does not exist.",
         )
 
     try:
-        w = WorkspaceClient(
-            host=databricks_vars["DATABRICKS_HOST_URL"],
-            google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        triggered_timestamp = datetime.now()
+
+        latest_model_version = databricks_control.fetch_model_version(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=inst_result[0][0].name,
+            model_name=model_name,
         )
 
-        LOGGER.info("Successfully created Databricks WorkspaceClient.")
-    except Exception as e:
-        LOGGER.exception(
-            "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
-            databricks_vars["DATABRICKS_HOST_URL"],
-            gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        job = JobTable(
+            id=job_run_id,
+            triggered_at=triggered_timestamp,
+            created_by=str_to_uuid(current_user.user_id),
+            batch_name=f"{model_name}_{triggered_timestamp}",  # update later when we figure out how to add batches to custom jobs
+            output_filename=f"{job_run_id}/inference_output.csv",
+            model_id=query_result[0][0].id,
+            output_valid=False,
+            completed=True,
+            model_version=latest_model_version.version,
+            model_run_id=latest_model_version.run_id,
         )
-        raise ValueError(
-            f"get_model_cards(): Workspace client initialization failed: {e}"
-        )
+        local_session.get().add(job)
 
-    try:
-        env = str(env_vars["ENV"]).strip().upper()
-        SCHEMAS = {"DEV": "dev_sst_02", "STAGING": "staging_sst_01"}
-        if env not in SCHEMAS:
-            raise ValueError(
-                f"Unsupported ENV {env_vars.get('ENV')!r}; expected DEV or STAGING"
-            )
-        env_schema = SCHEMAS[env]
-
-        volume_path = f"/Volumes/{env_schema}/{databricksify_inst_name(query_result[0][0].name)}_gold/gold_volume/model_cards/model-card-{model_name}.pdf"
-        LOGGER.info(f"Attempting to download from {volume_path}")
-        response = w.files.download(volume_path)
-        stream = cast(IO[bytes], response.contents)
-        pdf_bytes = stream.read()
-
-        LOGGER.info("Download successful, received %d bytes", len(pdf_bytes))
-    except Exception as e:
-        LOGGER.exception(f"Failed to fetch model card: {e}")
-        raise HTTPException(500, detail=f"Failed to fetch model card: {e}")
-
-    # Stream back as FileResponse
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.write(pdf_bytes)
-    tmp.flush()
-
-    return FileResponse(
-        tmp.name,
-        filename=pathlib.Path(tmp.name).name,
-        media_type="application/pdf",
-    )
+        return {
+            "inst_id": inst_id,
+            "m_name": model_name,
+            "run_id": job_run_id,
+            "output_filename": f"{job_run_id}/inference_output.csv",
+            "model_version": latest_model_version.version,
+            "model_run_id": latest_model_version.run_id,
+            "created_by": current_user.user_id,
+            "triggered_at": triggered_timestamp,
+        }
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
