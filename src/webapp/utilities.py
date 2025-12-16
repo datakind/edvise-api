@@ -390,7 +390,11 @@ def model_owner_and_higher_or_err(user: BaseUser, resource_type: str) -> None:
 
 def prepend_env_prefix(name: str) -> Any:
     """Prepend the env prefix. At this point the value should not be empty as we checked on app startup."""
-    return str(env_vars["ENV"]).lower() + "_" + name
+    env = str(env_vars["ENV"]).lower()
+    # Use dev_ prefix for LOCAL environment
+    if env == "local":
+        env = "dev"
+    return env + "_" + name
 
 
 def uuid_to_str(uuid_val: uuid.UUID) -> Any:
