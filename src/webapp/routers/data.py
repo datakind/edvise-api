@@ -1412,7 +1412,7 @@ def add_custom_school_job(
             batch_name=f"{model_name}_{triggered_timestamp}",  # update later when we figure out how to add batches to custom jobs
             output_filename=f"{job_run_id}/inference_output.csv",
             model_id=query_result[0][0].id,
-            output_valid=False,
+            output_valid=True,
             completed=True,
             model_version=latest_model_version.version,
             model_run_id=latest_model_version.run_id,
