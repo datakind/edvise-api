@@ -13,6 +13,8 @@ import logging
 from sqlalchemy.exc import IntegrityError
 import re
 from ..validation import HardValidationError
+import pandas as pd
+from cachetools import TTLCache
 
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -49,6 +51,11 @@ from ..config import env_vars
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+# Cache for EDA data - TTL of 10 minutes (600 seconds)
+# Cache key format: f"{inst_id}:{batch_id}"
+EDA_CACHE_TTL = int(os.getenv("EDA_CACHE_TTL", "600"))  # Default 10 minutes
+EDA_CACHE: Any = TTLCache(maxsize=64, ttl=EDA_CACHE_TTL)
 
 router = APIRouter(
     prefix="/institutions",
@@ -468,6 +475,543 @@ def read_batch_info(
             }
         )
     return {"batches": [batch_info], "files": data_infos}
+
+
+## EDA (Exploratory Data Analysis) Endpoints
+
+
+class SummaryStats(BaseModel):
+    """Summary statistics for the EDA dashboard."""
+
+    total_students: str
+    transfer_students: str
+    avg_year1_gpa_all_students: str
+
+
+class GpaSeriesData(BaseModel):
+    """GPA data series for a chart."""
+
+    name: str
+    data: List[float]
+
+
+class GpaChartData(BaseModel):
+    """GPA chart data with cohort years and series."""
+
+    cohort_years: List[str]
+    series: List[GpaSeriesData]
+
+
+class TermData(BaseModel):
+    """Term-based data (fall, winter, spring, summer)."""
+
+    fall: List[int]
+    winter: List[int]
+    spring: List[int]
+    summer: List[int]
+
+
+class DegreeTypeData(BaseModel):
+    """Degree type data for donut chart."""
+
+    value: int
+    name: str
+    color: str
+
+
+class StackedBarSeries(BaseModel):
+    """Series data for stacked bar charts."""
+
+    name: str
+    type: str = "bar"
+    stack: str
+    data: List[int]
+    color: str
+
+
+class EdaDataResponse(BaseModel):
+    """Complete EDA data response matching frontend expectations."""
+
+    summary_stats: Optional[SummaryStats] = None
+    gpa_by_enrollment_type: Optional[GpaChartData] = None
+    gpa_by_enrollment_intensity: Optional[GpaChartData] = None
+    students_by_cohort_term: Optional[TermData] = None
+    course_enrollments: Optional[TermData] = None
+    degree_types: Optional[List[DegreeTypeData]] = None
+    enrollment_type_by_intensity: Dict[str, Any]  # Categories and series
+    pell_recipient_by_first_gen: Dict[str, Any]  # Categories and series
+    student_age_by_gender: Dict[str, Any]  # Categories and series
+    race_by_pell_status: Dict[str, Any]  # Categories and series
+
+
+def read_batch_files_as_dataframes(
+    inst_id: str,
+    batch_files: Any,  # Set[FileTable]
+    storage_control: StorageControl,
+) -> Dict[str, pd.DataFrame]:
+    """Read CSV files from a batch and return as DataFrames.
+
+    Args:
+        inst_id: Institution ID
+        batch_files: Set of FileTable objects from the batch
+        storage_control: StorageControl instance for GCS access
+
+    Returns:
+        Dictionary mapping schema_type -> pandas.DataFrame
+
+    Raises:
+        HTTPException: If no valid files found
+    """
+    bucket_name = get_external_bucket_name(inst_id)
+
+    # Temporary storage: file_record -> DataFrame
+    loaded_files: Dict[Any, pd.DataFrame] = {}
+    missing_files: List[str] = []
+
+    for file_record in batch_files:
+        file_name = file_record.name
+
+        # Skip SST-generated output files (only process input files)
+        if file_record.sst_generated:
+            logger.debug(f"Skipping SST-generated file: {file_name}")
+            continue
+
+        df = None
+
+        # Read from GCS
+        try:
+            blob_path = f"validated/{file_name}"
+            df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
+            logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
+        except ValueError as e:
+            logger.warning(f"File not found in GCS: {e}")
+            missing_files.append(file_name)
+        except Exception as e:
+            logger.error(f"Failed to read from GCS: {e}")
+            missing_files.append(file_name)
+
+        if df is not None:
+            loaded_files[file_record] = df
+
+    if not loaded_files:
+        error_msg = f"No valid input files found in batch (checked GCS: {bucket_name}/validated/)"
+        if missing_files:
+            error_msg += f". Expected files not found: {', '.join(missing_files[:5])}"
+            if len(missing_files) > 5:
+                error_msg += f" (and {len(missing_files) - 5} more)"
+        error_msg += (
+            ". Files must be uploaded and validated before they can be used for EDA."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_msg,
+        )
+
+    # Group by schema type and combine DataFrames
+    schema_dataframes: Dict[str, List[pd.DataFrame]] = {}
+    for file_record, df in loaded_files.items():
+        for schema in file_record.schemas:
+            if schema not in schema_dataframes:
+                schema_dataframes[schema] = []
+            schema_dataframes[schema].append(df)
+
+    result = {}
+    for schema, dfs in schema_dataframes.items():
+        if len(dfs) == 1:
+            result[schema] = dfs[0]
+        else:
+            result[schema] = pd.concat(dfs, ignore_index=True)
+            logger.info(
+                f"Combined {len(dfs)} files for schema {schema} ({len(result[schema])} total rows)"
+            )
+
+    return result
+
+
+def calculate_gpa_series(
+    df: pd.DataFrame, cohort_years: List[str], grouping_col: str, category_value: str
+) -> List[float]:
+    """Calculate GPA data for one category across cohort years.
+
+    Args:
+        df: DataFrame (cohort data)
+        cohort_years: List of cohort years
+        grouping_col: Column to filter by (e.g., 'enrollment_type')
+        category_value: Specific value to filter for (e.g., 'First-Time')
+
+    Returns:
+        List of GPA values, one per cohort year
+    """
+
+    # Filter by category
+    filtered = df[df[grouping_col] == category_value]
+
+    # Group by cohort and calculate mean GPA
+    gpa_by_cohort = (
+        pd.to_numeric(filtered["gpa_group_year_1"], errors="coerce")
+        .groupby(filtered["cohort"])
+        .mean()
+    )
+
+    # Convert to list aligned with cohort_years
+    data = [round(gpa_by_cohort.get(year, 0), 1) for year in cohort_years]
+
+    return data
+
+
+def get_term_counts(
+    df: pd.DataFrame, cohort_years: List[str], term_name: str
+) -> List[int]:
+    """Get student counts for a specific term across cohort years.
+
+    Args:
+        df: DataFrame (cohort or course data)
+        cohort_years: List of cohort years
+        term_name: Term name to filter for (e.g., 'FALL', 'WINTER')
+
+    Returns:
+        List of student counts, one per cohort year
+    """
+    result_series = (
+        df[df["cohort_term"] == term_name]
+        .groupby("cohort")
+        .size()
+        .reindex(cohort_years, fill_value=0)
+        .astype(int)
+    )
+    return [int(x) for x in result_series.tolist()]  # Explicitly convert to List[int]
+
+
+@router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
+def get_eda_data(
+    inst_id: str,
+    batch_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+) -> Any:
+    """Returns EDA (Exploratory Data Analysis) data for a specific batch.
+
+    This endpoint provides all the data needed to populate the EDA dashboard,
+    including summary statistics, GPA charts, enrollment data, and demographic breakdowns.
+    Analyzes all files in the batch together to provide comprehensive insights.
+    """
+    has_access_to_inst_or_err(inst_id, current_user)
+    has_full_data_access_or_err(current_user, "EDA data")
+    local_session.set(sql_session)
+
+    # Verify batch exists and belongs to institution
+    batch_result = (
+        local_session.get()
+        .execute(
+            select(BatchTable).where(
+                and_(
+                    BatchTable.id == str_to_uuid(batch_id),
+                    BatchTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .all()
+    )
+
+    if not batch_result or len(batch_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found.",
+        )
+
+    if len(batch_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Batch duplicates found.",
+        )
+
+    batch_record = batch_result[0][0]
+    batch_files = batch_record.files
+
+    # Check cache first
+    cache_key = f"{inst_id}:{batch_id}"
+    cached_result = EDA_CACHE.get(cache_key)
+    if cached_result is not None:
+        logger.debug(f"EDA cache hit for {cache_key}")
+        return cached_result
+
+    logger.debug(f"EDA cache miss for {cache_key}, computing...")
+
+    # Read files from batch using helper function
+    file_dataframes = read_batch_files_as_dataframes(
+        inst_id, batch_files, storage_control
+    )
+    df_cohort = file_dataframes.get("STUDENT")
+    df_course = file_dataframes.get("COURSE")
+
+    if df_cohort is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No STUDENT schema files found in batch for EDA.",
+        )
+
+    cohort_years = sorted(df_cohort["cohort"].unique().tolist())
+
+    result = EdaDataResponse(
+        summary_stats=SummaryStats(
+            total_students=f"{df_cohort['study_id'].nunique():,}",
+            transfer_students=f"{(df_cohort['enrollment_type'] == 'Transfer-In').sum():,}",
+            avg_year1_gpa_all_students=f"{pd.to_numeric(df_cohort['gpa_group_year_1'], errors='coerce').mean():.2f}",
+        ),
+        gpa_by_enrollment_type=GpaChartData(
+            cohort_years=cohort_years,
+            series=[
+                GpaSeriesData(
+                    name="First Time Student",
+                    data=calculate_gpa_series(
+                        df_cohort, cohort_years, "enrollment_type", "First-Time"
+                    ),
+                ),
+                GpaSeriesData(
+                    name="Transfer Student",
+                    data=calculate_gpa_series(
+                        df_cohort, cohort_years, "enrollment_type", "Transfer-In"
+                    ),
+                ),
+            ],
+        ),
+        gpa_by_enrollment_intensity=GpaChartData(
+            cohort_years=cohort_years,
+            series=[
+                GpaSeriesData(
+                    name="Full Time Student",
+                    data=calculate_gpa_series(
+                        df_cohort,
+                        cohort_years,
+                        "enrollment_intensity_first_term",
+                        "Full-Time",
+                    ),
+                ),
+                GpaSeriesData(
+                    name="Part Time Student",
+                    data=calculate_gpa_series(
+                        df_cohort,
+                        cohort_years,
+                        "enrollment_intensity_first_term",
+                        "Part-Time",
+                    ),
+                ),
+            ],
+        ),
+        students_by_cohort_term=TermData(
+            fall=get_term_counts(df_cohort, cohort_years, "FALL"),
+            winter=get_term_counts(df_cohort, cohort_years, "WINTER"),
+            spring=get_term_counts(df_cohort, cohort_years, "SPRING"),
+            summer=get_term_counts(df_cohort, cohort_years, "SUMMER"),
+        ),
+        course_enrollments=TermData(
+            fall=get_term_counts(df_course, cohort_years, "FALL"),
+            winter=get_term_counts(df_course, cohort_years, "WINTER"),
+            spring=get_term_counts(df_course, cohort_years, "SPRING"),
+            summer=get_term_counts(df_course, cohort_years, "SUMMER"),
+        ),
+        degree_types=[
+            DegreeTypeData(
+                value=int(
+                    round(
+                        count / df_cohort["credential_type_sought_year_1"].count() * 100
+                    )
+                ),
+                name=str(degree_type),
+                color=["#F79222", "#00CFEA", "#25A95A", "#A92532", "#385981"][i % 5],
+            )
+            for i, (degree_type, count) in enumerate(
+                df_cohort["credential_type_sought_year_1"].value_counts().items()
+            )
+        ],
+        enrollment_type_by_intensity={
+            "categories": (
+                categories := sorted(df_cohort["enrollment_type"].unique().tolist())
+            ),
+            "series": [
+                {
+                    "name": "Full Time",
+                    "type": "bar",
+                    "stack": "intensity",
+                    "data": (
+                        df_cohort[
+                            df_cohort["enrollment_intensity_first_term"] == "Full-Time"
+                        ]
+                        .groupby("enrollment_type")
+                        .size()
+                        .reindex(categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": "#F79222",
+                },
+                {
+                    "name": "Part Time",
+                    "type": "bar",
+                    "stack": "intensity",
+                    "data": (
+                        df_cohort[
+                            df_cohort["enrollment_intensity_first_term"] == "Part-Time"
+                        ]
+                        .groupby("enrollment_type")
+                        .size()
+                        .reindex(categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": "#00CFEA",
+                },
+            ],
+        },
+        pell_recipient_by_first_gen={
+            "categories": (
+                pell_categories := sorted(
+                    df_cohort["pell_status_first_year"]
+                    .dropna()
+                    .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"})
+                    .loc[lambda x: x.isin(["Yes", "No"])]
+                    .unique()
+                    .tolist()
+                )
+            ),
+            "series": [
+                {
+                    "name": first_gen_normalized,
+                    "type": "bar",
+                    "stack": "firstGen",
+                    "data": (
+                        df_cohort.assign(
+                            _pell=df_cohort["pell_status_first_year"].replace(
+                                {"Y": "Yes", "N": "No", "y": "Yes", "n": "No"}
+                            ),
+                            _first_gen=df_cohort["first_gen"]
+                            .fillna("Nan")
+                            .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"}),
+                        )
+                        .query(
+                            f"_first_gen == '{first_gen_normalized}' and _pell in ['Yes', 'No']"
+                        )
+                        .groupby("_pell")
+                        .size()
+                        .reindex(pell_categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": ["#F79222", "#00CFEA", "#25A95A"][i % 3],
+                }
+                for i, first_gen_normalized in enumerate(
+                    sorted(
+                        df_cohort["first_gen"]
+                        .fillna("Nan")
+                        .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"})
+                        .unique()
+                        .tolist()
+                    )
+                )
+            ],
+        },
+        student_age_by_gender={
+            "categories": (
+                gender_categories := sorted(
+                    df_cohort["gender"].dropna().unique().tolist()
+                )
+            ),
+            "series": [
+                {
+                    "name": age_group,
+                    "type": "bar",
+                    "stack": "age",
+                    "data": (
+                        df_cohort.assign(
+                            _age_group=(
+                                (
+                                    df_cohort["student_age"]
+                                    if "student_age" in df_cohort.columns
+                                    else df_cohort["age"]
+                                    if "age" in df_cohort.columns
+                                    else pd.Series([None] * len(df_cohort))
+                                ).apply(
+                                    lambda x: (
+                                        "20 or younger"
+                                        if pd.isna(x)
+                                        or any(
+                                            term in str(x).lower()
+                                            for term in [
+                                                "20 or younger",
+                                                "20 or under",
+                                                "under 20",
+                                                "<=20",
+                                            ]
+                                        )
+                                        or (isinstance(x, (int, float)) and x <= 20)
+                                        else "20 - 24"
+                                        if any(
+                                            term in str(x).lower()
+                                            for term in ["20-24", "20 to 24", "20 - 24"]
+                                        )
+                                        or (
+                                            isinstance(x, (int, float)) and 20 < x <= 24
+                                        )
+                                        else "Older than 24"
+                                    )
+                                )
+                            )
+                        )
+                        .query(f"_age_group == '{age_group}'")
+                        .groupby("gender")
+                        .size()
+                        .reindex(gender_categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": ["#F79222", "#00CFEA", "#25A95A"][i % 3],
+                }
+                for i, age_group in enumerate(
+                    ["20 or younger", "20 - 24", "Older than 24"]
+                )
+            ],
+        },
+        race_by_pell_status={
+            "categories": (
+                race_categories := sorted(df_cohort["race"].dropna().unique().tolist())
+            ),
+            "series": [
+                {
+                    "name": pell_status_normalized,
+                    "type": "bar",
+                    "stack": "pell",
+                    "data": (
+                        df_cohort.assign(
+                            _pell=df_cohort["pell_status_first_year"].replace(
+                                {"Y": "Yes", "N": "No", "y": "Yes", "n": "No"}
+                            )
+                        )
+                        .query(
+                            f"_pell == '{pell_status_normalized}' and _pell in ['Yes', 'No']"
+                        )
+                        .groupby("race")
+                        .size()
+                        .reindex(race_categories, fill_value=0)
+                        .tolist()
+                    ),
+                    "color": ["#F79222", "#00CFEA"][i % 2],
+                }
+                for i, pell_status_normalized in enumerate(
+                    sorted(
+                        df_cohort["pell_status_first_year"]
+                        .dropna()
+                        .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"})
+                        .loc[lambda x: x.isin(["Yes", "No"])]
+                        .unique()
+                        .tolist()
+                    )
+                )
+            ],
+        },
+    )
+
+    # Cache the result before returning
+    EDA_CACHE[cache_key] = result
+    logger.debug(f"EDA result cached for {cache_key}")
+
+    return result
 
 
 @router.post("/{inst_id}/batch", response_model=BatchInfo)

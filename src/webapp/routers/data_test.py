@@ -645,3 +645,228 @@ def test_validate_failure_batch(client: TestClient) -> None:
     assert response_sftp.json()["file_types"] == ["COURSE"]
     assert response_sftp.json()["inst_id"] == uuid_to_str(USER_VALID_INST_UUID)
     assert response_sftp.json()["source"] == "MANUAL_UPLOAD"
+
+
+def test_get_eda_data_unauthorized(client: TestClient) -> None:
+    """Test GET /institutions/<uuid>/batch/<uuid>/eda with unauthorized access."""
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(UUID_INVALID)
+        + "/batch/"
+        + uuid_to_str(BATCH_UUID)
+        + "/eda"
+    )
+    assert str(response) == "<Response [401 Unauthorized]>"
+    assert (
+        response.text
+        == '{"detail":"Not authorized to read this institution\'s resources."}'
+    )
+
+
+def test_get_eda_data_batch_not_found(client: TestClient) -> None:
+    """Test GET /institutions/<uuid>/batch/<uuid>/eda with non-existent batch."""
+    fake_batch_uuid = uuid.UUID("00000000-0000-0000-0000-000000000000")
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/batch/"
+        + uuid_to_str(fake_batch_uuid)
+        + "/eda"
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Batch not found."
+
+
+def test_get_eda_data_no_student_files(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """Test GET /institutions/<uuid>/batch/<uuid>/eda with batch containing no STUDENT files."""
+    # Create a batch with only COURSE files
+    batch_with_course = BatchTable(
+        id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        inst_id=USER_VALID_INST_UUID,
+        name="batch_course_only",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    course_file = FileTable(
+        id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        inst_id=USER_VALID_INST_UUID,
+        name="course_file.csv",
+        source="MANUAL_UPLOAD",
+        batches={batch_with_course},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.COURSE],
+    )
+    session.add_all([batch_with_course, course_file])
+    session.commit()
+
+    # Mock storage to return empty (no files found)
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = ValueError("File not found")
+
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/batch/"
+        + uuid_to_str(batch_with_course.id)
+        + "/eda"
+    )
+    assert response.status_code == 404
+    # When files can't be loaded from GCS, we get "No valid input files found"
+    # The "No STUDENT schema files found" error only occurs after files are loaded
+    assert "No valid input files found" in response.json()["detail"]
+
+
+def test_get_eda_data_success(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """Test GET /institutions/<uuid>/batch/<uuid>/eda with valid data."""
+    import pandas as pd
+
+    # Create a batch with STUDENT and COURSE files
+    eda_batch = BatchTable(
+        id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+        inst_id=USER_VALID_INST_UUID,
+        name="batch_eda_test",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        completed=True,
+    )
+    student_file = FileTable(
+        id=uuid.UUID("44444444-4444-4444-4444-444444444444"),
+        inst_id=USER_VALID_INST_UUID,
+        name="student_file.csv",
+        source="MANUAL_UPLOAD",
+        batches={eda_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    course_file = FileTable(
+        id=uuid.UUID("55555555-5555-5555-5555-555555555555"),
+        inst_id=USER_VALID_INST_UUID,
+        name="course_file.csv",
+        source="MANUAL_UPLOAD",
+        batches={eda_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.COURSE],
+    )
+    session.add_all([eda_batch, student_file, course_file])
+    session.commit()
+
+    # Create mock DataFrames
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["S001", "S002", "S003", "S001"],  # S001 appears twice
+            "cohort": ["2020", "2020", "2021", "2021"],
+            "cohort_term": ["FALL", "FALL", "SPRING", "SPRING"],
+            "enrollment_type": [
+                "First-Time",
+                "Transfer-In",
+                "First-Time",
+                "Transfer-In",
+            ],
+            "enrollment_intensity_first_term": [
+                "Full-Time",
+                "Part-Time",
+                "Full-Time",
+                "Part-Time",
+            ],
+            "gpa_group_year_1": [3.5, 3.2, 3.8, 2.9],
+            "credential_type_sought_year_1": [
+                "Bachelor",
+                "Associate",
+                "Bachelor",
+                "Associate",
+            ],
+            "pell_status_first_year": ["Y", "N", "Y", "N"],
+            "first_gen": ["Y", "N", "Y", "N"],
+            "gender": ["Female", "Male", "Female", "Male"],
+            "race": ["White", "Black or African American", "Asian", "White"],
+            "student_age": ["20 - 24", "20 or younger", "Older than 24", "20 - 24"],
+        }
+    )
+
+    df_course = pd.DataFrame(
+        {
+            "study_id": ["S001", "S002", "S003"],
+            "cohort": ["2020", "2020", "2021"],
+            "cohort_term": ["FALL", "FALL", "SPRING"],
+        }
+    )
+
+    # Mock storage to return our test DataFrames
+    def mock_read_csv(bucket_name: str, blob_path: str) -> pd.DataFrame:
+        if "student" in blob_path.lower():
+            return df_student
+        elif "course" in blob_path.lower():
+            return df_course
+        else:
+            raise ValueError(f"File not found: {blob_path}")
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = mock_read_csv
+
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/batch/"
+        + uuid_to_str(eda_batch.id)
+        + "/eda"
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    # Check response structure
+    assert "summary_stats" in data
+    assert "gpa_by_enrollment_type" in data
+    assert "gpa_by_enrollment_intensity" in data
+    assert "students_by_cohort_term" in data
+    assert "course_enrollments" in data
+    assert "degree_types" in data
+    assert "enrollment_type_by_intensity" in data
+    assert "pell_recipient_by_first_gen" in data
+    assert "student_age_by_gender" in data
+    assert "race_by_pell_status" in data
+
+    # Check summary stats
+    assert data["summary_stats"]["total_students"] == "3"  # 3 unique study_ids
+    assert data["summary_stats"]["transfer_students"] == "2"  # 2 Transfer-In
+
+    # Check GPA charts have cohort years
+    assert "cohort_years" in data["gpa_by_enrollment_type"]
+    assert len(data["gpa_by_enrollment_type"]["cohort_years"]) == 2  # 2020, 2021
+    assert "2020" in data["gpa_by_enrollment_type"]["cohort_years"]
+    assert "2021" in data["gpa_by_enrollment_type"]["cohort_years"]
+
+    # Check term data structure
+    assert "fall" in data["students_by_cohort_term"]
+    assert "spring" in data["students_by_cohort_term"]
+    assert len(data["students_by_cohort_term"]["fall"]) == 2  # One per cohort year
+
+    # Check enrollment type by intensity has categories and series
+    assert "categories" in data["enrollment_type_by_intensity"]
+    assert "series" in data["enrollment_type_by_intensity"]
+    assert len(data["enrollment_type_by_intensity"]["series"]) > 0
+
+    # Check pell recipient chart structure
+    assert "categories" in data["pell_recipient_by_first_gen"]
+    assert "series" in data["pell_recipient_by_first_gen"]
+
+    # Check student age by gender structure
+    assert "categories" in data["student_age_by_gender"]
+    assert "series" in data["student_age_by_gender"]
+
+    # Check race by pell status structure
+    assert "categories" in data["race_by_pell_status"]
+    assert "series" in data["race_by_pell_status"]
