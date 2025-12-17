@@ -449,6 +449,7 @@ def get_model_cards(
             ModelTable.name == model_name,
             ModelTable.inst_id == str_to_uuid(inst_id),
         )
+        .order_by(JobTable.triggered_at.desc())
     ).first()
 
     if job_result is None or not job_result.model_run_id:
