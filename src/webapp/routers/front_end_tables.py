@@ -23,6 +23,8 @@ from ..database import (
     get_session,
     local_session,
     InstTable,
+    ModelTable,
+    JobTable,
 )
 
 from ..databricks import DatabricksControl
@@ -424,11 +426,11 @@ def get_model_cards(
 ) -> FileResponse:
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
-        .all()
-    )
+    session = local_session.get()
+    query_result = session.execute(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    ).all()
+
     if not query_result or len(query_result) == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -439,6 +441,22 @@ def get_model_cards(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Institution duplicates found.",
         )
+
+    job_result = session.scalars(
+        select(JobTable)
+        .join(ModelTable, JobTable.model_id == ModelTable.id)
+        .where(
+            ModelTable.name == model_name,
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
+    ).first()
+
+    if job_result is None or not job_result.model_run_id:
+        raise HTTPException(
+            status_code=404, detail="No model run found for this model."
+        )
+
+    run_id = job_result.model_run_id
 
     try:
         w = WorkspaceClient(
@@ -466,7 +484,7 @@ def get_model_cards(
             )
         env_schema = SCHEMAS[env]
 
-        volume_path = f"/Volumes/{env_schema}/{databricksify_inst_name(query_result[0][0].name)}_gold/gold_volume/model_cards/model-card-{model_name}.pdf"
+        volume_path = f"/Volumes/{env_schema}/{databricksify_inst_name(query_result[0][0].name)}_gold/gold_volume/model_cards/{run_id}/model-card-{model_name}.pdf"
         LOGGER.info(f"Attempting to download from {volume_path}")
         response = w.files.download(volume_path)
         stream = cast(IO[bytes], response.contents)
