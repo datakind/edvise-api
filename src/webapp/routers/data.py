@@ -514,7 +514,8 @@ class TermData(BaseModel):
 class DegreeTypeData(BaseModel):
     """Degree type data for donut chart."""
 
-    value: int
+    count: int  # Number of students with this degree type
+    percentage: float  # Percentage of total students
     name: str
 
 
@@ -811,11 +812,8 @@ def get_eda_data(
         ),
         degree_types=[
             DegreeTypeData(
-                value=int(
-                    round(
-                        count / df_cohort["credential_type_sought_year_1"].count() * 100
-                    )
-                ),
+                count=int(count),
+                percentage=round(count / df_cohort["study_id"].nunique() * 100, 2),
                 name=str(degree_type),
             )
             for i, (degree_type, count) in enumerate(
