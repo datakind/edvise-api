@@ -837,7 +837,7 @@ def get_eda_data(
                         .size()
                         .reindex(categories, fill_value=0)
                         .tolist()
-                    )
+                    ),
                 },
                 {
                     "name": "Part Time",
@@ -851,7 +851,7 @@ def get_eda_data(
                         .size()
                         .reindex(categories, fill_value=0)
                         .tolist()
-                    )
+                    ),
                 },
             ],
         },
@@ -887,7 +887,7 @@ def get_eda_data(
                         .size()
                         .reindex(pell_categories, fill_value=0)
                         .tolist()
-                    )
+                    ),
                 }
                 for i, first_gen_normalized in enumerate(
                     sorted(
@@ -952,7 +952,7 @@ def get_eda_data(
                         .size()
                         .reindex(gender_categories, fill_value=0)
                         .tolist()
-                    )
+                    ),
                 }
                 for i, age_group in enumerate(
                     ["20 or younger", "20 - 24", "Older than 24"]
@@ -981,7 +981,7 @@ def get_eda_data(
                         .size()
                         .reindex(race_categories, fill_value=0)
                         .tolist()
-                    )
+                    ),
                 }
                 for i, pell_status_normalized in enumerate(
                     sorted(
