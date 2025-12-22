@@ -925,9 +925,11 @@ def get_eda_data(
                                 (
                                     df_cohort["student_age"]
                                     if "student_age" in df_cohort.columns
-                                    else df_cohort["age"]
-                                    if "age" in df_cohort.columns
-                                    else pd.Series([None] * len(df_cohort))
+                                    else (
+                                        df_cohort["age"]
+                                        if "age" in df_cohort.columns
+                                        else pd.Series([None] * len(df_cohort))
+                                    )
                                 ).apply(
                                     lambda x: (
                                         "20 or younger"
@@ -942,15 +944,22 @@ def get_eda_data(
                                             ]
                                         )
                                         or (isinstance(x, (int, float)) and x <= 20)
-                                        else "20 - 24"
-                                        if any(
-                                            term in str(x).lower()
-                                            for term in ["20-24", "20 to 24", "20 - 24"]
+                                        else (
+                                            "20 - 24"
+                                            if any(
+                                                term in str(x).lower()
+                                                for term in [
+                                                    "20-24",
+                                                    "20 to 24",
+                                                    "20 - 24",
+                                                ]
+                                            )
+                                            or (
+                                                isinstance(x, (int, float))
+                                                and 20 < x <= 24
+                                            )
+                                            else "Older than 24"
                                         )
-                                        or (
-                                            isinstance(x, (int, float)) and 20 < x <= 24
-                                        )
-                                        else "Older than 24"
                                     )
                                 )
                             )
