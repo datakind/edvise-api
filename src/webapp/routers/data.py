@@ -514,9 +514,9 @@ class TermData(BaseModel):
 class DegreeTypeData(BaseModel):
     """Degree type data for donut chart."""
 
-    value: int
+    count: int  # Number of students with this degree type
+    percentage: float  # Percentage of total students
     name: str
-    color: str
 
 
 class StackedBarSeries(BaseModel):
@@ -526,7 +526,6 @@ class StackedBarSeries(BaseModel):
     type: str = "bar"
     stack: str
     data: List[int]
-    color: str
 
 
 class EdaDataResponse(BaseModel):
@@ -813,13 +812,9 @@ def get_eda_data(
         ),
         degree_types=[
             DegreeTypeData(
-                value=int(
-                    round(
-                        count / df_cohort["credential_type_sought_year_1"].count() * 100
-                    )
-                ),
+                count=int(count),
+                percentage=round(count / df_cohort["study_id"].nunique() * 100, 2),
                 name=str(degree_type),
-                color=["#F79222", "#00CFEA", "#25A95A", "#A92532", "#385981"][i % 5],
             )
             for i, (degree_type, count) in enumerate(
                 df_cohort["credential_type_sought_year_1"].value_counts().items()
@@ -843,7 +838,6 @@ def get_eda_data(
                         .reindex(categories, fill_value=0)
                         .tolist()
                     ),
-                    "color": "#F79222",
                 },
                 {
                     "name": "Part Time",
@@ -858,7 +852,6 @@ def get_eda_data(
                         .reindex(categories, fill_value=0)
                         .tolist()
                     ),
-                    "color": "#00CFEA",
                 },
             ],
         },
@@ -895,7 +888,6 @@ def get_eda_data(
                         .reindex(pell_categories, fill_value=0)
                         .tolist()
                     ),
-                    "color": ["#F79222", "#00CFEA", "#25A95A"][i % 3],
                 }
                 for i, first_gen_normalized in enumerate(
                     sorted(
@@ -970,7 +962,6 @@ def get_eda_data(
                         .reindex(gender_categories, fill_value=0)
                         .tolist()
                     ),
-                    "color": ["#F79222", "#00CFEA", "#25A95A"][i % 3],
                 }
                 for i, age_group in enumerate(
                     ["20 or younger", "20 - 24", "Older than 24"]
@@ -1000,7 +991,6 @@ def get_eda_data(
                         .reindex(race_categories, fill_value=0)
                         .tolist()
                     ),
-                    "color": ["#F79222", "#00CFEA"][i % 2],
                 }
                 for i, pell_status_normalized in enumerate(
                     sorted(
