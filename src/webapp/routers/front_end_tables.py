@@ -23,7 +23,6 @@ from ..database import (
     get_session,
     local_session,
     InstTable,
-    ModelTable,
     JobTable,
 )
 
@@ -445,7 +444,9 @@ def get_model_cards(
     job_result = session.scalars(
         select(JobTable)
         .where(JobTable.model_run_id == model_run_id)
-        .order_by(JobTable.triggered_at.desc())  # keep if multiple jobs can share a model_run_id
+        .order_by(
+            JobTable.triggered_at.desc()
+        )  # keep if multiple jobs can share a model_run_id
     ).first()
 
     if job_result is None or not job_result.model_run_id:
@@ -455,7 +456,7 @@ def get_model_cards(
 
     run_id = job_result.model_run_id
     model_name = job_result.model.name
-    
+
     try:
         w = WorkspaceClient(
             host=databricks_vars["DATABRICKS_HOST_URL"],
