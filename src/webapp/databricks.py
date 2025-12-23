@@ -634,6 +634,7 @@ class DatabricksControl(BaseModel):
         bucket_name: str,
         inst_query: Any,
         file_name: str,
+        catalog_name: str,
         base_schema: Dict[str, Any],  # pass base schema dict in
         extension_schema: Optional[dict] = None,  # existing extension or None
     ) -> Any:
@@ -659,7 +660,7 @@ class DatabricksControl(BaseModel):
             inst_name = inst_query.name
             inst_id = str(inst_query.id)
             config_volume_path = (
-                f"/Volumes/staging_sst_01/"
+                f"/Volumes/{catalog_name}/"
                 f"{databricksify_inst_name(inst_name)}_bronze/bronze_volume/config.toml"
             )
             LOGGER.info("Attempting to download from %s", config_volume_path)
