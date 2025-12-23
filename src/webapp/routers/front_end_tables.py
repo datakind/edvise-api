@@ -416,7 +416,7 @@ def get_training_support_overview(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-@router.get("/{inst_id}/training/model-cards/{model_name}")
+@router.get("/{inst_id}/training/model-cards/{model_run_id}")
 def get_model_cards(
     inst_id: str,
     model_run_id: str,
