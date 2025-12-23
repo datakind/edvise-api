@@ -656,9 +656,8 @@ class DatabricksControl(BaseModel):
 
         # 2) Fetch & parse config.toml to get validation_mapping
         try:
-            inst_name = inst_query[0][0].name
-            inst_id_raw = inst_query[0][0].id
-            inst_id = str(inst_id_raw)  # be robust if id is not a string
+            inst_name = inst_query.name
+            inst_id = str(inst_query.id)
             config_volume_path = (
                 f"/Volumes/staging_sst_01/"
                 f"{databricksify_inst_name(inst_name)}_bronze/bronze_volume/config.toml"

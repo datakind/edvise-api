@@ -23,7 +23,6 @@ from ..database import (
     get_session,
     local_session,
     InstTable,
-    ModelTable,
     JobTable,
 )
 
@@ -420,7 +419,7 @@ def get_training_support_overview(
 @router.get("/{inst_id}/training/model-cards/{model_name}")
 def get_model_cards(
     inst_id: str,
-    model_name: str,
+    model_run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
 ) -> FileResponse:
@@ -444,12 +443,10 @@ def get_model_cards(
 
     job_result = session.scalars(
         select(JobTable)
-        .join(ModelTable, JobTable.model_id == ModelTable.id)
-        .where(
-            ModelTable.name == model_name,
-            ModelTable.inst_id == str_to_uuid(inst_id),
-        )
-        .order_by(JobTable.triggered_at.desc())
+        .where(JobTable.model_run_id == model_run_id)
+        .order_by(
+            JobTable.triggered_at.desc()
+        )  # keep if multiple jobs can share a model_run_id
     ).first()
 
     if job_result is None or not job_result.model_run_id:
@@ -458,6 +455,7 @@ def get_model_cards(
         )
 
     run_id = job_result.model_run_id
+    model_name = job_result.model.name
 
     try:
         w = WorkspaceClient(
