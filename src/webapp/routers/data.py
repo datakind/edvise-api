@@ -906,67 +906,53 @@ def get_eda_data(
                     df_cohort["gender"].dropna().unique().tolist()
                 )
             ),
-            "series": [
-                {
-                    "name": age_group,
-                    "type": "bar",
-                    "stack": "age",
-                    "data": (
-                        df_cohort.assign(
-                            _age_group=(
-                                (
-                                    df_cohort["student_age"]
-                                    if "student_age" in df_cohort.columns
-                                    else (
-                                        df_cohort["age"]
-                                        if "age" in df_cohort.columns
-                                        else pd.Series([None] * len(df_cohort))
-                                    )
-                                ).apply(
-                                    lambda x: (
-                                        "20 or younger"
-                                        if pd.isna(x)
-                                        or any(
-                                            term in str(x).lower()
-                                            for term in [
-                                                "20 or younger",
-                                                "20 or under",
-                                                "under 20",
-                                                "<=20",
-                                            ]
-                                        )
-                                        or (isinstance(x, (int, float)) and x <= 20)
-                                        else (
-                                            "20 - 24"
-                                            if any(
-                                                term in str(x).lower()
-                                                for term in [
-                                                    "20-24",
-                                                    "20 to 24",
-                                                    "20 - 24",
-                                                ]
-                                            )
-                                            or (
-                                                isinstance(x, (int, float))
-                                                and 20 < x <= 24
-                                            )
-                                            else "Older than 24"
-                                        )
-                                    )
-                                )
-                            )
+            "series": (
+                age_col := (
+                    df_cohort["student_age"]
+                    if "student_age" in df_cohort.columns
+                    else (
+                        df_cohort["age"]
+                        if "age" in df_cohort.columns
+                        else pd.Series([None] * len(df_cohort))
+                    )
+                ),
+                age_categorized := age_col.replace(
+                    {
+                        "20 and younger": "20 or younger",
+                        ">20 - 24": "20 - 24",
+                    }
+                ).apply(
+                    lambda x: (
+                        "20 or younger"
+                        if pd.isna(x) or str(x).lower() in ["20 and younger", "20 or younger", "20 or under", "under 20", "<=20"]
+                        else (
+                            "20 - 24"
+                            if str(x).lower() in [">20 - 24", "20-24", "20 to 24", "20 - 24"] or (isinstance(x, (int, float)) and 20 < x <= 24)
+                            else "Older than 24"
                         )
-                        .query(f"_age_group == '{age_group}'")
-                        .groupby("gender")
-                        .size()
-                        .reindex(gender_categories, fill_value=0)
-                        .tolist()
-                    ),
-                }
-                for i, age_group in enumerate(
-                    ["20 or younger", "20 - 24", "Older than 24"]
-                )
-            ],
+                    )
+                ),
+                [
+                    {
+                        "name": age_group,
+                        "type": "bar",
+                        "stack": "age",
+                        "data": (
+                            df_cohort.assign(
+                                _age_group=age_categorized
+                            )
+                            .query(f"_age_group == '{age_group}'")
+                            .groupby("gender")
+                            .size()
+                            .reindex(gender_categories, fill_value=0)
+                            .tolist()
+                        ),
+                    }
+                    for i, age_group in enumerate(
+                        ["20 or younger", "20 - 24", "Older than 24"]
+                    )
+                ]
+            )[-1],
         },
         race_by_pell_status={
             "categories": (
