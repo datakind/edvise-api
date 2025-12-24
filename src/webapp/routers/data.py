@@ -924,10 +924,20 @@ def get_eda_data(
                 ).apply(
                     lambda x: (
                         "20 or younger"
-                        if pd.isna(x) or str(x).lower() in ["20 and younger", "20 or younger", "20 or under", "under 20", "<=20"]
+                        if pd.isna(x)
+                        or str(x).lower()
+                        in [
+                            "20 and younger",
+                            "20 or younger",
+                            "20 or under",
+                            "under 20",
+                            "<=20",
+                        ]
                         else (
                             "20 - 24"
-                            if str(x).lower() in [">20 - 24", "20-24", "20 to 24", "20 - 24"] or (isinstance(x, (int, float)) and 20 < x <= 24)
+                            if str(x).lower()
+                            in [">20 - 24", "20-24", "20 to 24", "20 - 24"]
+                            or (isinstance(x, (int, float)) and 20 < x <= 24)
                             else "Older than 24"
                         )
                     )
@@ -938,9 +948,7 @@ def get_eda_data(
                         "type": "bar",
                         "stack": "age",
                         "data": (
-                            df_cohort.assign(
-                                _age_group=age_categorized
-                            )
+                            df_cohort.assign(_age_group=age_categorized)
                             .query(f"_age_group == '{age_group}'")
                             .groupby("gender")
                             .size()
@@ -951,7 +959,7 @@ def get_eda_data(
                     for i, age_group in enumerate(
                         ["20 or younger", "20 - 24", "Older than 24"]
                     )
-                ]
+                ],
             )[-1],
         },
         race_by_pell_status={
