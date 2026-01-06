@@ -24,6 +24,7 @@ import json
 import gzip
 from cachetools import TTLCache
 import threading
+import re
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -634,7 +635,6 @@ class DatabricksControl(BaseModel):
         bucket_name: str,
         inst_query: Any,
         file_name: str,
-        catalog_name: str,
         base_schema: Dict[str, Any],  # pass base schema dict in
         extension_schema: Optional[dict] = None,  # existing extension or None
     ) -> Any:
@@ -644,25 +644,13 @@ class DatabricksControl(BaseModel):
             LOGGER.info("SST_SKIP_EXT_GEN=1; skipping Databricks extension generation.")
             return None
 
-        # 1) Databricks client
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            LOGGER.info("Successfully created Databricks WorkspaceClient.")
-        except Exception as e:
-            LOGGER.exception("WorkspaceClient init failed")
-            raise ValueError(f"Workspace client initialization failed: {e}")
-
         inst_name = inst_query.name
         inst_id = str(inst_query.id)
-
         
         mapping = {
-            "student": "student.csv",
-            "course": ["course.csv", "courses.csv"],
-            "semester": ["semester"]
+            "course": ["course.csv", "courses.csv", r"^(?=.*AR_DEIDENTIFIED)(?=.*COURSE).*\.csv$"],
+            "student": ["student.csv", r"^(?=.*AR_DEIDENTIFIED)(?!.*COURSE).*\.csv$"],
+            "semester": ["semester.csv"],
         }
 
         key = self.get_key_for_file(mapping, file_name)  # e.g., "student"
