@@ -646,9 +646,13 @@ class DatabricksControl(BaseModel):
 
         inst_name = inst_query.name
         inst_id = str(inst_query.id)
-        
+
         mapping = {
-            "course": ["course.csv", "courses.csv", r"^(?=.*AR_DEIDENTIFIED)(?=.*COURSE).*\.csv$"],
+            "course": [
+                "course.csv",
+                "courses.csv",
+                r"^(?=.*AR_DEIDENTIFIED)(?=.*COURSE).*\.csv$",
+            ],
             "student": ["student.csv", r"^(?=.*AR_DEIDENTIFIED)(?!.*COURSE).*\.csv$"],
             "semester": ["semester.csv"],
         }
