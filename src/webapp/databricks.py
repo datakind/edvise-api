@@ -655,38 +655,15 @@ class DatabricksControl(BaseModel):
             LOGGER.exception("WorkspaceClient init failed")
             raise ValueError(f"Workspace client initialization failed: {e}")
 
-        # 2) Fetch & parse config.toml to get validation_mapping
-        try:
-            inst_name = inst_query.name
-            inst_id = str(inst_query.id)
-            config_volume_path = (
-                f"/Volumes/{catalog_name}/"
-                f"{databricksify_inst_name(inst_name)}_bronze/bronze_volume/config.toml"
-            )
-            LOGGER.info("Attempting to download from %s", config_volume_path)
-            response = w.files.download(config_volume_path)
-            stream = cast(IO[bytes], response.contents)
-            file_bytes = stream.read()
-            LOGGER.info("Download successful, received %d bytes", len(file_bytes))
-        except Exception as e:
-            LOGGER.exception("Failed to fetch config.toml")
-            raise HTTPException(500, detail=f"Failed to fetch config: {e}")
+        inst_name = inst_query.name
+        inst_id = str(inst_query.id)
 
-        try:
-            cfg = _toml.loads(file_bytes.decode("utf-8"))
-            mapping = cfg["webapp"]["validation_mapping"]
-        except KeyError:
-            raise HTTPException(
-                404, detail="Missing [webapp].validation_mapping in config.toml"
-            )
-        except Exception as e:
-            LOGGER.exception("Invalid TOML")
-            raise HTTPException(400, detail=f"Invalid TOML in {file_name}: {e}")
-
-        if not isinstance(mapping, dict):
-            raise HTTPException(
-                400, detail="validation_mapping must be a TOML table (dictionary)"
-            )
+        
+        mapping = {
+            "student": "student.csv",
+            "course": ["course.csv", "courses.csv"],
+            "semester": ["semester"]
+        }
 
         key = self.get_key_for_file(mapping, file_name)  # e.g., "student"
         if key is None:
