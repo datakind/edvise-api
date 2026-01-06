@@ -1699,7 +1699,6 @@ def validation_helper(
                     bucket_name=bucket,
                     inst_query=inst,
                     file_name=file_name,
-                    catalog_name=env_vars["CATALOG_NAME"],
                     base_schema=base_schema,
                     extension_schema=inst_schema,
                 )
