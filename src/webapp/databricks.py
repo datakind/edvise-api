@@ -24,6 +24,7 @@ import json
 import gzip
 from cachetools import TTLCache
 import threading
+import re
 
 try:
     import tomllib as _toml  # Py 3.11+
@@ -634,7 +635,6 @@ class DatabricksControl(BaseModel):
         bucket_name: str,
         inst_query: Any,
         file_name: str,
-        catalog_name: str,
         base_schema: Dict[str, Any],  # pass base schema dict in
         extension_schema: Optional[dict] = None,  # existing extension or None
     ) -> Any:
@@ -644,49 +644,18 @@ class DatabricksControl(BaseModel):
             LOGGER.info("SST_SKIP_EXT_GEN=1; skipping Databricks extension generation.")
             return None
 
-        # 1) Databricks client
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            LOGGER.info("Successfully created Databricks WorkspaceClient.")
-        except Exception as e:
-            LOGGER.exception("WorkspaceClient init failed")
-            raise ValueError(f"Workspace client initialization failed: {e}")
+        inst_name = inst_query.name
+        inst_id = str(inst_query.id)
 
-        # 2) Fetch & parse config.toml to get validation_mapping
-        try:
-            inst_name = inst_query.name
-            inst_id = str(inst_query.id)
-            config_volume_path = (
-                f"/Volumes/{catalog_name}/"
-                f"{databricksify_inst_name(inst_name)}_bronze/bronze_volume/config.toml"
-            )
-            LOGGER.info("Attempting to download from %s", config_volume_path)
-            response = w.files.download(config_volume_path)
-            stream = cast(IO[bytes], response.contents)
-            file_bytes = stream.read()
-            LOGGER.info("Download successful, received %d bytes", len(file_bytes))
-        except Exception as e:
-            LOGGER.exception("Failed to fetch config.toml")
-            raise HTTPException(500, detail=f"Failed to fetch config: {e}")
-
-        try:
-            cfg = _toml.loads(file_bytes.decode("utf-8"))
-            mapping = cfg["webapp"]["validation_mapping"]
-        except KeyError:
-            raise HTTPException(
-                404, detail="Missing [webapp].validation_mapping in config.toml"
-            )
-        except Exception as e:
-            LOGGER.exception("Invalid TOML")
-            raise HTTPException(400, detail=f"Invalid TOML in {file_name}: {e}")
-
-        if not isinstance(mapping, dict):
-            raise HTTPException(
-                400, detail="validation_mapping must be a TOML table (dictionary)"
-            )
+        mapping = {
+            "course": [
+                "course.csv",
+                "courses.csv",
+                r"^(?=.*AR_DEIDENTIFIED)(?=.*COURSE).*\.csv$",
+            ],
+            "student": ["student.csv", r"^(?=.*AR_DEIDENTIFIED)(?!.*COURSE).*\.csv$"],
+            "semester": ["semester.csv"],
+        }
 
         key = self.get_key_for_file(mapping, file_name)  # e.g., "student"
         if key is None:
