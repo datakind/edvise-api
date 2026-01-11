@@ -114,3 +114,6 @@ dmypy.json
 # terraform
 **/.terraform/*
 **/terraform.tfvars
+
+# Cursor rule files
+.cursor/
