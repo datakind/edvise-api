@@ -274,7 +274,9 @@ class InstTable(Base):
     # Only populated for PDP schools.
     pdp_id: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
     # Only populated for Edvise schools.
-    edvise_id: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
+    edvise_id: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_LENGTH), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

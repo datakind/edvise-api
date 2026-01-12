@@ -170,6 +170,8 @@ def session_fixture():
                     InstTable(
                         id=USER_VALID_INST_UUID,
                         name="school_1",
+                        pdp_id="12345",
+                        edvise_id=None,
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                     ),

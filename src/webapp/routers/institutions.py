@@ -275,8 +275,14 @@ def update_inst(
     if "edvise_id" in update_data:
         update_data["edvise_id"] = (update_data["edvise_id"] or "").strip() or None
     # Validate mutual exclusivity: cannot be both PDP and Edvise
-    final_pdp_id = update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
-    final_edvise_id = update_data.get("edvise_id") if "edvise_id" in update_data else existing_inst.edvise_id
+    final_pdp_id = (
+        update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
+    )
+    final_edvise_id = (
+        update_data.get("edvise_id")
+        if "edvise_id" in update_data
+        else existing_inst.edvise_id
+    )
     if final_pdp_id and final_edvise_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

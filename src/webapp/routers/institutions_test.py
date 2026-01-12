@@ -328,7 +328,7 @@ def test_create_inst_with_edvise_success(datakinder_client: TestClient):
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
     request_data = {
-        "name": "edvise_test_school",
+        "name": "new_edvise_school",
         "state": "TX",
         "edvise_id": "edvise789",
         "is_edvise": True,  # Should be ignored but accepted
@@ -337,7 +337,7 @@ def test_create_inst_with_edvise_success(datakinder_client: TestClient):
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 200
     data = response.json()
-    assert data["name"] == "edvise_test_school"
+    assert data["name"] == "new_edvise_school"
     assert data["state"] == "TX"
     assert data["edvise_id"] == "edvise789"
     assert data["pdp_id"] is None
@@ -421,7 +421,9 @@ def test_create_inst_whitespace_stripping(datakinder_client: TestClient):
     assert data["edvise_id"] == "edvise123"  # Whitespace stripped
 
 
-def test_create_inst_backward_compatibility_is_pdp_ignored(datakinder_client: TestClient):
+def test_create_inst_backward_compatibility_is_pdp_ignored(
+    datakinder_client: TestClient,
+):
     """Test POST /institutions - is_pdp flag is accepted but ignored."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -441,7 +443,9 @@ def test_create_inst_backward_compatibility_is_pdp_ignored(datakinder_client: Te
     assert data["pdp_id"] is None  # No PDP schema assigned
 
 
-def test_create_inst_backward_compatibility_is_edvise_ignored(datakinder_client: TestClient):
+def test_create_inst_backward_compatibility_is_edvise_ignored(
+    datakinder_client: TestClient,
+):
     """Test POST /institutions - is_edvise flag is accepted but ignored."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
