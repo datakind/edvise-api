@@ -19,6 +19,7 @@ from ..utilities import (
     get_current_active_user,
     SchemaType,
     PDP_SCHEMA_GROUP,
+    EDVISE_SCHEMA_GROUP,
     UsState,
     get_external_bucket_name,
 )
@@ -162,10 +163,9 @@ def create_institution(
         # Derive PDP status from pdp_id presence (ignore is_pdp for backward compat)
         if pdp_id:
             requested_schemas += PDP_SCHEMA_GROUP
-        # TODO: Add EDVISE_SCHEMA_GROUP when it's defined in utilities.py
         # Derive Edvise status from edvise_id presence (ignore is_edvise for backward compat)
-        # if edvise_id:
-        #     requested_schemas += EDVISE_SCHEMA_GROUP
+        if edvise_id:
+            requested_schemas += EDVISE_SCHEMA_GROUP
         # if no schema is set and neither PDP nor Edvise is set, we default to custom.
         if not requested_schemas:
             requested_schemas = [SchemaType.UNKNOWN]

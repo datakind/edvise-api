@@ -1543,6 +1543,7 @@ class _ValidationState:
     _base_cache: Dict[str, Any] = {"exp": 0.0, "val": None}
     _ext_cache: Dict[str, Tuple[float, Any]] = {}
     _pdp_cache: Tuple[float, Optional[dict]] = (0.0, None)
+    _edvise_cache: Tuple[float, Optional[dict]] = (0.0, None)
 
 
 STATE = _ValidationState()
@@ -1651,7 +1652,37 @@ def validation_helper(
                     return {str(k).lower() for k in block["data_models"].keys()}
         return set()
 
-    if getattr(inst, "pdp_id", None):
+    # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
+    pdp_id = getattr(inst, "pdp_id", None)
+    edvise_id = getattr(inst, "edvise_id", None)
+    if pdp_id and edvise_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution configuration error: cannot have both pdp_id and edvise_id set",
+        )
+
+    if edvise_id:
+        # Edvise institutions: use active Edvise extension (cached)
+        edvise_exp, edvise_doc = STATE._edvise_cache
+        if now < edvise_exp and edvise_doc is not None:
+            inst_schema: Optional[Dict[str, Any]] = edvise_doc
+        else:
+            inst_schema = sess.execute(
+                select(SchemaRegistryTable.json_doc)
+                .where(
+                    SchemaRegistryTable.is_edvise.is_(True),
+                    SchemaRegistryTable.is_active.is_(True),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            STATE._edvise_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Edvise schema not found for institution with edvise_id. Please ensure an active Edvise schema extension is registered.",
+            )
+        updated_inst_schema = inst_schema
+    elif pdp_id:
         # PDP institutions: use active PDP extension (cached)
         pdp_exp, pdp_doc = STATE._pdp_cache
         if now < pdp_exp and pdp_doc is not None:
@@ -1666,6 +1697,11 @@ def validation_helper(
                 .limit(1)
             ).scalar_one_or_none()
             STATE._pdp_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PDP schema not found for institution with pdp_id. Please ensure an active PDP schema extension is registered.",
+            )
         updated_inst_schema = inst_schema
     else:
         # custom institutions: try cached extension first
