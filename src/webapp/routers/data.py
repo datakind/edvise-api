@@ -1686,7 +1686,7 @@ def validation_helper(
         # PDP institutions: use active PDP extension (cached)
         pdp_exp, pdp_doc = STATE._pdp_cache
         if now < pdp_exp and pdp_doc is not None:
-            inst_schema: Optional[Dict[str, Any]] = pdp_doc
+            inst_schema = pdp_doc
         else:
             inst_schema = sess.execute(
                 select(SchemaRegistryTable.json_doc)

@@ -970,7 +970,15 @@ def edvise_client_fixture(edvise_session: sqlalchemy.orm.Session, monkeypatch: A
         return edvise_session
 
     def get_current_active_user_override():
-        return USR
+        # Create DATAKINDER user with access to all institutions (needed for tests
+        # that access multiple Edvise institutions)
+        from ..utilities import AccessType, BaseUser
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            None,  # DATAKINDER has no specific institution
+            AccessType.DATAKINDER,
+            "abc@example.com",
+        )
 
     def storage_control_override():
         return MOCK_STORAGE
@@ -1077,40 +1085,37 @@ def test_edvise_schema_cache(
 ) -> None:
     """Test that Edvise schema is cached and reused."""
     from .data import STATE
-    from unittest.mock import patch
     
     # Clear cache
     STATE._edvise_cache = (0.0, None)
     
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
     
-    # First call: Should load from DB
-    with patch.object(edvise_session, 'execute') as mock_execute:
-        response1 = edvise_client.post(
-            "/institutions/"
-            + uuid_to_str(EDVISE_INST_UUID)
-            + "/input/validate-upload/test1.csv",
-        )
-        assert response1.status_code == 200
-        # Verify DB was queried
-        assert mock_execute.call_count >= 1
+    # First call: Should load from DB and set cache
+    response1 = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/test1.csv",
+    )
+    assert response1.status_code == 200
     
     # Verify cache was set
     cache_exp, cache_doc = STATE._edvise_cache
     assert cache_doc is not None
     assert cache_exp > time.monotonic()
     
-    # Second call: Should use cached value (DB not called)
-    with patch.object(edvise_session, 'execute') as mock_execute:
-        response2 = edvise_client.post(
-            "/institutions/"
-            + uuid_to_str(EDVISE_INST_2_UUID)  # Different institution, same schema
-            + "/input/validate-upload/test2.csv",
-        )
-        assert response2.status_code == 200
-        # Verify DB was NOT queried (cache used)
-        # Note: DB might be called for other queries, but not for schema lookup
-        # This is a best-effort check
+    # Second call: Should use cached value (same expiration time)
+    response2 = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_2_UUID)  # Different institution, same schema
+        + "/input/validate-upload/test2.csv",
+    )
+    assert response2.status_code == 200
+    
+    # Verify cache expiration time is the same (cache was reused)
+    cache_exp2, cache_doc2 = STATE._edvise_cache
+    assert cache_doc2 is not None
+    assert cache_exp2 == cache_exp  # Same expiration means cache was reused
     
     # Both institutions should use the same cached Edvise schema
     assert STATE._edvise_cache[1] is not None
@@ -1151,14 +1156,14 @@ def test_edvise_schema_takes_precedence_over_custom(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
     """Test that Edvise schema is used instead of custom when edvise_id is set."""
-    # Add a custom extension for this institution
+    # Add a custom extension for this institution with unique version_label
     custom_schema = SchemaRegistryTable(
         doc_type=DocType.extension,
         inst_id=EDVISE_INST_UUID,
         is_pdp=False,
         is_edvise=False,
-        version_label="1.0.0",
-        json_doc={"version": "1.0.0", "custom": {"data_models": {}}},
+        version_label="1.0.1",  # Use different version to avoid unique constraint
+        json_doc={"version": "1.0.1", "custom": {"data_models": {}}},
         is_active=True,
         created_at=DATETIME_TESTING,
     )
@@ -1270,23 +1275,25 @@ def test_edvise_cache_expiration(
 ) -> None:
     """Test that expired cache reloads from database."""
     from .data import STATE
-    from unittest.mock import patch
     
     # Set cache with expired TTL
-    STATE._edvise_cache = (time.monotonic() - 1, {"old": "schema"})
+    old_exp = time.monotonic() - 1
+    STATE._edvise_cache = (old_exp, {"old": "schema"})
     
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
     
-    # Verify DB is queried when cache expires
-    with patch.object(edvise_session, 'execute') as mock_execute:
-        response = edvise_client.post(
-            "/institutions/"
-            + uuid_to_str(EDVISE_INST_UUID)
-            + "/input/validate-upload/test.csv",
-        )
-        # Should reload from DB (cache expired)
-        assert mock_execute.called
-        assert response.status_code == 200
+    # Should reload from DB (cache expired) and update cache
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/test.csv",
+    )
+    assert response.status_code == 200
+    
+    # Verify cache was updated with new expiration
+    cache_exp, cache_doc = STATE._edvise_cache
+    assert cache_doc is not None
+    assert cache_exp > old_exp  # New expiration time means cache was reloaded
 
 
 def test_edvise_cache_none_reloads(edvise_client: TestClient) -> None:
