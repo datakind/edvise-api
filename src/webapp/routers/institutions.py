@@ -168,7 +168,7 @@ def create_institution(
         #     requested_schemas += EDVISE_SCHEMA_GROUP
         # if no schema is set and neither PDP nor Edvise is set, we default to custom.
         if not requested_schemas:
-            requested_schemas = {SchemaType.UNKNOWN}
+            requested_schemas = [SchemaType.UNKNOWN]
         local_session.get().add(
             InstTable(
                 name=req.name,

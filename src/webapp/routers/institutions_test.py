@@ -4,6 +4,7 @@ import uuid
 import os
 from datetime import datetime
 from unittest import mock
+from typing import Any
 import pytest
 import sqlalchemy
 from fastapi.testclient import TestClient
@@ -95,7 +96,7 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session):
+def client_fixture(session: sqlalchemy.orm.Session) -> Any:
     """Unit test mocks setup for a non-DATAKINDER type."""
 
     def get_session_override():
@@ -122,7 +123,7 @@ def client_fixture(session: sqlalchemy.orm.Session):
 
 
 @pytest.fixture(name="datakinder_client")
-def datakinder_client_fixture(session: sqlalchemy.orm.Session):
+def datakinder_client_fixture(session: sqlalchemy.orm.Session) -> Any:
     """Unit test mocks setup for a DATAKINDER type."""
 
     def get_session_override():
@@ -148,7 +149,7 @@ def datakinder_client_fixture(session: sqlalchemy.orm.Session):
     app.dependency_overrides.clear()
 
 
-def test_read_all_inst(client: TestClient):
+def test_read_all_inst(client: TestClient) -> None:
     """Test GET /institutions."""
 
     # Unauthorized.
@@ -160,7 +161,7 @@ def test_read_all_inst(client: TestClient):
     )
 
 
-def test_read_all_inst_datakinder(datakinder_client: TestClient):
+def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
     """Test GET /institutions using DATAKINDER type."""
     # Authorized.
     response = datakinder_client.get("/institutions")
@@ -180,7 +181,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient):
     assert edvise_school["pdp_id"] is None
 
 
-def test_read_inst_by_name(client: TestClient):
+def test_read_inst_by_name(client: TestClient) -> None:
     """Test GET /institutions/name/<name>. For various user access types."""
     # Unauthorized.
     response = client.get("/institutions/name/school_1")
@@ -197,7 +198,7 @@ def test_read_inst_by_name(client: TestClient):
     assert response.json() == INSTITUTION_OBJ
 
 
-def test_read_inst_by_pdp_id(client: TestClient):
+def test_read_inst_by_pdp_id(client: TestClient) -> None:
     """Test GET /institutions/pdp-id/<pdp_id>. For various user access types."""
     # Unauthorized.
     response = client.get("/institutions/pdp-id/456")
@@ -214,7 +215,7 @@ def test_read_inst_by_pdp_id(client: TestClient):
     assert response.json() == INSTITUTION_OBJ
 
 
-def test_read_inst(client: TestClient):
+def test_read_inst(client: TestClient) -> None:
     """Test GET /institutions/<uuid>. For various user access types."""
     # Unauthorized.
     response = client.get("/institutions/" + uuid_to_str(UUID_1))
@@ -231,7 +232,7 @@ def test_read_inst(client: TestClient):
     assert response.json() == INSTITUTION_OBJ
 
 
-def test_create_inst_unauth(client):
+def test_create_inst_unauth(client) -> None:
     """Test POST /institutions. For various user access types."""
     os.environ["ENV"] = "DEV"
     # Unauthorized.
@@ -240,7 +241,7 @@ def test_create_inst_unauth(client):
     assert response.text == '{"detail":"Not authorized to create an institution."}'
 
 
-def test_create_inst(datakinder_client):
+def test_create_inst(datakinder_client) -> None:
     """Test POST /institutions. For various user access types."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -274,7 +275,7 @@ def test_create_inst(datakinder_client):
     )
 
 
-def test_edit_inst(datakinder_client):
+def test_edit_inst(datakinder_client) -> None:
     """Test PATCH /institutions/<uuid>. For various user access types."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -298,7 +299,7 @@ def test_edit_inst(datakinder_client):
     assert "edvise_id" in response.json()
 
 
-def test_delete_inst(datakinder_client):
+def test_delete_inst(datakinder_client) -> None:
     """Test DELETE /institutions/<uuid>. For various user access types."""
     MOCK_STORAGE.delete_bucket.return_value = None
     MOCK_DATABRICKS.delete_inst.return_value = None
@@ -320,7 +321,7 @@ def test_delete_inst(datakinder_client):
 # ============================================================================
 
 
-def test_create_inst_with_edvise_success(datakinder_client: TestClient):
+def test_create_inst_with_edvise_success(datakinder_client: TestClient) -> None:
     """Test POST /institutions with Edvise ID - happy path."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -344,7 +345,7 @@ def test_create_inst_with_edvise_success(datakinder_client: TestClient):
     assert "inst_id" in data
 
 
-def test_create_inst_with_edvise_id_only(datakinder_client: TestClient):
+def test_create_inst_with_edvise_id_only(datakinder_client: TestClient) -> None:
     """Test POST /institutions with edvise_id but no is_edvise flag."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -364,7 +365,7 @@ def test_create_inst_with_edvise_id_only(datakinder_client: TestClient):
     assert data["pdp_id"] is None
 
 
-def test_create_inst_mutual_exclusivity_error(datakinder_client: TestClient):
+def test_create_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> None:
     """Test POST /institutions with both PDP and Edvise - should fail."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -382,7 +383,7 @@ def test_create_inst_mutual_exclusivity_error(datakinder_client: TestClient):
     assert "cannot be both PDP and Edvise" in response.json()["detail"]
 
 
-def test_create_inst_empty_string_normalization(datakinder_client: TestClient):
+def test_create_inst_empty_string_normalization(datakinder_client: TestClient) -> None:
     """Test POST /institutions - empty strings normalized to None."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -403,7 +404,7 @@ def test_create_inst_empty_string_normalization(datakinder_client: TestClient):
     assert data["edvise_id"] is None
 
 
-def test_create_inst_whitespace_stripping(datakinder_client: TestClient):
+def test_create_inst_whitespace_stripping(datakinder_client: TestClient) -> None:
     """Test POST /institutions - whitespace is stripped from IDs."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -423,7 +424,7 @@ def test_create_inst_whitespace_stripping(datakinder_client: TestClient):
 
 def test_create_inst_backward_compatibility_is_pdp_ignored(
     datakinder_client: TestClient,
-):
+) -> None:
     """Test POST /institutions - is_pdp flag is accepted but ignored."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -445,7 +446,7 @@ def test_create_inst_backward_compatibility_is_pdp_ignored(
 
 def test_create_inst_backward_compatibility_is_edvise_ignored(
     datakinder_client: TestClient,
-):
+) -> None:
     """Test POST /institutions - is_edvise flag is accepted but ignored."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -470,7 +471,7 @@ def test_create_inst_backward_compatibility_is_edvise_ignored(
 # ============================================================================
 
 
-def test_update_inst_add_edvise_id(datakinder_client: TestClient):
+def test_update_inst_add_edvise_id(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - add edvise_id to existing institution."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -487,7 +488,7 @@ def test_update_inst_add_edvise_id(datakinder_client: TestClient):
     assert data["pdp_id"] is None
 
 
-def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient):
+def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - switch from PDP to Edvise."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -504,7 +505,7 @@ def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient):
     assert data["edvise_id"] == "switched_to_edvise"
 
 
-def test_update_inst_switch_edvise_to_pdp(datakinder_client: TestClient):
+def test_update_inst_switch_edvise_to_pdp(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - switch from Edvise to PDP."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -521,7 +522,7 @@ def test_update_inst_switch_edvise_to_pdp(datakinder_client: TestClient):
     assert data["edvise_id"] is None
 
 
-def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient):
+def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - cannot set both PDP and Edvise."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -536,7 +537,7 @@ def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient):
     assert "cannot be both PDP and Edvise" in response.json()["detail"]
 
 
-def test_update_inst_clear_edvise_id(datakinder_client: TestClient):
+def test_update_inst_clear_edvise_id(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - clear edvise_id (set to None)."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -559,7 +560,7 @@ def test_update_inst_clear_edvise_id(datakinder_client: TestClient):
     assert data["edvise_id"] is None
 
 
-def test_update_inst_empty_string_normalization(datakinder_client: TestClient):
+def test_update_inst_empty_string_normalization(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - empty strings normalized to None."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -575,7 +576,7 @@ def test_update_inst_empty_string_normalization(datakinder_client: TestClient):
     assert data["edvise_id"] is None  # Normalized
 
 
-def test_update_inst_whitespace_stripping(datakinder_client: TestClient):
+def test_update_inst_whitespace_stripping(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - whitespace is stripped from IDs."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -595,7 +596,7 @@ def test_update_inst_whitespace_stripping(datakinder_client: TestClient):
 # ============================================================================
 
 
-def test_read_inst_by_id_includes_edvise_id(client: TestClient):
+def test_read_inst_by_id_includes_edvise_id(client: TestClient) -> None:
     """Test GET /institutions/{inst_id} - response includes edvise_id."""
     # Authorized access
     response = client.get("/institutions/" + uuid_to_str(USER_VALID_INST_UUID))
@@ -605,7 +606,7 @@ def test_read_inst_by_id_includes_edvise_id(client: TestClient):
     assert data["edvise_id"] is None  # This institution doesn't have Edvise
 
 
-def test_read_inst_by_name_includes_edvise_id(client: TestClient):
+def test_read_inst_by_name_includes_edvise_id(client: TestClient) -> None:
     """Test GET /institutions/name/{name} - response includes edvise_id."""
     # Authorized access
     response = client.get("/institutions/name/valid_school")
@@ -614,7 +615,7 @@ def test_read_inst_by_name_includes_edvise_id(client: TestClient):
     assert "edvise_id" in data
 
 
-def test_read_inst_by_pdp_id_includes_edvise_id(client: TestClient):
+def test_read_inst_by_pdp_id_includes_edvise_id(client: TestClient) -> None:
     """Test GET /institutions/pdp-id/{pdp_id} - response includes edvise_id."""
     # Authorized access
     response = client.get("/institutions/pdp-id/12345")
@@ -629,7 +630,7 @@ def test_read_inst_by_pdp_id_includes_edvise_id(client: TestClient):
 # ============================================================================
 
 
-def test_create_inst_none_values(datakinder_client: TestClient):
+def test_create_inst_none_values(datakinder_client: TestClient) -> None:
     """Test POST /institutions - explicit None values handled correctly."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -649,7 +650,9 @@ def test_create_inst_none_values(datakinder_client: TestClient):
     assert data["edvise_id"] is None
 
 
-def test_update_inst_partial_update_preserves_existing(datakinder_client: TestClient):
+def test_update_inst_partial_update_preserves_existing(
+    datakinder_client: TestClient,
+) -> None:
     """Test PATCH /institutions - partial update preserves existing edvise_id."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -673,7 +676,7 @@ def test_update_inst_partial_update_preserves_existing(datakinder_client: TestCl
     assert data["edvise_id"] == "preserved_edvise"  # Preserved
 
 
-def test_update_inst_final_state_validation(datakinder_client: TestClient):
+def test_update_inst_final_state_validation(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - validates final state, not just update data."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -693,7 +696,7 @@ def test_update_inst_final_state_validation(datakinder_client: TestClient):
 # ============================================================================
 
 
-def test_create_inst_edvise_unauthorized(client: TestClient):
+def test_create_inst_edvise_unauthorized(client: TestClient) -> None:
     """Test POST /institutions with Edvise - unauthorized user."""
     os.environ["ENV"] = "DEV"
     request_data = {
@@ -706,7 +709,7 @@ def test_create_inst_edvise_unauthorized(client: TestClient):
     assert "Not authorized to create" in response.json()["detail"]
 
 
-def test_update_inst_edvise_unauthorized(client: TestClient):
+def test_update_inst_edvise_unauthorized(client: TestClient) -> None:
     """Test PATCH /institutions with Edvise - unauthorized user."""
     # Try to update institution user doesn't have access to
     response = client.patch(
@@ -722,7 +725,7 @@ def test_update_inst_edvise_unauthorized(client: TestClient):
 # ============================================================================
 
 
-def test_read_inst_edvise_tenant_isolation(client: TestClient):
+def test_read_inst_edvise_tenant_isolation(client: TestClient) -> None:
     """Test GET /institutions/{inst_id} - cannot access other institution's Edvise data."""
     # Try to access institution user doesn't belong to
     response = client.get("/institutions/" + uuid_to_str(UUID_2))
@@ -735,7 +738,7 @@ def test_read_inst_edvise_tenant_isolation(client: TestClient):
 # ============================================================================
 
 
-def test_create_inst_old_format_still_works(datakinder_client: TestClient):
+def test_create_inst_old_format_still_works(datakinder_client: TestClient) -> None:
     """Test POST /institutions - old request format with is_pdp still works."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
@@ -756,7 +759,7 @@ def test_create_inst_old_format_still_works(datakinder_client: TestClient):
     assert data["pdp_id"] == "pdp_old_format"
 
 
-def test_update_inst_old_format_still_works(datakinder_client: TestClient):
+def test_update_inst_old_format_still_works(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions - old request format with is_pdp still works."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
