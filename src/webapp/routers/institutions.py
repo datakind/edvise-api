@@ -51,8 +51,12 @@ class InstitutionCreationRequest(BaseModel):
     allowed_emails: Dict[str, AccessType] | None = None
     # The following is a shortcut to specifying the allowed_schemas list and will mean
     # that the allowed_schemas will be augmented with the PDP_SCHEMA_GROUP.
+    # Note: is_pdp is kept for backward compatibility but is ignored. PDP status is derived from pdp_id presence.
     is_pdp: bool | None = None
     pdp_id: str | None = None
+    # Note: is_edvise is kept for backward compatibility but is ignored. Edvise status is derived from edvise_id presence.
+    is_edvise: bool | None = None
+    edvise_id: str | None = None
     retention_days: int | None = None
 
 
@@ -66,6 +70,7 @@ class Institution(BaseModel):
     # If zero, it follows DK defaults (deletion after completion).
     retention_days: int | None = None  # In Days
     pdp_id: str | None = None
+    edvise_id: str | None = None
 
 
 @router.get("/institutions", response_model=list[Institution])
@@ -93,6 +98,7 @@ def read_all_inst(
                 "state": elem[0].state,
                 "retention_days": elem[0].retention_days,
                 "pdp_id": None if elem[0].pdp_id is None else elem[0].pdp_id,
+                "edvise_id": None if elem[0].edvise_id is None else elem[0].edvise_id,
             }
         )
     return res
@@ -120,10 +126,15 @@ def create_institution(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please set the institution name.",
         )
-    if (req.is_pdp and not req.pdp_id) or (req.pdp_id and not req.is_pdp):
+    # Normalize empty strings to None for consistency
+    # Strip whitespace and convert empty strings to None
+    pdp_id = (req.pdp_id or "").strip() or None
+    edvise_id = (req.edvise_id or "").strip() or None
+    # Validate mutual exclusivity: cannot be both PDP and Edvise
+    if pdp_id and edvise_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please set the PDP's Institution ID for PDP schools and check PDP as a schema type.",
+            detail="An institution cannot be both PDP and Edvise. Please choose one schema type.",
         )
 
     pattern = "^[A-Za-z0-9&_ -]*$"
@@ -148,16 +159,22 @@ def create_institution(
         requested_schemas = []
         if req.allowed_schemas:
             requested_schemas = req.allowed_schemas
-        if req.is_pdp:
+        # Derive PDP status from pdp_id presence (ignore is_pdp for backward compat)
+        if pdp_id:
             requested_schemas += PDP_SCHEMA_GROUP
-        # if no schema is set and PDP is not set, we default to custom.
+        # TODO: Add EDVISE_SCHEMA_GROUP when it's defined in utilities.py
+        # Derive Edvise status from edvise_id presence (ignore is_edvise for backward compat)
+        # if edvise_id:
+        #     requested_schemas += EDVISE_SCHEMA_GROUP
+        # if no schema is set and neither PDP nor Edvise is set, we default to custom.
         if not requested_schemas:
             requested_schemas = {SchemaType.UNKNOWN}
         local_session.get().add(
             InstTable(
                 name=req.name,
                 retention_days=req.retention_days,
-                pdp_id=req.pdp_id,
+                pdp_id=pdp_id,
+                edvise_id=edvise_id,
                 # Sets aren't json serializable, so turn them into lists first
                 schemas=list(set(requested_schemas)),
                 allowed_emails=req.allowed_emails,
@@ -207,6 +224,7 @@ def create_institution(
         "name": query_result[0][0].name,
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
+        "edvise_id": query_result[0][0].edvise_id,
         "retention_days": query_result[0][0].retention_days,
     }
 
@@ -250,15 +268,19 @@ def update_inst(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Institution names cannot be changed.",
             )
-    if (
-        "is_pdp" in update_data
-        and update_data["is_pdp"]
-        and "pdp_id" not in update_data
-        and not existing_inst.pdp_id
-    ):
+    # Normalize empty strings to None for consistency
+    # Strip whitespace and convert empty strings to None
+    if "pdp_id" in update_data:
+        update_data["pdp_id"] = (update_data["pdp_id"] or "").strip() or None
+    if "edvise_id" in update_data:
+        update_data["edvise_id"] = (update_data["edvise_id"] or "").strip() or None
+    # Validate mutual exclusivity: cannot be both PDP and Edvise
+    final_pdp_id = update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
+    final_edvise_id = update_data.get("edvise_id") if "edvise_id" in update_data else existing_inst.edvise_id
+    if final_pdp_id and final_edvise_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="If is_pdp is set, pdp_id must also be set.",
+            detail="An institution cannot be both PDP and Edvise. Please choose one schema type.",
         )
 
     if "state" in update_data:
@@ -267,10 +289,12 @@ def update_inst(
         existing_inst.allowed_schemas = update_data["allowed_schemas"]
     if "allowed_emails" in update_data:
         existing_inst.allowed_emails = update_data["allowed_emails"]
-    if "is_pdp" in update_data:
-        existing_inst.is_pdp = update_data["is_pdp"]
+    # Note: is_pdp is ignored - PDP status is derived from pdp_id presence
     if "pdp_id" in update_data:
         existing_inst.pdp_id = update_data["pdp_id"]
+    # Note: is_edvise is ignored - Edvise status is derived from edvise_id presence
+    if "edvise_id" in update_data:
+        existing_inst.edvise_id = update_data["edvise_id"]
     if "retention_days" in update_data:
         existing_inst.retention_days = update_data["retention_days"]
 
@@ -289,6 +313,7 @@ def update_inst(
         "name": res[0][0].name,
         "state": res[0][0].state,
         "pdp_id": res[0][0].pdp_id,
+        "edvise_id": res[0][0].edvise_id,
         "retention_days": res[0][0].retention_days,
     }
 
@@ -382,6 +407,7 @@ def read_inst_name(
         "retention_days": query_result[0][0].retention_days,
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
+        "edvise_id": query_result[0][0].edvise_id,
     }
 
 
@@ -416,6 +442,7 @@ def read_inst_pdp_id(
         "retention_days": query_result[0][0].retention_days,
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
+        "edvise_id": query_result[0][0].edvise_id,
     }
 
 
@@ -452,4 +479,5 @@ def read_inst_id(
         "retention_days": query_result[0][0].retention_days,
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
+        "edvise_id": query_result[0][0].edvise_id,
     }

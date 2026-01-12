@@ -86,6 +86,7 @@ INSTITUTION_OBJ = {
     "name": "valid_school",
     "state": "NY",
     "pdp_id": "12345",
+    "edvise_id": None,
     "retention_days": None,
 }
 
