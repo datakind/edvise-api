@@ -1041,7 +1041,7 @@ def test_validation_helper_edvise_schema_not_found(
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_file.csv",
+        + "/input/validate-upload/test_student_file.csv",
     )
     
     assert response.status_code == 500
@@ -1069,7 +1069,7 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_file.csv",
+        + "/input/validate-upload/test_student_file.csv",
     )
     
     assert response.status_code == 500
@@ -1095,7 +1095,7 @@ def test_edvise_schema_cache(
     response1 = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test1.csv",
+        + "/input/validate-upload/test_student1.csv",
     )
     assert response1.status_code == 200
     
@@ -1108,7 +1108,7 @@ def test_edvise_schema_cache(
     response2 = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_2_UUID)  # Different institution, same schema
-        + "/input/validate-upload/test2.csv",
+        + "/input/validate-upload/test_student2.csv",
     )
     assert response2.status_code == 200
     
@@ -1140,7 +1140,7 @@ def test_validate_file_edvise_schema_validation_errors(edvise_client: TestClient
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/invalid_file.csv",
+        + "/input/validate-upload/invalid_student_file.csv",
     )
     
     assert response.status_code == 400
@@ -1191,7 +1191,7 @@ def test_edvise_schema_takes_precedence_over_custom(
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_file.csv",
+        + "/input/validate-upload/test_student_file.csv",
     )
     
     # Should succeed using Edvise schema, not custom
@@ -1235,7 +1235,7 @@ def test_validate_edvise_unauthorized(edvise_client: TestClient) -> None:
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(UUID_INVALID)  # Institution user doesn't have access to
-        + "/input/validate-upload/test.csv",
+        + "/input/validate-upload/test_student.csv",
     )
     assert response.status_code == 401
     assert "Not authorized" in response.json()["detail"]
@@ -1286,7 +1286,7 @@ def test_edvise_cache_expiration(
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test.csv",
+        + "/input/validate-upload/test_student.csv",
     )
     assert response.status_code == 200
     
@@ -1309,7 +1309,7 @@ def test_edvise_cache_none_reloads(edvise_client: TestClient) -> None:
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test.csv",
+        + "/input/validate-upload/test_student.csv",
     )
     # Should succeed (schema exists in DB)
     assert response.status_code == 200
@@ -1328,7 +1328,7 @@ def test_edvise_cache_shared_across_institutions(edvise_client: TestClient) -> N
     response1 = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test1.csv",
+        + "/input/validate-upload/test_student1.csv",
     )
     assert response1.status_code == 200
     
@@ -1340,7 +1340,7 @@ def test_edvise_cache_shared_across_institutions(edvise_client: TestClient) -> N
     response2 = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_2_UUID)
-        + "/input/validate-upload/test2.csv",
+        + "/input/validate-upload/test_student2.csv",
     )
     assert response2.status_code == 200
     
@@ -1356,7 +1356,7 @@ def test_validate_edvise_inst_not_found(edvise_client: TestClient) -> None:
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(fake_uuid)
-        + "/input/validate-upload/test.csv",
+        + "/input/validate-upload/test_student.csv",
     )
     # Should fail - either 401 (unauthorized) or 404 (not found)
     assert response.status_code in [401, 404]
