@@ -232,7 +232,7 @@ def test_read_inst(client: TestClient) -> None:
     assert response.json() == INSTITUTION_OBJ
 
 
-def test_create_inst_unauth(client) -> None:
+def test_create_inst_unauth(client: TestClient) -> None:
     """Test POST /institutions. For various user access types."""
     os.environ["ENV"] = "DEV"
     # Unauthorized.
@@ -241,7 +241,7 @@ def test_create_inst_unauth(client) -> None:
     assert response.text == '{"detail":"Not authorized to create an institution."}'
 
 
-def test_create_inst(datakinder_client) -> None:
+def test_create_inst(datakinder_client: TestClient) -> None:
     """Test POST /institutions. For various user access types."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -275,7 +275,7 @@ def test_create_inst(datakinder_client) -> None:
     )
 
 
-def test_edit_inst(datakinder_client) -> None:
+def test_edit_inst(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions/<uuid>. For various user access types."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -299,7 +299,7 @@ def test_edit_inst(datakinder_client) -> None:
     assert "edvise_id" in response.json()
 
 
-def test_delete_inst(datakinder_client) -> None:
+def test_delete_inst(datakinder_client: TestClient) -> None:
     """Test DELETE /institutions/<uuid>. For various user access types."""
     MOCK_STORAGE.delete_bucket.return_value = None
     MOCK_DATABRICKS.delete_inst.return_value = None
