@@ -11,12 +11,10 @@ pytest --update-snapshots flag.
 import pytest
 import os
 from pathlib import Path
-from typing import Any, Dict, List
 from unittest.mock import patch
 
 try:
     import pandas as pd
-    from pandera import DataFrameSchema, Column, Check
     from pandera.errors import SchemaErrors, SchemaError
     HAS_PANDERA = True
 except ImportError:
@@ -26,7 +24,7 @@ except ImportError:
     SchemaError = None  # type: ignore
 
 from .validation import HardValidationError
-from .validation_error_formatter import format_validation_error, MAX_ERROR_EXAMPLES
+from .validation_error_formatter import format_validation_error
 
 
 # ============================================================================
