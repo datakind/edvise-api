@@ -177,7 +177,7 @@ def test_sanitize_string_with_custom_length() -> None:
 
 def test_sanitize_string_non_string_input() -> None:
     """Test sanitize_string converts non-string to string."""
-    result = _sanitize_string(12345)
+    result = _sanitize_string(12345)  # type: ignore[arg-type]
     assert result == "12345"
 
 
@@ -408,7 +408,7 @@ def test_group_failure_cases_by_column_negative_index() -> None:
 
 def test_group_failure_cases_by_column_missing_fields() -> None:
     """Test grouping handles missing fields."""
-    cases = [
+    cases: List[Dict[str, Any]] = [
         {"column": "col1"},  # Missing other fields
         {"column": "col2", "index": 0},
     ]
@@ -419,7 +419,7 @@ def test_group_failure_cases_by_column_missing_fields() -> None:
 
 def test_group_failure_cases_by_column_schema_level() -> None:
     """Test grouping schema-level errors (no column)."""
-    cases = [
+    cases: List[Dict[str, Any]] = [
         {"index": 0, "check": "test", "failure_case": "val1"},  # No column
         {"column": None, "index": 1, "check": "test", "failure_case": "val2"},
         {"column": "", "index": 2, "check": "test", "failure_case": "val3"},
@@ -694,14 +694,14 @@ def test_format_check_error_le() -> None:
 
 def test_format_check_error_not_nullable() -> None:
     """Test formatting not_nullable check error."""
-    spec = {"checks": []}
+    spec: Dict[str, Any] = {"checks": []}
     result = _format_check_error("not_nullable", spec, None)
     assert "cannot be empty" in result.lower()
 
 
 def test_format_check_error_unknown() -> None:
     """Test formatting unknown check type."""
-    spec = {"checks": []}
+    spec: Dict[str, Any] = {"checks": []}
     result = _format_check_error("unknown_check", spec, "value")
     assert "unknown_check" in result.lower()
 
@@ -977,8 +977,8 @@ def test_format_validation_error_handles_exceptions() -> None:
     # Create error that might cause issues
     error = HardValidationError(
         missing_required=["col"],
-        canon_to_raw={"col": object()},  # Invalid type that might cause issues
-        merged_specs={"col": object()},  # Invalid type
+        canon_to_raw={"col": object()},  # type: ignore[dict-item]  # Invalid type that might cause issues
+        merged_specs={"col": object()},  # type: ignore[dict-item]  # Invalid type
     )
     # Should not raise, should return something
     result = format_validation_error(error)
@@ -1444,7 +1444,7 @@ def test_format_isin_error_mixed_numeric_non_numeric() -> None:
 def test_format_missing_required_empty_display() -> None:
     """Test format_missing_required with all invalid entries (empty display)."""
     error = HardValidationError(
-        missing_required=[None, "", 123, object()],  # All invalid
+        missing_required=[None, "", 123, object()],  # type: ignore[list-item]  # All invalid
         canon_to_raw={},
         merged_specs={},
     )
