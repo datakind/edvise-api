@@ -567,7 +567,7 @@ class DatabricksControl(BaseModel):
         Case-insensitive match of file_name against mapping values.
         Values may be:
         - str literal (e.g., "student.csv") → allow optional base suffixes before the ext.
-        - str regex (e.g., r"^course_.*\.csv$") → re.IGNORECASE fullmatch.
+        - str regex (e.g., r"^course_.*\\.csv$") → re.IGNORECASE fullmatch.
         - compiled regex (re.Pattern) → fullmatch, adding IGNORECASE if missing.
         - list of any of the above.
         """

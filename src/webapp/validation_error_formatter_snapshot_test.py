@@ -16,6 +16,7 @@ from unittest.mock import patch
 try:
     import pandas as pd
     from pandera.errors import SchemaErrors, SchemaError
+
     HAS_PANDERA = True
 except ImportError:
     HAS_PANDERA = False
@@ -30,6 +31,7 @@ from .validation_error_formatter import format_validation_error
 # ============================================================================
 # Snapshot Update Control
 # ============================================================================
+
 
 def _should_update_snapshots() -> bool:
     """Check if snapshots should be updated (via env var or pytest flag)."""
@@ -76,7 +78,7 @@ def _write_snapshot(test_name: str, content: str) -> None:
 
 def _normalize_snapshot(content: str) -> str:
     """Normalize snapshot content for comparison.
-    
+
     Handles:
     - Platform newlines (\r\n → \n)
     - Trailing whitespace on each line
@@ -85,15 +87,15 @@ def _normalize_snapshot(content: str) -> str:
     """
     # Normalize newlines: \r\n → \n
     content = content.replace("\r\n", "\n").replace("\r", "\n")
-    
+
     lines = content.splitlines()
     # Remove trailing whitespace from each line (but preserve internal whitespace)
     normalized = [line.rstrip() for line in lines]
-    
+
     # Remove trailing empty lines
     while normalized and not normalized[-1]:
         normalized.pop()
-    
+
     # Return with single trailing newline (or empty string if no content)
     return "\n".join(normalized) + "\n" if normalized else ""
 
@@ -124,18 +126,18 @@ def test_snapshot_missing_required_columns() -> None:
             "age": {"description": "Student age"},
         },
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     snapshot_name = "missing_required_columns"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         # Update mode: write snapshot
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         # Missing snapshot: fail with instructions
         pytest.fail(
@@ -144,7 +146,7 @@ def test_snapshot_missing_required_columns() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -170,27 +172,27 @@ def test_snapshot_extra_columns_ambiguous() -> None:
         },
         merged_specs={},
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     # Assert exact ambiguity rule phrase: with 3+ matches, should show "X (and N similar)"
     assert "(and" in result and "similar" in result, (
         f"Expected ambiguity phrase '(and N similar)' for 3+ matches, "
         f"but got: {result[:200]}"
     )
     # Verify the exact format: "X (and N similar)"
-    assert "Student ID (and 2 similar)" in result or "student_id (and 2 similar)" in result, (
-        f"Expected 'Student ID (and 2 similar)' format, but got: {result[:200]}"
-    )
-    
+    assert (
+        "Student ID (and 2 similar)" in result or "student_id (and 2 similar)" in result
+    ), f"Expected 'Student ID (and 2 similar)' format, but got: {result[:200]}"
+
     snapshot_name = "extra_columns_ambiguous"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -198,7 +200,7 @@ def test_snapshot_extra_columns_ambiguous() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -266,17 +268,17 @@ def test_snapshot_mixed_types_multiple_columns() -> None:
             },
         },
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     snapshot_name = "mixed_types_multiple_columns"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -284,7 +286,7 @@ def test_snapshot_mixed_types_multiple_columns() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -333,17 +335,17 @@ def test_snapshot_multiple_rows_same_column() -> None:
             },
         },
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     snapshot_name = "multiple_rows_same_column"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -351,7 +353,7 @@ def test_snapshot_multiple_rows_same_column() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -382,17 +384,17 @@ def test_snapshot_schema_level_errors() -> None:
         canon_to_raw={},
         merged_specs={},
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     snapshot_name = "schema_level_errors"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -400,7 +402,7 @@ def test_snapshot_schema_level_errors() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -414,7 +416,7 @@ def test_snapshot_schema_level_errors() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_snapshot_truncation_many_errors() -> None:
     """Snapshot test: Truncation behavior with many errors.
-    
+
     Uses a fixed limit (10) explicitly set in the test to ensure maximum
     stability. The snapshot represents the intended UX, not whatever the
     global constant happens to be.
@@ -423,16 +425,18 @@ def test_snapshot_truncation_many_errors() -> None:
     # This snapshot represents UX with max 10 examples, regardless of global constant
     # Generate enough errors to trigger truncation (10 + 5 = 15)
     num_errors = 15  # Guaranteed to exceed the fixed limit of 10
-    
+
     failure_cases = []
     for i in range(num_errors):
-        failure_cases.append({
-            "column": "value",
-            "index": i,
-            "check": "greater_than(0)",
-            "failure_case": -1,
-        })
-    
+        failure_cases.append(
+            {
+                "column": "value",
+                "index": i,
+                "check": "greater_than(0)",
+                "failure_case": -1,
+            }
+        )
+
     error = HardValidationError(
         failure_cases=failure_cases,
         raw_to_canon={"Value": "value"},
@@ -443,20 +447,20 @@ def test_snapshot_truncation_many_errors() -> None:
             },
         },
     )
-    
+
     # Patch MAX_ERROR_EXAMPLES to 10 for this test to ensure snapshot stability
-    with patch('src.webapp.validation_error_formatter.MAX_ERROR_EXAMPLES', 10):
+    with patch("src.webapp.validation_error_formatter.MAX_ERROR_EXAMPLES", 10):
         result = format_validation_error(error)
-    
+
     normalized_result = _normalize_snapshot(result)
-    
+
     snapshot_name = "truncation_many_errors"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -464,7 +468,7 @@ def test_snapshot_truncation_many_errors() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -478,7 +482,7 @@ def test_snapshot_truncation_many_errors() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_snapshot_pii_masking_mixed() -> None:
     """Snapshot test: PII masking with mixed PII and non-PII columns.
-    
+
     Uses distinctive canary values for PII to avoid false positives from
     substring matches in other parts of the output.
     """
@@ -486,7 +490,7 @@ def test_snapshot_pii_masking_mixed() -> None:
     pii_email = "canary_pii_email_123@example.com"
     pii_name = "CANARY_PII_NAME_123"
     pii_ssn = "CANARY_PII_SSN_123456789"
-    
+
     error = HardValidationError(
         failure_cases=[
             {
@@ -552,10 +556,10 @@ def test_snapshot_pii_masking_mixed() -> None:
             },
         },
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     # Negative assertion: raw PII values must NOT appear in output
     # Using distinctive canaries to avoid false positives from substring matches
     assert pii_email not in result, f"PII leakage: email '{pii_email}' found in output"
@@ -564,14 +568,14 @@ def test_snapshot_pii_masking_mixed() -> None:
     # Non-PII values should be shown
     assert "XY" in result, "Non-PII value 'XY' should be shown (not masked)"
     assert "X" in result, "Non-PII value 'X' should be shown (not masked)"
-    
+
     snapshot_name = "pii_masking_mixed"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -579,7 +583,7 @@ def test_snapshot_pii_masking_mixed() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"
@@ -632,17 +636,17 @@ def test_snapshot_complete_error_flow() -> None:
             },
         },
     )
-    
+
     result = format_validation_error(error)
     normalized_result = _normalize_snapshot(result)
-    
+
     snapshot_name = "complete_error_flow"
     expected = _read_snapshot(snapshot_name)
-    
+
     if _should_update_snapshots():
         _write_snapshot(snapshot_name, normalized_result)
         pytest.skip(f"Updated snapshot: {snapshot_name}.txt")
-    
+
     if not expected:
         pytest.fail(
             f"Snapshot file missing: {_get_snapshot_path(snapshot_name)}\n"
@@ -650,7 +654,7 @@ def test_snapshot_complete_error_flow() -> None:
             f"  UPDATE_SNAPSHOTS=1 pytest {__file__}::{snapshot_name}\n"
             f"\nCurrent output:\n{normalized_result}"
         )
-    
+
     expected_normalized = _normalize_snapshot(expected)
     assert normalized_result == expected_normalized, (
         f"Snapshot mismatch for {snapshot_name}.\n"

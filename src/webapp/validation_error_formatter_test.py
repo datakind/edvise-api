@@ -7,6 +7,7 @@ from unittest.mock import Mock
 try:
     import pandas as pd
     import numpy as np
+
     HAS_PANDAS = True
 except ImportError:
     HAS_PANDAS = False
@@ -239,7 +240,7 @@ def test_is_pii_column_medium_risk_token_matching() -> None:
     assert _is_pii_column("full_name") is True
     assert _is_pii_column("student_id") is True
     assert _is_pii_column("home_address") is True
-    
+
     # These should NOT match (false positive prevention)
     assert _is_pii_column("course_name") is False
     assert _is_pii_column("district_name") is False
@@ -353,10 +354,12 @@ def test_normalize_failure_cases_invalid_type() -> None:
 @pytest.mark.skipif(not HAS_PANDAS, reason="pandas not available")
 def test_normalize_failure_cases_dataframe() -> None:
     """Test normalizing pandas DataFrame (critical fix for Pandera integration)."""
-    df = pd.DataFrame([
-        {"column": "col1", "index": 0, "check": "test", "failure_case": "val1"},
-        {"column": "col2", "index": 1, "check": "test", "failure_case": "val2"},
-    ])
+    df = pd.DataFrame(
+        [
+            {"column": "col1", "index": 0, "check": "test", "failure_case": "val1"},
+            {"column": "col2", "index": 1, "check": "test", "failure_case": "val2"},
+        ]
+    )
     result = _normalize_failure_cases(df)
     assert isinstance(result, list)
     assert len(result) == 2
@@ -429,7 +432,12 @@ def test_group_failure_cases_by_column_schema_level() -> None:
 def test_group_failure_cases_by_column_nan_index() -> None:
     """Test grouping handles NaN row indices."""
     cases = [
-        {"column": "col1", "index": float('nan'), "check": "test", "failure_case": "val"},
+        {
+            "column": "col1",
+            "index": float("nan"),
+            "check": "test",
+            "failure_case": "val",
+        },
     ]
     result = _group_failure_cases_by_column(cases)
     assert "col1" in result
@@ -440,8 +448,18 @@ def test_group_failure_cases_by_column_nan_index() -> None:
 def test_group_failure_cases_by_column_numpy_index() -> None:
     """Test grouping handles numpy integer types."""
     cases = [
-        {"column": "col1", "index": np.int64(0), "check": "test", "failure_case": "val"},
-        {"column": "col2", "index": np.int32(1), "check": "test", "failure_case": "val"},
+        {
+            "column": "col1",
+            "index": np.int64(0),
+            "check": "test",
+            "failure_case": "val",
+        },
+        {
+            "column": "col2",
+            "index": np.int32(1),
+            "check": "test",
+            "failure_case": "val",
+        },
     ]
     result = _group_failure_cases_by_column(cases)
     assert result["col1"][0]["row"] == 1  # 0-indexed to 1-indexed
@@ -463,25 +481,25 @@ def test_group_failure_cases_by_column_string_index() -> None:
 def test_normalize_row_index() -> None:
     """Test row index normalization."""
     from .validation_error_formatter import _normalize_row_index
-    
+
     # Normal int
     assert _normalize_row_index(0) == 1  # 0-indexed to 1-indexed
     assert _normalize_row_index(5) == 6
-    
+
     # Negative
     assert _normalize_row_index(-1) is None
-    
+
     # NaN
-    assert _normalize_row_index(float('nan')) is None
-    
+    assert _normalize_row_index(float("nan")) is None
+
     # None
     assert _normalize_row_index(None) is None
-    
+
     # String index
     result = _normalize_row_index("row_1")
     assert result is not None
     assert isinstance(result, str)
-    
+
     # Float
     assert _normalize_row_index(0.0) == 1
     # Non-integer float returns sanitized string (not misleading conversion)
@@ -494,7 +512,7 @@ def test_normalize_row_index() -> None:
 def test_normalize_row_index_numpy() -> None:
     """Test row index normalization with numpy types."""
     from .validation_error_formatter import _normalize_row_index
-    
+
     assert _normalize_row_index(np.int64(0)) == 1
     assert _normalize_row_index(np.int32(5)) == 6
     assert _normalize_row_index(np.nan) is None
@@ -552,7 +570,10 @@ def test_format_missing_required_non_bijective_mapping() -> None:
     # Only raw_to_canon provided, should derive canon_to_raw (first occurrence wins)
     error = HardValidationError(
         missing_required=["student_id"],
-        raw_to_canon={"Student ID": "student_id", "StudentID": "student_id"},  # Two raw → one canon
+        raw_to_canon={
+            "Student ID": "student_id",
+            "StudentID": "student_id",
+        },  # Two raw → one canon
         canon_to_raw=None,  # Not provided, should derive
         merged_specs={"student_id": {}},
     )
@@ -572,7 +593,7 @@ def test_get_canon_to_raw_mapping() -> None:
     )
     mapping1 = _get_canon_to_raw_mapping(error1)
     assert mapping1["student_id"] == "Student ID"
-    
+
     # Derive from raw_to_canon if canon_to_raw not available
     error2 = HardValidationError(
         missing_required=[],
@@ -628,7 +649,9 @@ def test_format_check_error_str_length() -> None:
 
 def test_format_check_error_str_length_range() -> None:
     """Test formatting str_length with min and max."""
-    spec = {"checks": [{"type": "str_length", "kwargs": {"min_value": 3, "max_value": 10}}]}
+    spec = {
+        "checks": [{"type": "str_length", "kwargs": {"min_value": 3, "max_value": 10}}]
+    }
     result = _format_check_error("str_length", spec, "AB")
     assert "between 3 and 10" in result
 
@@ -688,7 +711,9 @@ def test_format_check_error_unknown() -> None:
 # ============================================================================
 
 
-def test_format_column_validation_errors(error_with_failure_cases: HardValidationError) -> None:
+def test_format_column_validation_errors(
+    error_with_failure_cases: HardValidationError,
+) -> None:
     """Test formatting column validation errors."""
     errors = [
         {"row": 1, "check": "str_length", "value": "AB"},
@@ -700,7 +725,9 @@ def test_format_column_validation_errors(error_with_failure_cases: HardValidatio
     assert "Row 1" in result[0] or "Row 2" in result[0]
 
 
-def test_format_column_validation_errors_pii_masking(error_with_pii: HardValidationError) -> None:
+def test_format_column_validation_errors_pii_masking(
+    error_with_pii: HardValidationError,
+) -> None:
     """Test PII masking in column validation errors."""
     errors = [
         {"row": 1, "check": "str_length", "value": "STU-12345-ABCDEF"},
@@ -760,7 +787,9 @@ def test_format_column_validation_errors_schema_level() -> None:
 # ============================================================================
 
 
-def test_format_schema_validation_errors(error_with_failure_cases: HardValidationError) -> None:
+def test_format_schema_validation_errors(
+    error_with_failure_cases: HardValidationError,
+) -> None:
     """Test formatting schema validation errors."""
     result = _format_schema_validation_errors(error_with_failure_cases)
     assert len(result) > 0
@@ -795,17 +824,17 @@ def test_format_schema_validation_errors_deterministic_ordering() -> None:
     )
     result1 = _format_schema_validation_errors(error)
     result2 = _format_schema_validation_errors(error)
-    
+
     # Results should be identical (deterministic)
     assert result1 == result2
-    
+
     # Schema-level should come first, then alphabetical
     result_text = "\n".join(result1)
     schema_level_pos = result_text.find("File-level")
     alpha_pos = result_text.find("Alpha")
     beta_pos = result_text.find("Beta")
     zebra_pos = result_text.find("Zebra")
-    
+
     # Schema-level should be first
     if schema_level_pos >= 0:
         assert schema_level_pos < alpha_pos or alpha_pos < 0
@@ -821,7 +850,9 @@ def test_format_schema_validation_errors_deterministic_ordering() -> None:
 # ============================================================================
 
 
-def test_format_validation_error_missing_required(sample_error: HardValidationError) -> None:
+def test_format_validation_error_missing_required(
+    sample_error: HardValidationError,
+) -> None:
     """Test formatting error with missing required columns."""
     result = format_validation_error(sample_error)
     assert "Missing required columns" in result
@@ -836,13 +867,17 @@ def test_format_validation_error_extra_columns() -> None:
     assert "unknown1" in result
 
 
-def test_format_validation_error_failure_cases(error_with_failure_cases: HardValidationError) -> None:
+def test_format_validation_error_failure_cases(
+    error_with_failure_cases: HardValidationError,
+) -> None:
     """Test formatting error with failure cases."""
     result = format_validation_error(error_with_failure_cases)
     assert "validation errors" in result.lower() or "Row" in result
 
 
-def test_format_validation_error_pii_masking(error_with_pii: HardValidationError) -> None:
+def test_format_validation_error_pii_masking(
+    error_with_pii: HardValidationError,
+) -> None:
     """Test PII masking in formatted error."""
     result = format_validation_error(error_with_pii)
     assert "STU-12345-ABCDEF" not in result
@@ -924,7 +959,9 @@ def test_format_validation_error_all_types() -> None:
         missing_required=["col1"],
         extra_columns=["col2"],
         schema_errors="test_error",
-        failure_cases=[{"column": "col3", "index": 0, "check": "test", "failure_case": "val"}],
+        failure_cases=[
+            {"column": "col3", "index": 0, "check": "test", "failure_case": "val"}
+        ],
         canon_to_raw={"col1": "Column 1", "col3": "Column 3"},
         merged_specs={"col1": {}, "col3": {}},
     )
@@ -1044,14 +1081,18 @@ def test_format_validation_error_pii_true_positive() -> None:
 @pytest.mark.skipif(not HAS_PANDAS, reason="pandas not available")
 def test_format_validation_error_dataframe_failure_cases() -> None:
     """Test formatting with DataFrame failure_cases (critical fix)."""
-    df = pd.DataFrame([
-        {"column": "grade", "index": 0, "check": "isin", "failure_case": "X"},
-        {"column": "grade", "index": 1, "check": "isin", "failure_case": "Y"},
-    ])
+    df = pd.DataFrame(
+        [
+            {"column": "grade", "index": 0, "check": "isin", "failure_case": "X"},
+            {"column": "grade", "index": 1, "check": "isin", "failure_case": "Y"},
+        ]
+    )
     error = HardValidationError(
         failure_cases=df,  # DataFrame, not list
         canon_to_raw={"grade": "Grade"},
-        merged_specs={"grade": {"checks": [{"type": "isin", "args": [["A", "B", "C"]]}]}},
+        merged_specs={
+            "grade": {"checks": [{"type": "isin", "args": [["A", "B", "C"]]}]}
+        },
     )
     result = format_validation_error(error)
     # Should format errors (not drop them)
@@ -1138,7 +1179,9 @@ def complete_error() -> HardValidationError:
     )
 
 
-def test_integration_all_error_types_present(complete_error: HardValidationError) -> None:
+def test_integration_all_error_types_present(
+    complete_error: HardValidationError,
+) -> None:
     """Test that all error types are present in formatted output."""
     result = format_validation_error(complete_error)
     assert "Missing required columns" in result
@@ -1146,7 +1189,9 @@ def test_integration_all_error_types_present(complete_error: HardValidationError
     assert "validation errors" in result.lower()
 
 
-def test_integration_pii_masking_and_non_pii_display(complete_error: HardValidationError) -> None:
+def test_integration_pii_masking_and_non_pii_display(
+    complete_error: HardValidationError,
+) -> None:
     """Test PII masking and non-PII value display in integration."""
     result = format_validation_error(complete_error)
     # Check PII is masked
@@ -1156,7 +1201,9 @@ def test_integration_pii_masking_and_non_pii_display(complete_error: HardValidat
     assert "X" in result  # Grade is not PII
 
 
-def test_integration_user_friendly_column_names(complete_error: HardValidationError) -> None:
+def test_integration_user_friendly_column_names(
+    complete_error: HardValidationError,
+) -> None:
     """Test that user-friendly column names are used."""
     result = format_validation_error(complete_error)
     assert "Student ID" in result
@@ -1164,7 +1211,9 @@ def test_integration_user_friendly_column_names(complete_error: HardValidationEr
     assert "Email" in result
 
 
-def test_integration_row_numbering_and_message_size(complete_error: HardValidationError) -> None:
+def test_integration_row_numbering_and_message_size(
+    complete_error: HardValidationError,
+) -> None:
     """Test row numbering and message size limits."""
     result = format_validation_error(complete_error)
     # Check row numbers are 1-indexed
@@ -1259,13 +1308,14 @@ def test_format_extra_columns_reverse_lookup_three_plus_matches() -> None:
 
 def test_normalize_failure_cases_dataframe_like_no_iterrows() -> None:
     """Test normalize_failure_cases with DataFrame-like object without iterrows (behavior-based)."""
+
     # Mock object with to_dict but no iterrows (behavior-based detection)
     class MockDataFrame:
         def to_dict(self, orient: Optional[str] = None) -> Any:
             if orient == "records":
                 return [{"column": "col1", "index": 0}]
             return {"col1": {0: "val"}}
-    
+
     mock_df = MockDataFrame()
     result = _normalize_failure_cases(mock_df)
     assert isinstance(result, list)
@@ -1275,6 +1325,7 @@ def test_normalize_failure_cases_dataframe_like_no_iterrows() -> None:
 
 def test_normalize_failure_cases_dataframe_fallback_to_dict() -> None:
     """Test normalize_failure_cases fallback when to_dict(orient='records') fails."""
+
     # Mock object where orient='records' fails but to_dict() works
     class MockDataFrame:
         def to_dict(self, orient: Optional[str] = None) -> Any:
@@ -1282,7 +1333,7 @@ def test_normalize_failure_cases_dataframe_fallback_to_dict() -> None:
                 raise ValueError("orient='records' not supported")
             # Return dict of dicts format
             return {"col1": {0: "val1"}, "col2": {0: "val2"}}
-    
+
     mock_df = MockDataFrame()
     result = _normalize_failure_cases(mock_df)
     # Should handle fallback gracefully
@@ -1292,7 +1343,7 @@ def test_normalize_failure_cases_dataframe_fallback_to_dict() -> None:
 def test_normalize_row_index_non_integer_float() -> None:
     """Test normalize_row_index with non-integer float (should return sanitized string)."""
     from .validation_error_formatter import _normalize_row_index
-    
+
     result = _normalize_row_index(5.7)
     # Should return sanitized string, not misleading conversion
     assert isinstance(result, str)
@@ -1302,11 +1353,11 @@ def test_normalize_row_index_non_integer_float() -> None:
 def test_normalize_row_index_whole_number_float() -> None:
     """Test normalize_row_index with whole number float (should convert correctly)."""
     from .validation_error_formatter import _normalize_row_index
-    
+
     result = _normalize_row_index(5.0)
     # Should convert to int and add 1 (0-indexed to 1-indexed)
     assert result == 6
-    
+
     result = _normalize_row_index(0.0)
     assert result == 1
 
@@ -1314,14 +1365,14 @@ def test_normalize_row_index_whole_number_float() -> None:
 def test_format_isin_error_numeric_tie_breaking() -> None:
     """Test isin error formatting with numeric tie-breaking (01, 1, 1.0)."""
     from .validation_error_formatter import _format_isin_error
-    
+
     check_spec = {"type": "isin", "args": [["01", "1", "1.0", "2", "10"]]}
     result1 = _format_isin_error(check_spec)
     result2 = _format_isin_error(check_spec)
-    
+
     # Should be deterministic (same result each time)
     assert result1 == result2
-    
+
     # Should show values in sorted order
     assert "01" in result1
     assert "1" in result1
@@ -1340,10 +1391,10 @@ def test_format_isin_error_numeric_tie_breaking() -> None:
 def test_format_isin_error_nan_inf_handling() -> None:
     """Test isin error formatting with NaN/inf values (should go to non-numeric bucket)."""
     from .validation_error_formatter import _format_isin_error
-    
+
     check_spec = {"type": "isin", "args": [["2", "NaN", "10", "inf", "1"]]}
     result = _format_isin_error(check_spec)
-    
+
     # Should handle NaN/inf gracefully
     assert "NaN" in result or "inf" in result
     # Numeric values should be sorted
@@ -1355,12 +1406,12 @@ def test_format_isin_error_nan_inf_handling() -> None:
 def test_format_isin_error_set_input() -> None:
     """Test isin error formatting with set input (unstable ordering → stable output)."""
     from .validation_error_formatter import _format_isin_error
-    
+
     # Set has unstable ordering
     check_spec = {"type": "isin", "args": [{"A", "B", "C", "D"}]}
     result1 = _format_isin_error(check_spec)
     result2 = _format_isin_error(check_spec)
-    
+
     # Should be deterministic (same result each time)
     assert result1 == result2
 
@@ -1368,10 +1419,10 @@ def test_format_isin_error_set_input() -> None:
 def test_format_isin_error_mixed_numeric_non_numeric() -> None:
     """Test isin error formatting with mixed numeric and non-numeric values."""
     from .validation_error_formatter import _format_isin_error
-    
+
     check_spec = {"type": "isin", "args": [["2", "A", "10", "1", "B"]]}
     result = _format_isin_error(check_spec)
-    
+
     # Numeric should come first, sorted: 1, 2, 10
     # Then non-numeric, sorted: A, B
     idx_1 = result.find("1")
@@ -1379,7 +1430,7 @@ def test_format_isin_error_mixed_numeric_non_numeric() -> None:
     idx_10 = result.find("10")
     idx_a = result.find("A")
     idx_b = result.find("B")
-    
+
     # Numeric before non-numeric
     assert idx_1 < idx_a
     assert idx_2 < idx_a
@@ -1401,4 +1452,6 @@ def test_format_missing_required_empty_display() -> None:
     assert result is not None
     # Should return generic message, not empty list
     assert "Missing required columns detected" in result
-    assert "These columns must be present" in result or "check your file" in result.lower()
+    assert (
+        "These columns must be present" in result or "check your file" in result.lower()
+    )

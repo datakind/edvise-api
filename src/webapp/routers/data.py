@@ -1742,7 +1742,6 @@ def validation_helper(
                     bucket_name=bucket,
                     inst_query=inst,
                     file_name=file_name,
-                    catalog_name=str(env_vars["CATALOG_NAME"]),
                     base_schema=base_schema,
                     extension_schema=inst_schema,
                 )
@@ -1752,17 +1751,20 @@ def validation_helper(
                 try:
                     # Deactivate existing extension records for this institution
                     # to ensure only one active extension per institution
-                    existing_extensions = sess.execute(
-                        select(SchemaRegistryTable)
-                        .where(
-                            SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
-                            SchemaRegistryTable.doc_type == DocType.extension,
-                            SchemaRegistryTable.is_active.is_(True),
+                    existing_extensions = (
+                        sess.execute(
+                            select(SchemaRegistryTable).where(
+                                SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
+                                SchemaRegistryTable.doc_type == DocType.extension,
+                                SchemaRegistryTable.is_active.is_(True),
+                            )
                         )
-                    ).scalars().all()
+                        .scalars()
+                        .all()
+                    )
                     for existing in existing_extensions:
                         existing.is_active = False
-                    
+
                     new_schema_extension_record = SchemaRegistryTable(
                         doc_type=DocType.extension,
                         inst_id=str_to_uuid(inst_id),

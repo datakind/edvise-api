@@ -11,6 +11,7 @@ try:
     import numpy as np
     from pandera import DataFrameSchema, Column, Check
     from pandera.errors import SchemaErrors, SchemaError
+
     HAS_PANDERA = True
 except ImportError:
     HAS_PANDERA = False
@@ -46,9 +47,9 @@ def test_integration_pandera_missing_required_columns() -> None:
             "grade": {"description": "Student grade"},
         },
     )
-    
+
     result = format_validation_error(error)
-    
+
     # Assertions: Check specific content, not just "no exception"
     assert len(result) > 0
     assert len(result) <= MAX_MESSAGE_LENGTH
@@ -64,28 +65,32 @@ def test_integration_pandera_missing_required_columns() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_type_errors() -> None:
     """Test formatter with real Pandera type validation errors."""
-    schema = DataFrameSchema({
-        "age": Column(int, nullable=False),
-        "score": Column(float, nullable=False),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "age": Column(int, nullable=False),
+            "score": Column(float, nullable=False),
+        }
+    )
+
     # Create DataFrame with wrong types
-    df = pd.DataFrame({
-        "age": ["not_a_number", "also_not_a_number"],
-        "score": ["invalid", "also_invalid"],
-    })
-    
+    df = pd.DataFrame(
+        {
+            "age": ["not_a_number", "also_not_a_number"],
+            "score": ["invalid", "also_invalid"],
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Convert to HardValidationError format (as validation.py does)
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={"Age": "age", "Score": "score"},
@@ -95,9 +100,9 @@ def test_integration_pandera_type_errors() -> None:
                 "score": {"dtype": "float64", "nullable": False},
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check specific content
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -111,33 +116,41 @@ def test_integration_pandera_type_errors() -> None:
             assert "Row" in result or "Unknown row" in result
             # Example values should be present (may be masked if PII)
             # Type errors show the actual type found
-            assert "object" in result.lower() or "int" in result.lower() or "float" in result.lower()
+            assert (
+                "object" in result.lower()
+                or "int" in result.lower()
+                or "float" in result.lower()
+            )
 
 
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_isin_errors() -> None:
     """Test formatter with real Pandera isin check errors."""
-    schema = DataFrameSchema({
-        "grade": Column(str, checks=Check.isin(["A", "B", "C", "D", "F"])),
-        "status": Column(str, checks=Check.isin(["active", "inactive", "pending"])),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "grade": Column(str, checks=Check.isin(["A", "B", "C", "D", "F"])),
+            "status": Column(str, checks=Check.isin(["active", "inactive", "pending"])),
+        }
+    )
+
     # Create DataFrame with invalid values
-    df = pd.DataFrame({
-        "grade": ["X", "Y", "Z"],
-        "status": ["invalid", "also_invalid", "third_invalid"],
-    })
-    
+    df = pd.DataFrame(
+        {
+            "grade": ["X", "Y", "Z"],
+            "status": ["invalid", "also_invalid", "third_invalid"],
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={"Grade": "grade", "Status": "status"},
@@ -147,13 +160,15 @@ def test_integration_pandera_isin_errors() -> None:
                     "checks": [{"type": "isin", "args": [["A", "B", "C", "D", "F"]]}],
                 },
                 "status": {
-                    "checks": [{"type": "isin", "args": [["active", "inactive", "pending"]]}],
+                    "checks": [
+                        {"type": "isin", "args": [["active", "inactive", "pending"]]}
+                    ],
                 },
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check specific content
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -166,7 +181,11 @@ def test_integration_pandera_isin_errors() -> None:
         assert "Row 1" in result  # First row error
         assert "Row 2" in result  # Second row error
         # isin check mention
-        assert "isin" in result.lower() or "one of" in result.lower() or "allowed values" in result.lower()
+        assert (
+            "isin" in result.lower()
+            or "one of" in result.lower()
+            or "allowed values" in result.lower()
+        )
         # Example values should be shown (not masked - these are not PII)
         assert "X" in result or "Y" in result or "Z" in result  # Actual values shown
         assert "invalid" in result.lower()  # Actual values shown
@@ -175,27 +194,31 @@ def test_integration_pandera_isin_errors() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_nullability_errors() -> None:
     """Test formatter with real Pandera nullability errors."""
-    schema = DataFrameSchema({
-        "student_id": Column(str, nullable=False),
-        "name": Column(str, nullable=False),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "student_id": Column(str, nullable=False),
+            "name": Column(str, nullable=False),
+        }
+    )
+
     # Create DataFrame with null values
-    df = pd.DataFrame({
-        "student_id": ["STU001", None, "STU003"],
-        "name": ["Alice", "Bob", None],
-    })
-    
+    df = pd.DataFrame(
+        {
+            "student_id": ["STU001", None, "STU003"],
+            "name": ["Alice", "Bob", None],
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={"Student ID": "student_id", "Name": "name"},
@@ -205,9 +228,9 @@ def test_integration_pandera_nullability_errors() -> None:
                 "name": {"nullable": False},
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check specific content
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -220,13 +243,18 @@ def test_integration_pandera_nullability_errors() -> None:
         assert "Row 2" in result  # Second row has null student_id
         assert "Row 3" in result  # Third row has null name
         # Nullability error message
-        assert "cannot be empty" in result.lower() or "null" in result.lower() or "empty" in result.lower() or "required" in result.lower()
+        assert (
+            "cannot be empty" in result.lower()
+            or "null" in result.lower()
+            or "empty" in result.lower()
+            or "required" in result.lower()
+        )
 
 
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_schema_level_checks() -> None:
     """Test formatter with real Pandera schema-level validation errors.
-    
+
     This test ensures schema-level errors (without a column field) are properly
     formatted using the _schema_level path.
     """
@@ -238,10 +266,10 @@ def test_integration_pandera_schema_level_checks() -> None:
         },
         checks=Check(lambda df: len(df) > 0, name="non_empty_dataframe"),
     )
-    
+
     # Create empty DataFrame
     df = pd.DataFrame(columns=["col1", "col2"])
-    
+
     try:
         schema.validate(df)
         pytest.fail("Expected SchemaError or SchemaErrors to be raised")
@@ -249,29 +277,33 @@ def test_integration_pandera_schema_level_checks() -> None:
         # Schema-level checks may raise SchemaError (singular) or SchemaErrors (plural)
         # Handle case where failure_cases might be a DataFrame or missing
         failure_cases = []
-        if hasattr(e, 'failure_cases') and e.failure_cases is not None:
-            if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e, "failure_cases") and e.failure_cases is not None:
+            if hasattr(e.failure_cases, "to_dict"):
                 failure_cases = e.failure_cases.to_dict(orient="records")
-        
+
         # If failure_cases don't have a column field, ensure they're treated as schema-level
         # Manually create a schema-level failure case if needed
-        if not failure_cases or all(case.get("column") for case in failure_cases if isinstance(case, dict)):
+        if not failure_cases or all(
+            case.get("column") for case in failure_cases if isinstance(case, dict)
+        ):
             # Create a schema-level failure case (no column field)
-            failure_cases = [{
-                "check": "non_empty_dataframe",
-                "failure_case": "DataFrame is empty",
-                # No "column" field - this triggers schema-level formatting
-            }]
-        
+            failure_cases = [
+                {
+                    "check": "non_empty_dataframe",
+                    "failure_case": "DataFrame is empty",
+                    # No "column" field - this triggers schema-level formatting
+                }
+            ]
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={"Col1": "col1", "Col2": "col2"},
             canon_to_raw={"col1": "Col1", "col2": "Col2"},
             merged_specs={},
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check schema-level formatting path
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -286,25 +318,29 @@ def test_integration_pandera_schema_level_checks() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_row_numbering() -> None:
     """Test that formatter correctly converts 0-indexed to 1-indexed row numbers."""
-    schema = DataFrameSchema({
-        "value": Column(int, checks=Check.greater_than(0)),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "value": Column(int, checks=Check.greater_than(0)),
+        }
+    )
+
     # Create DataFrame with errors at specific rows
-    df = pd.DataFrame({
-        "value": [1, -5, 3, -10, 5],  # Rows 1 and 3 (0-indexed) have errors
-    })
-    
+    df = pd.DataFrame(
+        {
+            "value": [1, -5, 3, -10, 5],  # Rows 1 and 3 (0-indexed) have errors
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={"Value": "value"},
@@ -313,9 +349,9 @@ def test_integration_pandera_row_numbering() -> None:
                 "value": {"checks": [{"type": "ge", "kwargs": {"ge": 0}}]},
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check row numbering (0-indexed to 1-indexed conversion)
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -335,35 +371,39 @@ def test_integration_pandera_row_numbering() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_pii_masking() -> None:
     """Test that formatter masks PII values in real Pandera errors.
-    
+
     This test covers both "should mask" (student_name, email, ssn) and
     "should not mask" (course_name) to prevent regressions both ways.
     """
-    schema = DataFrameSchema({
-        "student_name": Column(str, checks=Check.str_length(min_value=3)),
-        "course_name": Column(str, checks=Check.str_length(min_value=3)),
-        "email": Column(str, checks=Check.str_length(min_value=5)),
-        "ssn": Column(str, checks=Check.str_length(min_value=9)),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "student_name": Column(str, checks=Check.str_length(min_value=3)),
+            "course_name": Column(str, checks=Check.str_length(min_value=3)),
+            "email": Column(str, checks=Check.str_length(min_value=5)),
+            "ssn": Column(str, checks=Check.str_length(min_value=9)),
+        }
+    )
+
     # Create DataFrame with both PII and non-PII values that fail validation
-    df = pd.DataFrame({
-        "student_name": ["AB"],  # Too short, contains PII - SHOULD BE MASKED
-        "course_name": ["XY"],  # Too short, NOT PII - SHOULD NOT BE MASKED
-        "email": ["ab@c"],  # Too short, contains PII - SHOULD BE MASKED
-        "ssn": ["123"],  # Too short, contains PII - SHOULD BE MASKED
-    })
-    
+    df = pd.DataFrame(
+        {
+            "student_name": ["AB"],  # Too short, contains PII - SHOULD BE MASKED
+            "course_name": ["XY"],  # Too short, NOT PII - SHOULD NOT BE MASKED
+            "email": ["ab@c"],  # Too short, contains PII - SHOULD BE MASKED
+            "ssn": ["123"],  # Too short, contains PII - SHOULD BE MASKED
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={
@@ -379,15 +419,21 @@ def test_integration_pandera_pii_masking() -> None:
                 "ssn": "SSN",
             },
             merged_specs={
-                "student_name": {"checks": [{"type": "str_length", "kwargs": {"min_value": 3}}]},
-                "course_name": {"checks": [{"type": "str_length", "kwargs": {"min_value": 3}}]},
-                "email": {"checks": [{"type": "str_length", "kwargs": {"min_value": 5}}]},
+                "student_name": {
+                    "checks": [{"type": "str_length", "kwargs": {"min_value": 3}}]
+                },
+                "course_name": {
+                    "checks": [{"type": "str_length", "kwargs": {"min_value": 3}}]
+                },
+                "email": {
+                    "checks": [{"type": "str_length", "kwargs": {"min_value": 5}}]
+                },
                 "ssn": {"checks": [{"type": "str_length", "kwargs": {"min_value": 9}}]},
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check PII masking (both positive and negative cases)
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -411,31 +457,35 @@ def test_integration_pandera_pii_masking() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_truncation_behavior() -> None:
     """Test that formatter truncates messages when there are many errors.
-    
+
     This test forces truncation deterministically by generating enough failures
     to exceed MAX_ERROR_EXAMPLES and/or MAX_MESSAGE_LENGTH.
     """
-    schema = DataFrameSchema({
-        "value": Column(int, checks=Check.greater_than(0)),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "value": Column(int, checks=Check.greater_than(0)),
+        }
+    )
+
     # Create DataFrame with many errors (more than MAX_ERROR_EXAMPLES)
     # Generate enough to guarantee truncation
     num_errors = MAX_ERROR_EXAMPLES + 5  # Ensure we exceed the limit
-    df = pd.DataFrame({
-        "value": [-1] * num_errors,  # Many rows with errors
-    })
-    
+    df = pd.DataFrame(
+        {
+            "value": [-1] * num_errors,  # Many rows with errors
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={"Value": "value"},
@@ -444,9 +494,9 @@ def test_integration_pandera_truncation_behavior() -> None:
                 "value": {"checks": [{"type": "ge", "kwargs": {"ge": 0}}]},
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check truncation behavior deterministically
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -466,29 +516,35 @@ def test_integration_pandera_truncation_behavior() -> None:
 @pytest.mark.skipif(not HAS_PANDERA, reason="pandera not available")
 def test_integration_pandera_mixed_error_types() -> None:
     """Test formatter with real Pandera errors containing multiple error types."""
-    schema = DataFrameSchema({
-        "student_id": Column(str, nullable=False, checks=Check.str_length(min_value=3)),
-        "grade": Column(str, checks=Check.isin(["A", "B", "C", "D", "F"])),
-        "age": Column(int, nullable=False),
-    })
-    
+    schema = DataFrameSchema(
+        {
+            "student_id": Column(
+                str, nullable=False, checks=Check.str_length(min_value=3)
+            ),
+            "grade": Column(str, checks=Check.isin(["A", "B", "C", "D", "F"])),
+            "age": Column(int, nullable=False),
+        }
+    )
+
     # Create DataFrame with multiple types of errors
-    df = pd.DataFrame({
-        "student_id": ["AB", None, "STU003"],  # Too short, null, valid
-        "grade": ["X", "Y", "A"],  # Invalid, invalid, valid
-        "age": [15, None, 20],  # Valid, null, valid
-    })
-    
+    df = pd.DataFrame(
+        {
+            "student_id": ["AB", None, "STU003"],  # Too short, null, valid
+            "grade": ["X", "Y", "A"],  # Invalid, invalid, valid
+            "age": [15, None, 20],  # Valid, null, valid
+        }
+    )
+
     try:
         schema.validate(df, lazy=True)  # Use lazy=True to collect all errors
         pytest.fail("Expected SchemaErrors to be raised")
     except SchemaErrors as e:
         # Handle case where failure_cases might be a DataFrame
-        if hasattr(e.failure_cases, 'to_dict'):
+        if hasattr(e.failure_cases, "to_dict"):
             failure_cases = e.failure_cases.to_dict(orient="records")
         else:
             failure_cases = []
-        
+
         error = HardValidationError(
             failure_cases=failure_cases,
             raw_to_canon={
@@ -514,9 +570,9 @@ def test_integration_pandera_mixed_error_types() -> None:
                 },
             },
         )
-        
+
         result = format_validation_error(error)
-        
+
         # Assertions: Check multiple error types
         assert len(result) > 0
         assert len(result) <= MAX_MESSAGE_LENGTH
@@ -527,13 +583,30 @@ def test_integration_pandera_mixed_error_types() -> None:
         # Section headers
         assert "Column" in result or "has validation errors" in result.lower()
         # Row numbers (1-indexed) - specific rows with errors
-        assert "Row 1" in result  # First row has multiple errors (student_id too short, grade invalid)
-        assert "Row 2" in result  # Second row has multiple errors (student_id null, grade invalid, age null)
+        assert (
+            "Row 1" in result
+        )  # First row has multiple errors (student_id too short, grade invalid)
+        assert (
+            "Row 2" in result
+        )  # Second row has multiple errors (student_id null, grade invalid, age null)
         # Row 3 is valid, so it won't appear in errors
         # Different error types should be mentioned
         # - str_length error for student_id
-        assert "length" in result.lower() or "short" in result.lower() or "minimum" in result.lower()
+        assert (
+            "length" in result.lower()
+            or "short" in result.lower()
+            or "minimum" in result.lower()
+        )
         # - isin error for grade
-        assert "isin" in result.lower() or "one of" in result.lower() or "allowed" in result.lower()
+        assert (
+            "isin" in result.lower()
+            or "one of" in result.lower()
+            or "allowed" in result.lower()
+        )
         # - nullability error for age
-        assert "cannot be empty" in result.lower() or "null" in result.lower() or "empty" in result.lower() or "required" in result.lower()
+        assert (
+            "cannot be empty" in result.lower()
+            or "null" in result.lower()
+            or "empty" in result.lower()
+            or "required" in result.lower()
+        )
