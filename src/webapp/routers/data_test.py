@@ -1241,15 +1241,50 @@ def test_validate_sftp_with_edvise_schema(edvise_client: TestClient) -> None:
     assert MOCK_STORAGE.validate_file.called
 
 
-def test_validate_edvise_unauthorized(edvise_client: TestClient) -> None:
+def test_validate_edvise_unauthorized(
+    edvise_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> None:
     """Test validation endpoint with unauthorized access."""
-    response = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(UUID_INVALID)  # Institution user doesn't have access to
-        + "/input/validate-upload/test_student.csv",
-    )
-    assert response.status_code == 401
-    assert "Not authorized" in response.json()["detail"]
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    # Create a test client with a MODEL_OWNER user who only has access to EDVISE_INST_UUID
+    # This user should NOT have access to EDVISE_INST_2_UUID
+    def get_session_override():
+        return edvise_session
+
+    def get_current_active_user_override():
+        # User belongs to EDVISE_INST_UUID, not DATAKINDER, so access is restricted
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            uuid_to_str(EDVISE_INST_UUID),  # User belongs to this institution
+            AccessType.MODEL_OWNER,  # Not DATAKINDER, so access is restricted
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+
+    client = TestClient(app)
+    try:
+        # Try to access EDVISE_INST_2_UUID which exists but user doesn't have access to
+        response = client.post(
+            "/institutions/"
+            + uuid_to_str(
+                EDVISE_INST_2_UUID
+            )  # Institution exists but user is unauthorized
+            + "/input/validate-upload/test_student.csv",
+        )
+        assert response.status_code == 401
+        assert "Not authorized" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_validate_edvise_invalid_filename(edvise_client: TestClient) -> None:

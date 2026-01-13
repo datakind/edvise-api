@@ -1627,7 +1627,10 @@ def validation_helper(
         select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
     ).scalar_one_or_none()
     if inst is None:
-        raise ValueError(f"Institution {inst_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Institution {inst_id} not found",
+        )
 
     bucket = get_external_bucket_name(inst_id)
     # --- choose / prepare extension schema (try to avoid heavy path)
