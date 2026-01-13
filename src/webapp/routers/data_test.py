@@ -1151,8 +1151,11 @@ def test_validate_file_edvise_schema_validation_errors(
     )
 
     assert response.status_code == 400
-    assert "VALIDATION_FAILED" in response.json()["detail"]
-    assert "missing_required" in response.json()["detail"]
+    # Check for user-friendly error message (Phase 4: Error Message Improvements)
+    detail = response.json()["detail"]
+    assert "Missing required columns" in detail or "student_id" in detail
+    # The message should be user-friendly, not technical "VALIDATION_FAILED"
+    assert "VALIDATION_FAILED" not in detail or "missing_required=" not in detail
 
     # Reset mock
     MOCK_STORAGE.validate_file.side_effect = None

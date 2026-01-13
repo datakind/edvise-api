@@ -13,6 +13,7 @@ import logging
 from sqlalchemy.exc import IntegrityError
 import re
 from ..validation import HardValidationError
+from ..validation_error_formatter import format_validation_error
 import pandas as pd
 from cachetools import TTLCache
 
@@ -1595,9 +1596,12 @@ def validation_helper(
         inferred_from_name.add("SEMESTER")
 
     if not inferred_from_name:
-        raise ValueError(
-            f"Could not infer model(s) from file name: {name}. "
-            "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Could not infer model(s) from file name: {name}. "
+                "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
+            ),
         )
 
     allowed_schemas = sorted(inferred_from_name)
@@ -1738,7 +1742,7 @@ def validation_helper(
                     bucket_name=bucket,
                     inst_query=inst,
                     file_name=file_name,
-                    catalog_name=env_vars["CATALOG_NAME"],
+                    catalog_name=str(env_vars["CATALOG_NAME"]),
                     base_schema=base_schema,
                     extension_schema=inst_schema,
                 )
@@ -1746,6 +1750,19 @@ def validation_helper(
             if schema_extension is not None:
                 updated_inst_schema = schema_extension
                 try:
+                    # Deactivate existing extension records for this institution
+                    # to ensure only one active extension per institution
+                    existing_extensions = sess.execute(
+                        select(SchemaRegistryTable)
+                        .where(
+                            SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
+                            SchemaRegistryTable.doc_type == DocType.extension,
+                            SchemaRegistryTable.is_active.is_(True),
+                        )
+                    ).scalars().all()
+                    for existing in existing_extensions:
+                        existing.is_active = False
+                    
                     new_schema_extension_record = SchemaRegistryTable(
                         doc_type=DocType.extension,
                         inst_id=str_to_uuid(inst_id),
@@ -1757,7 +1774,11 @@ def validation_helper(
                     )
                     sess.add(new_schema_extension_record)
                     sess.flush()
-                    logging.info("Schema record inserted for '%s'", inst_id)
+                    logging.info(
+                        "Schema record inserted for '%s' (deactivated %d existing)",
+                        inst_id,
+                        len(existing_extensions),
+                    )
                     # refresh cache
                     STATE._ext_cache[key] = (
                         time.monotonic() + EXT_TTL,
@@ -1791,25 +1812,22 @@ def validation_helper(
         logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:
         logging.debug("Inferred Schemas FAILED (hard) %s", e)
-        parts = ["VALIDATION_FAILED"]
-        if e.missing_required:
-            parts.append(f"missing_required={e.missing_required}")
-        if e.extra_columns:
-            parts.append(f"extra_columns={e.extra_columns}")
-        if e.schema_errors is not None:
-            parts.append(f"schema_errors={e.schema_errors}")
-        if e.failure_cases is not None:
-            try:
-                sample = (
-                    e.failure_cases[:5]
-                    if isinstance(e.failure_cases, list)
-                    else str(e.failure_cases)[:500]
-                )
-            except Exception:
-                sample = "see server logs"
-            parts.append(f"failure_cases_sample={sample}")
+        # Format error message for user-friendly display
+        try:
+            formatted_msg = format_validation_error(e)
+        except Exception as format_err:
+            # Fallback to technical message if formatting fails
+            logging.warning("Error formatting validation message: %s", format_err)
+            parts = ["VALIDATION_FAILED"]
+            if e.missing_required:
+                parts.append(f"missing_required={e.missing_required}")
+            if e.extra_columns:
+                parts.append(f"extra_columns={e.extra_columns}")
+            if e.schema_errors is not None:
+                parts.append(f"schema_errors={e.schema_errors}")
+            formatted_msg = "; ".join(parts)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(parts)
+            status_code=status.HTTP_400_BAD_REQUEST, detail=formatted_msg
         )
     except Exception as e:
         logging.debug("Inferred Schemas FAILED (other) %s", e)

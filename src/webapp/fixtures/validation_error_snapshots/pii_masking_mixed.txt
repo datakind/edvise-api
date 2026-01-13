@@ -1,0 +1,14 @@
+Column 'Course Name' has validation errors:
+  • Row 1: Validation failed for str_length(3, None) check. Current value: found 'XY'
+
+Column 'Email' has validation errors:
+  • Row 2: Validation failed for str_length(5, None) check. Current value: found 'ca******om' (value masked for privacy)
+
+Column 'Grade' has validation errors:
+  • Row 2: Validation failed for isin(['A', 'B', 'C']) check. Current value: found 'X'
+
+Column 'SSN' has validation errors:
+  • Row 3: Validation failed for str_length(9, None) check. Current value: found 'CA******89' (value masked for privacy)
+
+Column 'Student Name' has validation errors:
+  • Row 1: Validation failed for str_length(3, None) check. Current value: found 'CA******23' (value masked for privacy)

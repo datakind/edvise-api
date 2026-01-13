@@ -1,0 +1,9 @@
+Missing required columns: 'Student ID' (Student identifier). These columns must be present in your file.
+
+Unexpected columns found: 'Extra Col'. Please remove these columns or rename them to match the expected schema.
+
+Column 'Age' has validation errors:
+  • Row 2: Value validation failed. Current value: found 'None'
+
+Column 'Grade' has validation errors:
+  • Row 1: Validation failed for isin(['A', 'B', 'C']) check. Current value: found 'X'

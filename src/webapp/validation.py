@@ -52,11 +52,17 @@ class HardValidationError(Exception):
         extra_columns: Optional[List[str]] = None,
         schema_errors: Any = None,
         failure_cases: Any = None,
+        raw_to_canon: Optional[Dict[str, str]] = None,
+        canon_to_raw: Optional[Dict[str, str]] = None,
+        merged_specs: Optional[Dict[str, dict]] = None,
     ):
         self.missing_required = missing_required or []
         self.extra_columns = extra_columns or []
         self.schema_errors = schema_errors
         self.failure_cases = failure_cases
+        self.raw_to_canon = raw_to_canon or {}
+        self.canon_to_raw = canon_to_raw or {}
+        self.merged_specs = merged_specs or {}
         parts = []
         if self.missing_required:
             parts.append(f"Missing required columns: {self.missing_required}")
@@ -425,7 +431,23 @@ def validate_dataset(
 
     if missing_required:
         logger.error("Missing required columns: %s", missing_required)
-        raise HardValidationError(missing_required=missing_required)
+        # Build canon_to_raw for missing columns (may not exist in file, use canonical name)
+        canon_to_raw_for_missing: Dict[str, str] = {}
+        for canon in missing_required:
+            # Try to find a raw column that maps to this canonical
+            for raw, mapped_canon in raw_to_canon.items():
+                if mapped_canon == canon:
+                    canon_to_raw_for_missing[canon] = raw
+                    break
+            # If no mapping found, use canonical name as fallback
+            if canon not in canon_to_raw_for_missing:
+                canon_to_raw_for_missing[canon] = canon
+        raise HardValidationError(
+            missing_required=missing_required,
+            raw_to_canon=raw_to_canon,
+            canon_to_raw=canon_to_raw_for_missing,
+            merged_specs=merged_specs,
+        )
 
     # Reset again before the real read (important for file-like objects)
     _reset_to_start_if_possible(filename)
@@ -503,6 +525,9 @@ def validate_dataset(
             raise HardValidationError(
                 schema_errors=err.schema_errors,
                 failure_cases=err.failure_cases.to_dict(orient="records"),
+                raw_to_canon=raw_to_canon,
+                canon_to_raw=canon_to_raw,
+                merged_specs=merged_specs,
             )
 
     opt_failures: List[str] = []
