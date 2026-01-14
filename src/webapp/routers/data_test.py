@@ -948,11 +948,17 @@ def edvise_session_fixture():
                         doc_type=DocType.extension,
                         is_pdp=False,
                         is_edvise=True,
-                        version_label="1.0.0",
+                        version_label="edvise-1.0.0",
                         json_doc=edvise_schema_doc,
                         is_active=True,
                         created_at=DATETIME_TESTING,
                     ),
+                    # Note: Edvise extension uses version_label="edvise-1.0.0" to avoid violating
+                    # uq_pdp_version constraint (is_pdp, version_label) in MySQL, which requires
+                    # unique (is_pdp, version_label) combinations across all rows. The base schema
+                    # uses version_label="1.0.0" with is_pdp=False, so Edvise must use a different
+                    # version_label. The JSON doc's "version": "1.0.0" field maintains semantic
+                    # versioning, while the database version_label is prefixed for constraint uniqueness.
                 ]
             )
             session.commit()

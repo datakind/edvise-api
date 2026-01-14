@@ -739,13 +739,10 @@ class SchemaRegistryTable(Base):
 
     __table_args__ = (
         UniqueConstraint("doc_type", "version_label", name="uq_base_version"),
-        UniqueConstraint("is_pdp", "doc_type", "version_label", name="uq_pdp_version"),
-        UniqueConstraint(
-            "is_edvise", "doc_type", "version_label", name="uq_edvise_version"
-        ),
+        UniqueConstraint("is_pdp", "version_label", name="uq_pdp_version"),
         UniqueConstraint("inst_id", "version_label", name="uq_inst_version"),
         CheckConstraint(
-            "NOT (is_pdp = TRUE AND is_edvise = TRUE)", name="ck_no_pdp_and_edvise"
+            "NOT (is_pdp = 1 AND is_edvise = 1)", name="ck_no_pdp_and_edvise"
         ),
         Index("idx_schema_active_base", "doc_type", "is_active"),
         Index("idx_schema_active_pdp", "is_pdp", "is_active"),
