@@ -1,5 +1,5 @@
 Column 'Grade' has validation errors:
-  • Row 1: Validation failed for isin(['A', 'B', 'C', 'D', 'F']) check. Current value: found 'X'
-  • Row 2: Validation failed for isin(['A', 'B', 'C', 'D', 'F']) check. Current value: found 'Y'
-  • Row 3: Validation failed for isin(['A', 'B', 'C', 'D', 'F']) check. Current value: found 'Z'
-  • Row 4: Validation failed for isin(['A', 'B', 'C', 'D', 'F']) check. Current value: found 'W'
+  • Row 1: Value must be one of: A, B, C, D, F. Current value: found 'X'
+  • Row 2: Value must be one of: A, B, C, D, F. Current value: found 'Y'
+  • Row 3: Value must be one of: A, B, C, D, F. Current value: found 'Z'
+  • Row 4: Value must be one of: A, B, C, D, F. Current value: found 'W'

@@ -594,6 +594,8 @@ def test_integration_pandera_mixed_error_types() -> None:
         # - str_length error for student_id
         assert (
             "length" in result.lower()
+            or "characters" in result.lower()
+            or "at least" in result.lower()
             or "short" in result.lower()
             or "minimum" in result.lower()
         )

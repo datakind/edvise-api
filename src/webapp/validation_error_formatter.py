@@ -1074,45 +1074,219 @@ def _format_le_error(check_spec: Optional[dict]) -> str:
     return "Value must be less than or equal to the maximum"
 
 
+def _format_gt_error(check_spec: Optional[dict]) -> str:
+    """Format gt (strictly greater than) check error message."""
+    kwargs = (
+        check_spec.get("kwargs", {})
+        if check_spec and isinstance(check_spec, dict)
+        else {}
+    )
+    if isinstance(kwargs, dict):
+        min_val = kwargs.get("gt", kwargs.get("min_value"))
+        if min_val is not None:
+            return f"Value must be greater than {min_val}"
+    # Also check args for gt (some specs use args instead of kwargs)
+    args = (
+        check_spec.get("args", [])
+        if check_spec and isinstance(check_spec, dict)
+        else []
+    )
+    if args and len(args) > 0:
+        min_val = args[0]
+        return f"Value must be greater than {min_val}"
+    return "Value must be greater than the minimum"
+
+
+def _format_lt_error(check_spec: Optional[dict]) -> str:
+    """Format lt (strictly less than) check error message."""
+    kwargs = (
+        check_spec.get("kwargs", {})
+        if check_spec and isinstance(check_spec, dict)
+        else {}
+    )
+    if isinstance(kwargs, dict):
+        max_val = kwargs.get("lt", kwargs.get("max_value"))
+        if max_val is not None:
+            return f"Value must be less than {max_val}"
+    # Also check args for lt (some specs use args instead of kwargs)
+    args = (
+        check_spec.get("args", [])
+        if check_spec and isinstance(check_spec, dict)
+        else []
+    )
+    if args and len(args) > 0:
+        max_val = args[0]
+        return f"Value must be less than {max_val}"
+    return "Value must be less than the maximum"
+
+
+def _extract_base_check_type(check_type: str) -> str:
+    """
+    Extract the base check type from parameterized check types.
+    
+    Pandera provides check types with arguments like:
+    - "isin(['A', 'B', 'C'])" -> "isin"
+    - "str_length(3, None)" -> "str_length"
+    - "greater_than(0)" -> "greater_than"
+    - "Check.isin(['A'])" -> "isin" (namespaced, extracts final token)
+    - "pandera.Check.str_length(3, None)" -> "str_length" (multi-level namespace)
+    - "str_matches(re.compile('...'))" -> "str_matches" (complex repr)
+    
+    Handles edge cases:
+    - Empty/None/non-string: returns safe empty string
+    - Already base: "isin" -> "isin"
+    - Namespaced: extracts final token after last dot
+    - Spaces: "isin (['A'])" -> "isin" (after strip)
+    
+    Args:
+        check_type: The check type string (may be parameterized)
+        
+    Returns:
+        The base check type name (without parameters or namespace), stripped of whitespace
+    """
+    # Handle non-string types safely - return empty string to avoid noisy output
+    if not isinstance(check_type, str):
+        return ""
+    
+    # Handle empty string
+    if not check_type:
+        return ""
+    
+    # Extract base type by taking everything before the first '('
+    # This safely handles:
+    # - Parameterized: "isin(['A', 'B'])" -> "isin"
+    # - Complex repr: "str_matches(re.compile('...'))" -> "str_matches"
+    # - Spaces: "isin (['A'])" -> "isin" (after strip)
+    if "(" in check_type:
+        base = check_type.split("(")[0].strip()
+    else:
+        base = check_type.strip()
+    
+    # Extract final token after last dot to handle namespaced types
+    # This ensures "Check.isin(['A'])" -> "isin" (matches spec with type="isin")
+    # and "pandera.Check.str_length(3, None)" -> "str_length"
+    if "." in base:
+        base = base.split(".")[-1].strip()
+    
+    return base
+
+
+# Alias mapping for check type normalization
+# Maps Pandera's verbose check names to the short names used in specs
+# IMPORTANT: Preserves semantic correctness (strict vs non-strict comparisons)
+_CHECK_TYPE_ALIASES = {
+    # Strict comparisons (> and <)
+    "greater_than": "gt",  # Strict: > x
+    "gt": "gt",  # Already canonical
+    "less_than": "lt",  # Strict: < x
+    "lt": "lt",  # Already canonical
+    # Non-strict comparisons (≥ and ≤)
+    "greater_than_or_equal_to": "ge",  # Non-strict: ≥ x
+    "less_than_or_equal_to": "le",  # Non-strict: ≤ x
+    # Other aliases
+    "is_in": "isin",  # Handle both spellings (conceptually equivalent)
+}
+
+
+def _normalize_check_type_alias(check_type: str) -> str:
+    """
+    Normalize check type aliases to match spec keys.
+    
+    Pandera may emit verbose check names (e.g., "greater_than(0)") while
+    specs use short names (e.g., "ge"). This function maps aliases to their
+    canonical forms.
+    
+    Args:
+        check_type: Base check type (already extracted from parameterized form)
+        
+    Returns:
+        Normalized check type that matches spec keys
+    """
+    return _CHECK_TYPE_ALIASES.get(check_type, check_type)
+
+
 def _find_check_spec(check_type: str, spec: dict) -> Optional[dict]:
-    """Find the check specification that matches the check type."""
+    """
+    Find the check specification that matches the check type.
+    
+    Handles parameterized check types by extracting the base type.
+    Also handles aliases (e.g., "greater_than" → "gt", "greater_than_or_equal_to" → "ge").
+    Prioritizes base type match first to avoid over-matching.
+    """
     if not isinstance(spec, dict):
         return None
 
+    # Extract base check type to handle parameterized checks
+    base_check_type = _extract_base_check_type(check_type)
+    # Normalize aliases to match spec keys (e.g., "greater_than" → "ge")
+    normalized_check_type = _normalize_check_type_alias(base_check_type)
+    
     checks = spec.get("checks", []) if isinstance(spec.get("checks"), list) else []
 
     for chk in checks:
-        if isinstance(chk, dict) and chk.get("type") == check_type:
-            return chk
+        if isinstance(chk, dict):
+            chk_type = chk.get("type")
+            # Try multiple matching strategies:
+            # 1. Normalized alias match (e.g., "greater_than" → "ge" matches spec "ge")
+            # 2. Base type match (for non-aliased checks)
+            # 3. Exact match (for backwards compatibility)
+            if (
+                chk_type == normalized_check_type
+                or chk_type == base_check_type
+                or chk_type == check_type
+            ):
+                return chk
 
     return None
 
 
 def _format_check_error(check_type: str, spec: dict, value: Any) -> str:
-    """Convert technical check names to human-readable descriptions."""
+    """
+    Convert technical check names to human-readable descriptions.
+    
+    Handles parameterized check types from Pandera (e.g., "isin(['A', 'B', 'C'])").
+    Also handles aliases (e.g., "greater_than" → "gt", "greater_than_or_equal_to" → "ge").
+    Preserves semantic correctness: strict comparisons (> and <) vs non-strict (≥ and ≤).
+    Only formats specific check types if a matching spec is found.
+    """
+    # Extract base check type for matching (Pandera provides parameterized types)
+    base_check_type = _extract_base_check_type(check_type)
+    # Normalize aliases to match spec keys (e.g., "greater_than" → "gt")
+    normalized_check_type = _normalize_check_type_alias(base_check_type)
     check_spec = _find_check_spec(check_type, spec)
 
-    # Format based on check type
-    if check_type == "str_length":
-        return _format_str_length_error(check_spec)
+    # Only format specific check types if a matching spec was found
+    # This ensures we don't format "greater_than" as "gt" when spec has "ge"
+    if check_spec is not None:
+        # Format based on normalized check type (spec was found, so safe to format)
+        if normalized_check_type == "str_length":
+            return _format_str_length_error(check_spec)
 
-    if check_type in {"isin", "is_in"}:
-        return _format_isin_error(check_spec)
+        if normalized_check_type in {"isin", "is_in"}:
+            return _format_isin_error(check_spec)
 
-    if check_type == "ge":
-        return _format_ge_error(check_spec)
+        if normalized_check_type == "ge":
+            return _format_ge_error(check_spec)
 
-    if check_type == "le":
-        return _format_le_error(check_spec)
+        if normalized_check_type == "le":
+            return _format_le_error(check_spec)
 
-    if check_type in {"matches", "str_matches"}:
-        return _format_matches_error(check_spec)
+        if normalized_check_type == "gt":
+            return _format_gt_error(check_spec)
 
-    if check_type == "not_nullable" or check_type == "not_null":
+        if normalized_check_type == "lt":
+            return _format_lt_error(check_spec)
+
+        if base_check_type in {"matches", "str_matches"}:
+            return _format_matches_error(check_spec)
+
+    # Format check types that don't require a spec match
+    if base_check_type in {"not_nullable", "not_null"}:
         return "This field cannot be empty"
 
-    if check_type == "nullable":
+    if base_check_type == "nullable":
         return "Value validation failed"
 
-    # Generic fallback
+    # Generic fallback - use original check_type for display (may include parameters)
+    # This handles cases where check type doesn't match any spec (e.g., "greater_than" with "ge" spec)
     return f"Validation failed for {check_type} check"

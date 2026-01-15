@@ -26,6 +26,9 @@ from .validation_error_formatter import (
     _format_column_validation_errors,
     _format_schema_validation_errors,
     _format_check_error,
+    _extract_base_check_type,
+    _find_check_spec,
+    _normalize_check_type_alias,
     _sanitize_string,
     _get_canon_to_raw_mapping,
     MAX_VALUE_LENGTH,
@@ -692,6 +695,22 @@ def test_format_check_error_le() -> None:
     assert "less than or equal to 100" in result
 
 
+def test_format_check_error_gt() -> None:
+    """Test formatting gt (strictly greater than) check error."""
+    spec = {"checks": [{"type": "gt", "args": [0]}]}
+    result = _format_check_error("gt", spec, -1)
+    assert "greater than 0" in result
+    assert "greater than or equal" not in result  # Should be strict
+
+
+def test_format_check_error_lt() -> None:
+    """Test formatting lt (strictly less than) check error."""
+    spec = {"checks": [{"type": "lt", "args": [100]}]}
+    result = _format_check_error("lt", spec, 101)
+    assert "less than 100" in result
+    assert "less than or equal" not in result  # Should be strict
+
+
 def test_format_check_error_not_nullable() -> None:
     """Test formatting not_nullable check error."""
     spec: Dict[str, Any] = {"checks": []}
@@ -704,6 +723,159 @@ def test_format_check_error_unknown() -> None:
     spec: Dict[str, Any] = {"checks": []}
     result = _format_check_error("unknown_check", spec, "value")
     assert "unknown_check" in result.lower()
+
+
+def test_format_check_error_parameterized_isin() -> None:
+    """Test formatting parameterized isin check error (Pandera format)."""
+    spec = {"checks": [{"type": "isin", "args": [["A", "B", "C", "D", "F"]]}]}
+    # Pandera provides check types with arguments like "isin(['A', 'B', 'C', 'D', 'F'])"
+    result = _format_check_error("isin(['A', 'B', 'C', 'D', 'F'])", spec, "X")
+    assert "one of" in result.lower()
+    assert "A" in result or "B" in result or "C" in result
+
+
+def test_format_check_error_parameterized_str_length() -> None:
+    """Test formatting parameterized str_length check error (Pandera format)."""
+    spec = {"checks": [{"type": "str_length", "kwargs": {"min_value": 3}}]}
+    # Pandera provides check types with arguments like "str_length(3, None)"
+    result = _format_check_error("str_length(3, None)", spec, "AB")
+    assert "at least 3 characters" in result
+
+
+def test_format_check_error_parameterized_gt() -> None:
+    """Test formatting parameterized gt (strict greater than) check error with alias handling."""
+    spec = {"checks": [{"type": "gt", "args": [0]}]}
+    # Pandera provides check types with arguments like "greater_than(0)"
+    # Alias handling should map "greater_than" → "gt" to match the spec
+    result = _format_check_error("greater_than(0)", spec, -1)
+    assert "greater than 0" in result
+    assert "greater than or equal" not in result  # Should be strict, not non-strict
+
+
+def test_format_check_error_parameterized_ge() -> None:
+    """Test formatting parameterized ge (greater than or equal) check error with alias handling."""
+    spec = {"checks": [{"type": "ge", "kwargs": {"ge": 0}}]}
+    # Pandera provides check types with arguments like "greater_than_or_equal_to(0)"
+    # Alias handling should map "greater_than_or_equal_to" → "ge" to match the spec
+    result = _format_check_error("greater_than_or_equal_to(0)", spec, -1)
+    assert "greater than or equal to 0" in result
+
+
+# ============================================================================
+# Tests for _extract_base_check_type (edge cases)
+# ============================================================================
+
+
+def test_extract_base_check_type_already_base() -> None:
+    """Test extraction when check type is already base (no parameters)."""
+    assert _extract_base_check_type("isin") == "isin"
+    assert _extract_base_check_type("str_length") == "str_length"
+    assert _extract_base_check_type("  isin  ") == "isin"  # Strip whitespace
+
+
+def test_extract_base_check_type_parameterized() -> None:
+    """Test extraction from parameterized check types."""
+    assert _extract_base_check_type("isin(['A', 'B', 'C'])") == "isin"
+    assert _extract_base_check_type("str_length(3, None)") == "str_length"
+    assert _extract_base_check_type("greater_than(0)") == "greater_than"
+
+
+def test_extract_base_check_type_namespaced() -> None:
+    """Test extraction from namespaced check types (extracts final token)."""
+    # Should extract final token after last dot to match specs with base type
+    assert _extract_base_check_type("Check.isin(['A'])") == "isin"
+    assert _extract_base_check_type("pandera.Check.isin(['A'])") == "isin"
+    assert _extract_base_check_type("pandera.Check.str_length(3, None)") == "str_length"
+
+
+def test_extract_base_check_type_with_spaces() -> None:
+    """Test extraction handles spaces around parentheses."""
+    assert _extract_base_check_type("isin (['A', 'B'])") == "isin"
+    assert _extract_base_check_type("str_length (3, None)") == "str_length"
+
+
+def test_extract_base_check_type_complex_repr() -> None:
+    """Test extraction from complex repr strings."""
+    assert _extract_base_check_type("str_matches(re.compile('...'))") == "str_matches"
+    assert _extract_base_check_type("isin(pd.Series(['A', 'B']))") == "isin"
+
+
+def test_extract_base_check_type_edge_cases() -> None:
+    """Test extraction handles edge cases safely."""
+    # Empty string
+    assert _extract_base_check_type("") == ""
+    
+    # None and non-string types return empty string (safe default, avoids noisy output)
+    assert _extract_base_check_type(None) == ""  # type: ignore
+    assert _extract_base_check_type(123) == ""  # type: ignore
+    assert _extract_base_check_type([]) == ""  # type: ignore
+    assert _extract_base_check_type({"type": "isin"}) == ""  # type: ignore
+    
+    # String with no parentheses
+    assert _extract_base_check_type("simple_check") == "simple_check"
+    
+    # String with only opening parenthesis (malformed but safe)
+    assert _extract_base_check_type("isin(") == "isin"
+    
+    # String with nested parentheses
+    assert _extract_base_check_type("isin(['A', 'B', ('C', 'D')])") == "isin"
+
+
+def test_extract_base_check_type_no_over_match() -> None:
+    """Test that extraction doesn't over-match (e.g., isinstance vs isin)."""
+    # These should extract correctly without confusing similar names
+    assert _extract_base_check_type("isin(['A'])") == "isin"
+    assert _extract_base_check_type("isinstance(['A'])") == "isinstance"
+    assert _extract_base_check_type("is_in(['A'])") == "is_in"
+    # Verify they're different
+    assert _extract_base_check_type("isin(['A'])") != _extract_base_check_type("isinstance(['A'])")
+
+
+def test_find_check_spec_prioritizes_base_match() -> None:
+    """Test that _find_check_spec prioritizes base type match."""
+    # Spec with base type "isin"
+    spec = {"checks": [{"type": "isin", "args": [["A", "B", "C"]]}]}
+    
+    # Parameterized check type should match via base type
+    result = _find_check_spec("isin(['A', 'B', 'C', 'D', 'F'])", spec)
+    assert result is not None
+    assert result["type"] == "isin"
+    assert result["args"] == [["A", "B", "C"]]
+    
+    # Base type should also match
+    result2 = _find_check_spec("isin", spec)
+    assert result2 is not None
+    assert result2["type"] == "isin"
+
+
+def test_find_check_spec_handles_aliases() -> None:
+    """Test that _find_check_spec handles alias normalization with correct semantics."""
+    # Test strict comparison: "greater_than" → "gt"
+    spec_gt = {"checks": [{"type": "gt", "args": [0]}]}
+    result = _find_check_spec("greater_than(0)", spec_gt)
+    assert result is not None
+    assert result["type"] == "gt"
+    
+    # Test non-strict comparison: "greater_than_or_equal_to" → "ge"
+    spec_ge = {"checks": [{"type": "ge", "kwargs": {"ge": 0}}]}
+    result = _find_check_spec("greater_than_or_equal_to(0)", spec_ge)
+    assert result is not None
+    assert result["type"] == "ge"
+    
+    # Test strict less than: "less_than" → "lt"
+    spec_lt = {"checks": [{"type": "lt", "args": [100]}]}
+    result = _find_check_spec("less_than(100)", spec_lt)
+    assert result is not None
+    assert result["type"] == "lt"
+    
+    # Test alias normalization directly (verify semantic correctness)
+    assert _normalize_check_type_alias("greater_than") == "gt"  # Strict
+    assert _normalize_check_type_alias("gt") == "gt"  # Already canonical
+    assert _normalize_check_type_alias("greater_than_or_equal_to") == "ge"  # Non-strict
+    assert _normalize_check_type_alias("less_than") == "lt"  # Strict
+    assert _normalize_check_type_alias("lt") == "lt"  # Already canonical
+    assert _normalize_check_type_alias("less_than_or_equal_to") == "le"  # Non-strict
+    assert _normalize_check_type_alias("isin") == "isin"  # No alias needed
 
 
 # ============================================================================

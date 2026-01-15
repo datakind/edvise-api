@@ -6,4 +6,4 @@ Column 'Age' has validation errors:
   • Row 2: Value validation failed. Current value: found 'None'
 
 Column 'Grade' has validation errors:
-  • Row 1: Validation failed for isin(['A', 'B', 'C']) check. Current value: found 'X'
+  • Row 1: Value must be one of: A, B, C. Current value: found 'X'
