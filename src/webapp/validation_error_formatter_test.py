@@ -804,19 +804,19 @@ def test_extract_base_check_type_edge_cases() -> None:
     """Test extraction handles edge cases safely."""
     # Empty string
     assert _extract_base_check_type("") == ""
-    
+
     # None and non-string types return empty string (safe default, avoids noisy output)
     assert _extract_base_check_type(None) == ""  # type: ignore
     assert _extract_base_check_type(123) == ""  # type: ignore
     assert _extract_base_check_type([]) == ""  # type: ignore
     assert _extract_base_check_type({"type": "isin"}) == ""  # type: ignore
-    
+
     # String with no parentheses
     assert _extract_base_check_type("simple_check") == "simple_check"
-    
+
     # String with only opening parenthesis (malformed but safe)
     assert _extract_base_check_type("isin(") == "isin"
-    
+
     # String with nested parentheses
     assert _extract_base_check_type("isin(['A', 'B', ('C', 'D')])") == "isin"
 
@@ -828,20 +828,22 @@ def test_extract_base_check_type_no_over_match() -> None:
     assert _extract_base_check_type("isinstance(['A'])") == "isinstance"
     assert _extract_base_check_type("is_in(['A'])") == "is_in"
     # Verify they're different
-    assert _extract_base_check_type("isin(['A'])") != _extract_base_check_type("isinstance(['A'])")
+    assert _extract_base_check_type("isin(['A'])") != _extract_base_check_type(
+        "isinstance(['A'])"
+    )
 
 
 def test_find_check_spec_prioritizes_base_match() -> None:
     """Test that _find_check_spec prioritizes base type match."""
     # Spec with base type "isin"
     spec = {"checks": [{"type": "isin", "args": [["A", "B", "C"]]}]}
-    
+
     # Parameterized check type should match via base type
     result = _find_check_spec("isin(['A', 'B', 'C', 'D', 'F'])", spec)
     assert result is not None
     assert result["type"] == "isin"
     assert result["args"] == [["A", "B", "C"]]
-    
+
     # Base type should also match
     result2 = _find_check_spec("isin", spec)
     assert result2 is not None
@@ -855,19 +857,19 @@ def test_find_check_spec_handles_aliases() -> None:
     result = _find_check_spec("greater_than(0)", spec_gt)
     assert result is not None
     assert result["type"] == "gt"
-    
+
     # Test non-strict comparison: "greater_than_or_equal_to" → "ge"
     spec_ge = {"checks": [{"type": "ge", "kwargs": {"ge": 0}}]}
     result = _find_check_spec("greater_than_or_equal_to(0)", spec_ge)
     assert result is not None
     assert result["type"] == "ge"
-    
+
     # Test strict less than: "less_than" → "lt"
     spec_lt = {"checks": [{"type": "lt", "args": [100]}]}
     result = _find_check_spec("less_than(100)", spec_lt)
     assert result is not None
     assert result["type"] == "lt"
-    
+
     # Test alias normalization directly (verify semantic correctness)
     assert _normalize_check_type_alias("greater_than") == "gt"  # Strict
     assert _normalize_check_type_alias("gt") == "gt"  # Already canonical

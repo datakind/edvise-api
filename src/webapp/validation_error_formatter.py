@@ -1123,7 +1123,7 @@ def _format_lt_error(check_spec: Optional[dict]) -> str:
 def _extract_base_check_type(check_type: str) -> str:
     """
     Extract the base check type from parameterized check types.
-    
+
     Pandera provides check types with arguments like:
     - "isin(['A', 'B', 'C'])" -> "isin"
     - "str_length(3, None)" -> "str_length"
@@ -1131,27 +1131,27 @@ def _extract_base_check_type(check_type: str) -> str:
     - "Check.isin(['A'])" -> "isin" (namespaced, extracts final token)
     - "pandera.Check.str_length(3, None)" -> "str_length" (multi-level namespace)
     - "str_matches(re.compile('...'))" -> "str_matches" (complex repr)
-    
+
     Handles edge cases:
     - Empty/None/non-string: returns safe empty string
     - Already base: "isin" -> "isin"
     - Namespaced: extracts final token after last dot
     - Spaces: "isin (['A'])" -> "isin" (after strip)
-    
+
     Args:
         check_type: The check type string (may be parameterized)
-        
+
     Returns:
         The base check type name (without parameters or namespace), stripped of whitespace
     """
     # Handle non-string types safely - return empty string to avoid noisy output
     if not isinstance(check_type, str):
         return ""
-    
+
     # Handle empty string
     if not check_type:
         return ""
-    
+
     # Extract base type by taking everything before the first '('
     # This safely handles:
     # - Parameterized: "isin(['A', 'B'])" -> "isin"
@@ -1161,13 +1161,13 @@ def _extract_base_check_type(check_type: str) -> str:
         base = check_type.split("(")[0].strip()
     else:
         base = check_type.strip()
-    
+
     # Extract final token after last dot to handle namespaced types
     # This ensures "Check.isin(['A'])" -> "isin" (matches spec with type="isin")
     # and "pandera.Check.str_length(3, None)" -> "str_length"
     if "." in base:
         base = base.split(".")[-1].strip()
-    
+
     return base
 
 
@@ -1191,14 +1191,14 @@ _CHECK_TYPE_ALIASES = {
 def _normalize_check_type_alias(check_type: str) -> str:
     """
     Normalize check type aliases to match spec keys.
-    
+
     Pandera may emit verbose check names (e.g., "greater_than(0)") while
     specs use short names (e.g., "ge"). This function maps aliases to their
     canonical forms.
-    
+
     Args:
         check_type: Base check type (already extracted from parameterized form)
-        
+
     Returns:
         Normalized check type that matches spec keys
     """
@@ -1208,7 +1208,7 @@ def _normalize_check_type_alias(check_type: str) -> str:
 def _find_check_spec(check_type: str, spec: dict) -> Optional[dict]:
     """
     Find the check specification that matches the check type.
-    
+
     Handles parameterized check types by extracting the base type.
     Also handles aliases (e.g., "greater_than" → "gt", "greater_than_or_equal_to" → "ge").
     Prioritizes base type match first to avoid over-matching.
@@ -1220,7 +1220,7 @@ def _find_check_spec(check_type: str, spec: dict) -> Optional[dict]:
     base_check_type = _extract_base_check_type(check_type)
     # Normalize aliases to match spec keys (e.g., "greater_than" → "ge")
     normalized_check_type = _normalize_check_type_alias(base_check_type)
-    
+
     checks = spec.get("checks", []) if isinstance(spec.get("checks"), list) else []
 
     for chk in checks:
@@ -1243,7 +1243,7 @@ def _find_check_spec(check_type: str, spec: dict) -> Optional[dict]:
 def _format_check_error(check_type: str, spec: dict, value: Any) -> str:
     """
     Convert technical check names to human-readable descriptions.
-    
+
     Handles parameterized check types from Pandera (e.g., "isin(['A', 'B', 'C'])").
     Also handles aliases (e.g., "greater_than" → "gt", "greater_than_or_equal_to" → "ge").
     Preserves semantic correctness: strict comparisons (> and <) vs non-strict (≥ and ≤).
