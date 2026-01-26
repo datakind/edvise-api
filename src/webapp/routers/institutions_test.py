@@ -3,6 +3,7 @@
 import uuid
 import os
 from datetime import datetime
+from typing import Generator
 from unittest import mock
 import pytest
 import sqlalchemy
@@ -81,7 +82,9 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session):
+def client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for a non-DATAKINDER type."""
 
     def get_session_override():
@@ -108,7 +111,9 @@ def client_fixture(session: sqlalchemy.orm.Session):
 
 
 @pytest.fixture(name="datakinder_client")
-def datakinder_client_fixture(session: sqlalchemy.orm.Session):
+def datakinder_client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for a DATAKINDER type."""
 
     def get_session_override():
@@ -134,7 +139,7 @@ def datakinder_client_fixture(session: sqlalchemy.orm.Session):
     app.dependency_overrides.clear()
 
 
-def test_read_all_inst(client: TestClient):
+def test_read_all_inst(client: TestClient) -> None:
     """Test GET /institutions."""
 
     # Unauthorized.
@@ -146,7 +151,7 @@ def test_read_all_inst(client: TestClient):
     )
 
 
-def test_read_all_inst_datakinder(datakinder_client: TestClient):
+def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
     """Test GET /institutions using DATAKINDER type."""
     # Authorized.
     response = datakinder_client.get("/institutions")
@@ -176,7 +181,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient):
     ]
 
 
-def test_read_inst_by_name(client: TestClient):
+def test_read_inst_by_name(client: TestClient) -> None:
     """Test GET /institutions/name/<name>. For various user access types."""
     # Unauthorized.
     response = client.get("/institutions/name/school_1")
@@ -193,7 +198,48 @@ def test_read_inst_by_name(client: TestClient):
     assert response.json() == INSTITUTION_OBJ
 
 
-def test_read_inst_by_pdp_id(client: TestClient):
+def test_read_inst_by_name_case_insensitive(client: TestClient) -> None:
+    """Test GET /institutions/name/<name> with case-insensitive matching."""
+    # Test with different case variations - should all match
+    test_cases = [
+        "valid_school",  # Original case
+        "Valid_School",  # Title case
+        "VALID_SCHOOL",  # All uppercase
+        "vAlId_ScHoOl",  # Mixed case
+    ]
+
+    for name_variant in test_cases:
+        response = client.get(f"/institutions/name/{name_variant}")
+        assert response.status_code == 200, f"Failed for variant: {name_variant}"
+        assert response.json() == INSTITUTION_OBJ, (
+            f"Response mismatch for variant: {name_variant}"
+        )
+
+
+def test_read_inst_by_name_case_insensitive_lowercase(
+    datakinder_client: TestClient,
+) -> None:
+    """Test GET /institutions/name/<name> with lowercase input when DB has mixed case."""
+    # Test that lowercase input matches mixed case in database
+    # Using datakinder_client since regular client doesn't have access to school_1
+    response = datakinder_client.get("/institutions/name/school_1")
+    assert response.status_code == 200
+    # Verify it matches the institution with name "school_1" (lowercase in DB)
+    assert response.json()["name"] == "school_1"
+
+
+def test_read_inst_by_name_case_insensitive_uppercase(
+    datakinder_client: TestClient,
+) -> None:
+    """Test GET /institutions/name/<name> with uppercase input."""
+    # Test that uppercase input matches lowercase in database
+    # Using datakinder_client since regular client doesn't have access to school_1
+    response = datakinder_client.get("/institutions/name/SCHOOL_1")
+    assert response.status_code == 200
+    assert response.json()["name"] == "school_1"
+
+
+def test_read_inst_by_pdp_id(client: TestClient) -> None:
     """Test GET /institutions/pdp-id/<pdp_id>. For various user access types."""
     # Unauthorized.
     response = client.get("/institutions/pdp-id/456")
@@ -210,7 +256,7 @@ def test_read_inst_by_pdp_id(client: TestClient):
     assert response.json() == INSTITUTION_OBJ
 
 
-def test_read_inst(client: TestClient):
+def test_read_inst(client: TestClient) -> None:
     """Test GET /institutions/<uuid>. For various user access types."""
     # Unauthorized.
     response = client.get("/institutions/" + uuid_to_str(UUID_1))
