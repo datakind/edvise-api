@@ -82,7 +82,9 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, None, None]:
+def client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for a non-DATAKINDER type."""
 
     def get_session_override():
@@ -109,7 +111,9 @@ def client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, Non
 
 
 @pytest.fixture(name="datakinder_client")
-def datakinder_client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, None, None]:
+def datakinder_client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for a DATAKINDER type."""
 
     def get_session_override():
@@ -212,7 +216,9 @@ def test_read_inst_by_name_case_insensitive(client: TestClient) -> None:
         )
 
 
-def test_read_inst_by_name_case_insensitive_lowercase(datakinder_client: TestClient) -> None:
+def test_read_inst_by_name_case_insensitive_lowercase(
+    datakinder_client: TestClient,
+) -> None:
     """Test GET /institutions/name/<name> with lowercase input when DB has mixed case."""
     # Test that lowercase input matches mixed case in database
     # Using datakinder_client since regular client doesn't have access to school_1
@@ -222,7 +228,9 @@ def test_read_inst_by_name_case_insensitive_lowercase(datakinder_client: TestCli
     assert response.json()["name"] == "school_1"
 
 
-def test_read_inst_by_name_case_insensitive_uppercase(datakinder_client: TestClient) -> None:
+def test_read_inst_by_name_case_insensitive_uppercase(
+    datakinder_client: TestClient,
+) -> None:
     """Test GET /institutions/name/<name> with uppercase input."""
     # Test that uppercase input matches lowercase in database
     # Using datakinder_client since regular client doesn't have access to school_1
