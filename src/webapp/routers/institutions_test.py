@@ -5,7 +5,6 @@ import os
 from datetime import datetime
 from typing import Generator
 from unittest import mock
-from typing import Any
 import pytest
 import sqlalchemy
 from fastapi.testclient import TestClient
@@ -189,6 +188,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "inst_id": uuid_to_str(UUID_1),
             "name": "school_1",
             "pdp_id": "456",
+            "edvise_id": None,
             "retention_days": None,
             "state": "GA",
         },
@@ -196,6 +196,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "inst_id": uuid_to_str(UUID_2),
             "name": "school_2",
             "pdp_id": None,
+            "edvise_id": None,
             "retention_days": None,
             "state": None,
         },
@@ -203,8 +204,17 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "inst_id": uuid_to_str(USER_VALID_INST_UUID),
             "name": "valid_school",
             "pdp_id": "12345",
+            "edvise_id": None,
             "retention_days": None,
             "state": "NY",
+        },
+        {
+            "inst_id": uuid_to_str(UUID_3),
+            "name": "edvise_test_school",
+            "pdp_id": None,
+            "edvise_id": "edvise456",
+            "retention_days": None,
+            "state": "CA",
         },
     ]
 
@@ -338,9 +348,9 @@ def test_create_inst(datakinder_client: TestClient) -> None:
         "/institutions", json={"name": "Testing (invalid)"}
     )
     assert response.status_code == 400
-    assert (
-        response.text
-        == '{"detail":"Only alphanumeric characters, -, _, &, and a space are allowed in institution names."}'
+    assert response.text == (
+        '{"detail":"Only alphanumeric characters, -, _, &, '
+        'and a space are allowed in institution names."}'
     )
 
 
