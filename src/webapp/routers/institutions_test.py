@@ -3,6 +3,7 @@
 import uuid
 import os
 from datetime import datetime
+from typing import Generator
 from unittest import mock
 from typing import Any
 import pytest
@@ -96,7 +97,9 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session) -> Any:
+def client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for a non-DATAKINDER type."""
 
     def get_session_override():
@@ -123,7 +126,9 @@ def client_fixture(session: sqlalchemy.orm.Session) -> Any:
 
 
 @pytest.fixture(name="datakinder_client")
-def datakinder_client_fixture(session: sqlalchemy.orm.Session) -> Any:
+def datakinder_client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for a DATAKINDER type."""
 
     def get_session_override():
@@ -179,6 +184,29 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
     edvise_school = next(i for i in data if i["name"] == "edvise_test_school")
     assert edvise_school["edvise_id"] == "edvise456"
     assert edvise_school["pdp_id"] is None
+    assert response.json() == [
+        {
+            "inst_id": uuid_to_str(UUID_1),
+            "name": "school_1",
+            "pdp_id": "456",
+            "retention_days": None,
+            "state": "GA",
+        },
+        {
+            "inst_id": uuid_to_str(UUID_2),
+            "name": "school_2",
+            "pdp_id": None,
+            "retention_days": None,
+            "state": None,
+        },
+        {
+            "inst_id": uuid_to_str(USER_VALID_INST_UUID),
+            "name": "valid_school",
+            "pdp_id": "12345",
+            "retention_days": None,
+            "state": "NY",
+        },
+    ]
 
 
 def test_read_inst_by_name(client: TestClient) -> None:
@@ -196,6 +224,47 @@ def test_read_inst_by_name(client: TestClient) -> None:
     response = client.get("/institutions/name/valid_school")
     assert response.status_code == 200
     assert response.json() == INSTITUTION_OBJ
+
+
+def test_read_inst_by_name_case_insensitive(client: TestClient) -> None:
+    """Test GET /institutions/name/<name> with case-insensitive matching."""
+    # Test with different case variations - should all match
+    test_cases = [
+        "valid_school",  # Original case
+        "Valid_School",  # Title case
+        "VALID_SCHOOL",  # All uppercase
+        "vAlId_ScHoOl",  # Mixed case
+    ]
+
+    for name_variant in test_cases:
+        response = client.get(f"/institutions/name/{name_variant}")
+        assert response.status_code == 200, f"Failed for variant: {name_variant}"
+        assert response.json() == INSTITUTION_OBJ, (
+            f"Response mismatch for variant: {name_variant}"
+        )
+
+
+def test_read_inst_by_name_case_insensitive_lowercase(
+    datakinder_client: TestClient,
+) -> None:
+    """Test GET /institutions/name/<name> with lowercase input when DB has mixed case."""
+    # Test that lowercase input matches mixed case in database
+    # Using datakinder_client since regular client doesn't have access to school_1
+    response = datakinder_client.get("/institutions/name/school_1")
+    assert response.status_code == 200
+    # Verify it matches the institution with name "school_1" (lowercase in DB)
+    assert response.json()["name"] == "school_1"
+
+
+def test_read_inst_by_name_case_insensitive_uppercase(
+    datakinder_client: TestClient,
+) -> None:
+    """Test GET /institutions/name/<name> with uppercase input."""
+    # Test that uppercase input matches lowercase in database
+    # Using datakinder_client since regular client doesn't have access to school_1
+    response = datakinder_client.get("/institutions/name/SCHOOL_1")
+    assert response.status_code == 200
+    assert response.json()["name"] == "school_1"
 
 
 def test_read_inst_by_pdp_id(client: TestClient) -> None:

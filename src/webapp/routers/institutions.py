@@ -7,7 +7,7 @@ from fastapi import HTTPException, status, APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
-from sqlalchemy import and_, delete
+from sqlalchemy import and_, delete, func
 
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -388,11 +388,17 @@ def read_inst_name(
     """Returns overview data on a specific institution.
 
     The root-level API view. Only visible to users of that institution or Datakinder access types.
+
+    Note: Name matching is case-insensitive. The function will match institution names
+    regardless of the case of the input parameter. If multiple institutions with the same
+    name (case-insensitive) exist, this will raise an error.
     """
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(select(InstTable).where(InstTable.name == inst_name))
+        .execute(
+            select(InstTable).where(func.lower(InstTable.name) == func.lower(inst_name))
+        )
         .all()
     )
 
