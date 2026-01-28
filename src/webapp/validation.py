@@ -40,9 +40,24 @@ def validate_file_reader(
     allowed_schema: list[str],
     base_schema: dict,
     inst_schema: Optional[Dict[Any, Any]] = None,
+    institution_id: str = "pdp",
 ) -> dict[str, Any]:
-    """Validates a dataset given a filename and schema selection."""
-    return validate_dataset(filename, base_schema, inst_schema, allowed_schema)
+    """Validates a dataset given a filename and schema selection.
+
+    Args:
+        filename: Path or file-like object for the CSV.
+        allowed_schema: List of model names to validate against.
+        base_schema: Base schema dict (e.g. base.data_models).
+        inst_schema: Optional extension schema with institutions.* blocks.
+        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
+            institution UUID for custom. Default "pdp" for backward compatibility.
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
+    """
+    return validate_dataset(
+        filename, base_schema, inst_schema, allowed_schema, institution_id
+    )
 
 
 class HardValidationError(Exception):

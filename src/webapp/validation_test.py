@@ -30,6 +30,26 @@ MOCK_BASE_SCHEMA = {
 
 MOCK_EXT_SCHEMA: dict = {"institutions": {"pdp": {"data_models": {}}}}
 
+# Extension with "edvise" block only; test_model has required "baz_col" in edvise
+MOCK_EXT_SCHEMA_EDVISE: dict = {
+    "institutions": {
+        "edvise": {
+            "data_models": {
+                "test_model": {
+                    "columns": {
+                        "baz_col": {
+                            "dtype": "str",
+                            "nullable": False,
+                            "required": True,
+                            "aliases": ["baz"],
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 @pytest.fixture
 def tmp_csv_file(tmp_path: Path) -> str:
@@ -77,3 +97,42 @@ def test_validate_file_reader_fails_missing_required(tmp_path):
                 inst_schema=MOCK_EXT_SCHEMA,
             )
         assert "Missing required columns" in str(exc_info.value)
+
+
+def test_validate_file_reader_uses_institution_id_for_extension_block(
+    tmp_path: Path,
+) -> None:
+    """Passing institution_id selects the correct extension block (e.g. edvise vs pdp)."""
+    # File has base columns only; extension has required "baz_col" only under institutions["edvise"]
+    df = pd.DataFrame({"foo_col": [1], "bar_col": ["a"]})
+    file_path = tmp_path / "no_baz.csv"
+    df.to_csv(file_path, index=False)
+
+    with (
+        patch("src.webapp.validation.load_json") as mock_load,
+        patch("os.path.exists", return_value=True),
+    ):
+        mock_load.side_effect = lambda path: (
+            MOCK_BASE_SCHEMA if "base" in path else MOCK_EXT_SCHEMA_EDVISE
+        )
+        # institution_id="edvise" -> merge_model_columns uses institutions["edvise"] -> baz_col required -> missing
+        with pytest.raises(HardValidationError) as exc_info:
+            validate_file_reader(
+                str(file_path),
+                ["test_model"],
+                base_schema=MOCK_BASE_SCHEMA,
+                inst_schema=MOCK_EXT_SCHEMA_EDVISE,
+                institution_id="edvise",
+            )
+        assert "baz_col" in str(exc_info.value) or "Missing required" in str(
+            exc_info.value
+        )
+        # institution_id="pdp" -> institutions["pdp"] missing -> no extra columns merged -> only base required (foo_col present)
+        result = validate_file_reader(
+            str(file_path),
+            ["test_model"],
+            base_schema=MOCK_BASE_SCHEMA,
+            inst_schema=MOCK_EXT_SCHEMA_EDVISE,
+            institution_id="pdp",
+        )
+        assert result["validation_status"] == "passed"

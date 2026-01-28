@@ -1668,8 +1668,11 @@ def validation_helper(
             detail="Institution configuration error: cannot have both pdp_id and edvise_id set",
         )
 
+    # schema_namespace is the key into extension_schema["institutions"] during
+    # validation so merge_model_columns uses the correct block (edvise / pdp / inst).
     if edvise_id:
         # Edvise institutions: use active Edvise extension (cached)
+        schema_namespace = "edvise"
         edvise_exp, edvise_doc = STATE._edvise_cache
         if now < edvise_exp and edvise_doc is not None:
             inst_schema: Optional[Dict[str, Any]] = edvise_doc
@@ -1691,6 +1694,7 @@ def validation_helper(
         updated_inst_schema = inst_schema
     elif pdp_id:
         # PDP institutions: use active PDP extension (cached)
+        schema_namespace = "pdp"
         pdp_exp, pdp_doc = STATE._pdp_cache
         if now < pdp_exp and pdp_doc is not None:
             inst_schema = pdp_doc
@@ -1712,6 +1716,7 @@ def validation_helper(
         updated_inst_schema = inst_schema
     else:
         # custom institutions: try cached extension first
+        schema_namespace = str(getattr(inst, "id", ""))
         ext_cache = STATE._ext_cache
         key = str(getattr(inst, "id", ""))
         cached = ext_cache.get(key)
@@ -1810,6 +1815,7 @@ def validation_helper(
             allowed_schemas,
             base_schema,
             updated_inst_schema,
+            institution_id=schema_namespace,
         )
         logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:

@@ -1191,16 +1191,18 @@ def test_edvise_schema_takes_precedence_over_custom(
 
     STATE._edvise_cache = (0.0, None)
 
-    # Capture schema passed to validate_file
+    # Capture schema and institution_id passed to validate_file
     captured_schema = None
+    captured_institution_id = None
 
     def capture_schema(*args, **kwargs):
-        nonlocal captured_schema
-        # validate_file signature: validate_file(bucket, file_name, allowed_schemas, base_schema, inst_schema)
+        nonlocal captured_schema, captured_institution_id
+        # validate_file(bucket, file_name, allowed_schemas, base_schema, inst_schema, institution_id=...)
         if len(args) >= 5:
             captured_schema = args[4]
         elif "inst_schema" in kwargs:
             captured_schema = kwargs["inst_schema"]
+        captured_institution_id = kwargs.get("institution_id")
         return ["STUDENT"]
 
     MOCK_STORAGE.validate_file.side_effect = capture_schema
@@ -1224,6 +1226,8 @@ def test_edvise_schema_takes_precedence_over_custom(
         "custom" not in str(captured_schema).lower()
         or captured_schema.get("custom") is None
     )
+    # Verify correct institution_id so merge_model_columns uses institutions["edvise"]
+    assert captured_institution_id == "edvise"
 
     # Reset mock
     MOCK_STORAGE.validate_file.side_effect = None
