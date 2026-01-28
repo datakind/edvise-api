@@ -1,0 +1,13 @@
+Column 'Value' has validation errors:
+  • Row 1: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 2: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 3: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 4: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 5: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 6: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 7: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 8: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 9: Validation failed for greater_than(0) check. Current value: found '-1'
+  • Row 10: Validation failed for greater_than(0) check. Current value: found '-1'
+
+Column 'Value': 5 additional errors found. Please review all rows for this column.

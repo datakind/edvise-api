@@ -86,8 +86,11 @@ lines-after-imports = 1
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = ["--verbose", "--import-mode=importlib"]
-filterwarnings = ["ignore::DeprecationWarning"]
-testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning:pandera",
+]
+testpaths = ["src"]
 
 [tool.mypy]
 files = ["src"]

@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     BigInteger,
     Index,
+    CheckConstraint,
     event,
 )
 from sqlalchemy.orm import (
@@ -273,6 +274,10 @@ class InstTable(Base):
     state: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
     # Only populated for PDP schools.
     pdp_id: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
+    # Only populated for Edvise schools.
+    edvise_id: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_LENGTH), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -672,9 +677,10 @@ class DocType(enum.Enum):
 class SchemaRegistryTable(Base):
     """
     Stores versioned schema documents:
-      - Base schema (doc_type=base, is_pdp=False, inst_id NULL)
-      - PDP shared extension (doc_type=extension, is_pdp=True, inst_id NULL)
-      - Custom institution extension (doc_type=extension, is_pdp=False, inst_id=<UUID>)
+      - Base schema (doc_type=base, is_pdp=False, is_edvise=False, inst_id NULL)
+      - PDP shared extension (doc_type=extension, is_pdp=True, is_edvise=False, inst_id NULL)
+      - Edvise shared extension (doc_type=extension, is_pdp=False, is_edvise=True, inst_id NULL)
+      - Custom institution extension (doc_type=extension, is_pdp=False, is_edvise=False, inst_id=<UUID>)
     Layers can reference a parent (extends_schema_id) that they extend.
     """
 
@@ -685,11 +691,12 @@ class SchemaRegistryTable(Base):
     doc_type: Mapped[DocType] = mapped_column(
         Enum(DocType, native_enum=False), nullable=False
     )
-    # Nullable: NULL for base and PDP shared extension
+    # Nullable: NULL for base, PDP shared extension, and Edvise shared extension
     inst_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("inst.id", ondelete="RESTRICT", onupdate="CASCADE"), nullable=True
     )
     is_pdp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_edvise: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     version_label: Mapped[str] = mapped_column(
         String(VAR_CHAR_STANDARD_LENGTH), nullable=False
     )
@@ -734,8 +741,12 @@ class SchemaRegistryTable(Base):
         UniqueConstraint("doc_type", "version_label", name="uq_base_version"),
         UniqueConstraint("is_pdp", "version_label", name="uq_pdp_version"),
         UniqueConstraint("inst_id", "version_label", name="uq_inst_version"),
+        CheckConstraint(
+            "NOT (is_pdp = 1 AND is_edvise = 1)", name="ck_no_pdp_and_edvise"
+        ),
         Index("idx_schema_active_base", "doc_type", "is_active"),
         Index("idx_schema_active_pdp", "is_pdp", "is_active"),
+        Index("idx_schema_active_edvise", "is_edvise", "is_active"),
         Index("idx_schema_active_inst", "inst_id", "is_active"),
     )
 
@@ -746,6 +757,8 @@ class SchemaRegistryTable(Base):
             return "base"
         if self.is_pdp:
             return "pdp"
+        if self.is_edvise:
+            return "edvise"
         if self.inst_id:
             return f"inst:{self.inst_id}"
         return "unknown"

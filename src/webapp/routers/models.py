@@ -135,7 +135,8 @@ class InferenceRunRequest(BaseModel):
     """Parameters for an inference run."""
 
     batch_name: str
-    # This MUST be set for uses of the PDP inference pipeline.
+    # Note: is_pdp is kept for backward compatibility but is ignored.
+    # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
 
 
@@ -504,11 +505,6 @@ def trigger_inference_run(
     """
     model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
-    if not req.is_pdp:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP inference is supported.",
-        )
     local_session.set(sql_session)
     inst_result = (
         local_session.get()
@@ -526,6 +522,13 @@ def trigger_inference_run(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unexpected number of institutions found: Expected 1, got "
             + str(len(inst_result)),
+        )
+    inst = inst_result[0][0]
+    # Check PDP status from institution's pdp_id (ignore req.is_pdp for backward compat)
+    if not inst.pdp_id:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Currently, only PDP inference is supported.",
         )
     query_result = (
         local_session.get()

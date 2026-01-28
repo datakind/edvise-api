@@ -323,8 +323,22 @@ class StorageControl(BaseModel):
         allowed_schemas: list[str],
         base_schema: dict,
         inst_schema: Optional[Dict[Any, Any]] = None,
+        institution_id: str = "pdp",
     ) -> List[str]:
-        """Validate that a file is one of the allowed schemas."""
+        """Validate that a file conforms to one of the allowed schemas.
+
+        Args:
+            bucket_name: GCS bucket name.
+            file_name: Blob name under unvalidated/.
+            allowed_schemas: List of schema/model names allowed.
+            base_schema: Base schema dict.
+            inst_schema: Optional extension schema with institutions.* blocks.
+            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
+                institution UUID for custom. Default "pdp" for backward compatibility.
+
+        Returns:
+            List of inferred schema names (e.g. ["STUDENT"]).
+        """
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(f"unvalidated/{file_name}")
@@ -333,7 +347,11 @@ class StorageControl(BaseModel):
         try:
             with blob.open("r") as file:
                 schemas = validate_file_reader(
-                    file, allowed_schemas, base_schema, inst_schema
+                    file,
+                    allowed_schemas,
+                    base_schema,
+                    inst_schema,
+                    institution_id=institution_id,
                 )
                 schems = [str(s) for s in schemas.get("schemas", [])]
                 logging.debug(

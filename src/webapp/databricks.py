@@ -16,7 +16,7 @@ from google.api_core import exceptions as gcs_errors
 from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
-from typing import List, Any, Dict, IO, cast, Optional
+from typing import List, Any, Dict, Optional
 from fastapi import HTTPException
 import requests
 import hashlib
@@ -25,13 +25,7 @@ import gzip
 from cachetools import TTLCache
 import threading
 import re
-
-try:
-    import tomllib as _toml  # Py 3.11+
-except ModuleNotFoundError:
-    import tomli as _toml  # Py ≤ 3.10
 import pandas as pd
-import re
 
 # Setting up logger
 LOGGER = logging.getLogger(__name__)
@@ -567,7 +561,7 @@ class DatabricksControl(BaseModel):
         Case-insensitive match of file_name against mapping values.
         Values may be:
         - str literal (e.g., "student.csv") → allow optional base suffixes before the ext.
-        - str regex (e.g., r"^course_.*\.csv$") → re.IGNORECASE fullmatch.
+        - str regex (e.g., r"^course_.*\\.csv$") → re.IGNORECASE fullmatch.
         - compiled regex (re.Pattern) → fullmatch, adding IGNORECASE if missing.
         - list of any of the above.
         """

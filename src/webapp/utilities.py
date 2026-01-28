@@ -147,6 +147,11 @@ PDP_SCHEMA_GROUP: Final = {
     SchemaType.COURSE,
 }
 
+EDVISE_SCHEMA_GROUP: Final = {
+    SchemaType.STUDENT,
+    SchemaType.COURSE,
+}
+
 
 class BaseUser(BaseModel):
     """BaseUser represents an access type. The frontend will include more detailed User info."""

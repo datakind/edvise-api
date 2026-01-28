@@ -13,6 +13,7 @@ import logging
 from sqlalchemy.exc import IntegrityError
 import re
 from ..validation import HardValidationError
+from ..validation_error_formatter import format_validation_error
 import pandas as pd
 from cachetools import TTLCache
 
@@ -1543,6 +1544,7 @@ class _ValidationState:
     _base_cache: Dict[str, Any] = {"exp": 0.0, "val": None}
     _ext_cache: Dict[str, Tuple[float, Any]] = {}
     _pdp_cache: Tuple[float, Optional[dict]] = (0.0, None)
+    _edvise_cache: Tuple[float, Optional[dict]] = (0.0, None)
 
 
 STATE = _ValidationState()
@@ -1594,9 +1596,12 @@ def validation_helper(
         inferred_from_name.add("SEMESTER")
 
     if not inferred_from_name:
-        raise ValueError(
-            f"Could not infer model(s) from file name: {name}. "
-            "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Could not infer model(s) from file name: {name}. "
+                "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
+            ),
         )
 
     allowed_schemas = sorted(inferred_from_name)
@@ -1626,7 +1631,10 @@ def validation_helper(
         select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
     ).scalar_one_or_none()
     if inst is None:
-        raise ValueError(f"Institution {inst_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Institution {inst_id} not found",
+        )
 
     bucket = get_external_bucket_name(inst_id)
     # --- choose / prepare extension schema (try to avoid heavy path)
@@ -1651,11 +1659,45 @@ def validation_helper(
                     return {str(k).lower() for k in block["data_models"].keys()}
         return set()
 
-    if getattr(inst, "pdp_id", None):
+    # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
+    pdp_id = getattr(inst, "pdp_id", None)
+    edvise_id = getattr(inst, "edvise_id", None)
+    if pdp_id and edvise_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution configuration error: cannot have both pdp_id and edvise_id set",
+        )
+
+    # schema_namespace is the key into extension_schema["institutions"] during
+    # validation so merge_model_columns uses the correct block (edvise / pdp / inst).
+    if edvise_id:
+        # Edvise institutions: use active Edvise extension (cached)
+        schema_namespace = "edvise"
+        edvise_exp, edvise_doc = STATE._edvise_cache
+        if now < edvise_exp and edvise_doc is not None:
+            inst_schema: Optional[Dict[str, Any]] = edvise_doc
+        else:
+            inst_schema = sess.execute(
+                select(SchemaRegistryTable.json_doc)
+                .where(
+                    SchemaRegistryTable.is_edvise.is_(True),
+                    SchemaRegistryTable.is_active.is_(True),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            STATE._edvise_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Edvise schema not found for institution with edvise_id. Please ensure an active Edvise schema extension is registered.",
+            )
+        updated_inst_schema = inst_schema
+    elif pdp_id:
         # PDP institutions: use active PDP extension (cached)
+        schema_namespace = "pdp"
         pdp_exp, pdp_doc = STATE._pdp_cache
         if now < pdp_exp and pdp_doc is not None:
-            inst_schema: Optional[Dict[str, Any]] = pdp_doc
+            inst_schema = pdp_doc
         else:
             inst_schema = sess.execute(
                 select(SchemaRegistryTable.json_doc)
@@ -1666,9 +1708,15 @@ def validation_helper(
                 .limit(1)
             ).scalar_one_or_none()
             STATE._pdp_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PDP schema not found for institution with pdp_id. Please ensure an active PDP schema extension is registered.",
+            )
         updated_inst_schema = inst_schema
     else:
         # custom institutions: try cached extension first
+        schema_namespace = str(getattr(inst, "id", ""))
         ext_cache = STATE._ext_cache
         key = str(getattr(inst, "id", ""))
         cached = ext_cache.get(key)
@@ -1706,6 +1754,22 @@ def validation_helper(
             if schema_extension is not None:
                 updated_inst_schema = schema_extension
                 try:
+                    # Deactivate existing extension records for this institution
+                    # to ensure only one active extension per institution
+                    existing_extensions = (
+                        sess.execute(
+                            select(SchemaRegistryTable).where(
+                                SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
+                                SchemaRegistryTable.doc_type == DocType.extension,
+                                SchemaRegistryTable.is_active.is_(True),
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for existing in existing_extensions:
+                        existing.is_active = False
+
                     new_schema_extension_record = SchemaRegistryTable(
                         doc_type=DocType.extension,
                         inst_id=str_to_uuid(inst_id),
@@ -1717,7 +1781,11 @@ def validation_helper(
                     )
                     sess.add(new_schema_extension_record)
                     sess.flush()
-                    logging.info("Schema record inserted for '%s'", inst_id)
+                    logging.info(
+                        "Schema record inserted for '%s' (deactivated %d existing)",
+                        inst_id,
+                        len(existing_extensions),
+                    )
                     # refresh cache
                     STATE._ext_cache[key] = (
                         time.monotonic() + EXT_TTL,
@@ -1747,29 +1815,27 @@ def validation_helper(
             allowed_schemas,
             base_schema,
             updated_inst_schema,
+            institution_id=schema_namespace,
         )
         logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:
         logging.debug("Inferred Schemas FAILED (hard) %s", e)
-        parts = ["VALIDATION_FAILED"]
-        if e.missing_required:
-            parts.append(f"missing_required={e.missing_required}")
-        if e.extra_columns:
-            parts.append(f"extra_columns={e.extra_columns}")
-        if e.schema_errors is not None:
-            parts.append(f"schema_errors={e.schema_errors}")
-        if e.failure_cases is not None:
-            try:
-                sample = (
-                    e.failure_cases[:5]
-                    if isinstance(e.failure_cases, list)
-                    else str(e.failure_cases)[:500]
-                )
-            except Exception:
-                sample = "see server logs"
-            parts.append(f"failure_cases_sample={sample}")
+        # Format error message for user-friendly display
+        try:
+            formatted_msg = format_validation_error(e)
+        except Exception as format_err:
+            # Fallback to technical message if formatting fails
+            logging.warning("Error formatting validation message: %s", format_err)
+            parts = ["VALIDATION_FAILED"]
+            if e.missing_required:
+                parts.append(f"missing_required={e.missing_required}")
+            if e.extra_columns:
+                parts.append(f"extra_columns={e.extra_columns}")
+            if e.schema_errors is not None:
+                parts.append(f"schema_errors={e.schema_errors}")
+            formatted_msg = "; ".join(parts)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(parts)
+            status_code=status.HTTP_400_BAD_REQUEST, detail=formatted_msg
         )
     except Exception as e:
         logging.debug("Inferred Schemas FAILED (other) %s", e)
