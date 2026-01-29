@@ -1220,7 +1220,10 @@ def test_edvise_schema_takes_precedence_over_custom(
     assert captured_schema is not None
     # Edvise schema should have "edvise" or "institutions" structure
     assert isinstance(captured_schema, dict)
-    assert "edvise" in str(captured_schema).lower() or "institutions" in captured_schema
+    assert (
+        "edvise" in str(captured_schema).lower()
+        or captured_schema.get("institutions") is not None
+    )
     # Custom schema should NOT be in the captured schema
     assert (
         "custom" not in str(captured_schema).lower()
