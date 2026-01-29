@@ -249,9 +249,9 @@ def test_read_inst_by_name_case_insensitive(client: TestClient) -> None:
     for name_variant in test_cases:
         response = client.get(f"/institutions/name/{name_variant}")
         assert response.status_code == 200, f"Failed for variant: {name_variant}"
-        assert response.json() == INSTITUTION_OBJ, (
-            f"Response mismatch for variant: {name_variant}"
-        )
+        assert (
+            response.json() == INSTITUTION_OBJ
+        ), f"Response mismatch for variant: {name_variant}"
 
 
 def test_read_inst_by_name_case_insensitive_lowercase(
