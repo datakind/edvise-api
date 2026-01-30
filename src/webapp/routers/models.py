@@ -138,6 +138,8 @@ class InferenceRunRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored.
     # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
+    # Optional list of cohort labels (e.g. ["fall 2024-25"]). Omit for pipeline default.
+    cohort: list[str] | None = None
 
 
 # Model related operations. Or model specific data.
@@ -502,6 +504,8 @@ def trigger_inference_run(
     """Returns top-level info around all executions of a given model.
 
     Only visible to users of that institution or Datakinder access types.
+    Optional request field cohort: list of cohort labels (e.g. ["fall 2024-25"]);
+    when omitted, the pipeline uses its config default.
     """
     model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
@@ -566,7 +570,7 @@ def trigger_inference_run(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unexpected number of batches found: Expected 1, got "
-            + str(len(inst_result)),
+            + str(len(batch_result)),
         )
     # inst_file_schemas = [x.schemas for x in batch_result[0][0].files]
     inst_file_schemas = [list({s for f in batch_result[0][0].files for s in f.schemas})]
@@ -588,6 +592,26 @@ def trigger_inference_run(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
         )
+    if req.cohort is not None:
+        # When cohort is provided, require at least one non-empty label (API contract: must select ≥1 cohort).
+        if len(req.cohort) == 0:
+            logging.warning(
+                "run-inference cohort validation failed: empty list for inst_id=%s",
+                inst_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one cohort is required when cohort is provided for run-inference.",
+            )
+        if any(not label or not str(label).strip() for label in req.cohort):
+            logging.warning(
+                "run-inference cohort validation failed: empty or whitespace label for inst_id=%s",
+                inst_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cohort labels must be non-empty strings for run-inference.",
+            )
     # Note to Datakind: In the long-term, this is where you would have a case block or something that would call different types of pipelines.
     db_req = DatabricksInferenceRunRequest(
         inst_name=inst_result[0][0].name,
@@ -596,6 +620,7 @@ def trigger_inference_run(
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
+        cohort=req.cohort,
     )
     try:
         res = databricks_control.run_pdp_inference(db_req)
@@ -606,6 +631,12 @@ def trigger_inference_run(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Databricks run_pdp_inference error. Error = {str(e)}",
         ) from e
+    logging.info(
+        "run-inference: user=%s cohorts=%s job_run_id=%s",
+        current_user.email,
+        req.cohort,
+        res.job_run_id,
+    )
     triggered_timestamp = datetime.now()
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),

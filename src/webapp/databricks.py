@@ -19,11 +19,6 @@ from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, Optional
 from fastapi import HTTPException
 import requests
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore[no-redef]
 import hashlib
 import json
 import gzip
@@ -53,6 +48,8 @@ class DatabricksInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
+    # Optional list of cohort labels; serialized as JSON for job params when set.
+    cohort: list[str] | None = None
 
 
 class DatabricksInferenceRunResponse(BaseModel):
@@ -235,27 +232,30 @@ class DatabricksControl(BaseModel):
             LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
             raise ValueError(f"run_pdp_inference(): Failed to find job: {e}")
 
+        job_params: Dict[str, str] = {
+            "cohort_file_name": get_filepath_of_filetype(
+                req.filepath_to_type, SchemaType.STUDENT
+            ),
+            "course_file_name": get_filepath_of_filetype(
+                req.filepath_to_type, SchemaType.COURSE
+            ),
+            "databricks_institution_name": db_inst_name,
+            "DB_workspace": databricks_vars[
+                "DATABRICKS_WORKSPACE"
+            ],  # is this value the same PER environ? dev/staging/prod
+            "gcp_bucket_name": req.gcp_external_bucket_name,
+            "model_name": req.model_name,
+            "notification_email": req.email,
+        }
+        if req.cohort is not None:
+            job_params["cohort"] = json.dumps(req.cohort)
         try:
             run_job: Any = w.jobs.run_now(
                 job_id,
-                job_parameters={
-                    "cohort_file_name": get_filepath_of_filetype(
-                        req.filepath_to_type, SchemaType.STUDENT
-                    ),
-                    "course_file_name": get_filepath_of_filetype(
-                        req.filepath_to_type, SchemaType.COURSE
-                    ),
-                    "databricks_institution_name": db_inst_name,
-                    "DB_workspace": databricks_vars[
-                        "DATABRICKS_WORKSPACE"
-                    ],  # is this value the same PER environ? dev/staging/prod
-                    "gcp_bucket_name": req.gcp_external_bucket_name,
-                    "model_name": req.model_name,
-                    "notification_email": req.email,
-                },
+                job_parameters=job_params,
             )
             LOGGER.info(
-                f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
+                "Successfully triggered job run. Run ID: %s", run_job.response.run_id
             )
         except Exception as e:
             LOGGER.exception("Failed to run the PDP inference job.")
@@ -264,10 +264,7 @@ class DatabricksControl(BaseModel):
         if not run_job.response or run_job.response.run_id is None:
             raise ValueError("run_pdp_inference(): Job did not return a valid run_id.")
 
-        run_id = run_job.response.run_id
-        LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
-
-        return DatabricksInferenceRunResponse(job_run_id=run_id)
+        return DatabricksInferenceRunResponse(job_run_id=run_job.response.run_id)
 
     def delete_inst(self, inst_name: str) -> None:
         """Cleanup tasks required on the Databricks side to delete an institution."""
@@ -628,64 +625,6 @@ class DatabricksControl(BaseModel):
                     return key
 
         return None
-
-    def read_volume_training_config(self, inst_name: str) -> Optional[Dict[str, Any]]:
-        """Read config.toml from the institution's bronze volume (training_inputs)
-        and return the [preprocessing.selection] section as a dict, or None if
-        missing or unreadable.
-        """
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-        except Exception as e:
-            LOGGER.exception(
-                "Failed to create WorkspaceClient for read_volume_training_config: %s",
-                e,
-            )
-            return None
-
-        catalog_name = databricks_vars.get("CATALOG_NAME") or ""
-        db_inst_name = databricksify_inst_name(inst_name)
-        path = (
-            f"/Volumes/{catalog_name}/{db_inst_name}_bronze/"
-            f"bronze_volume/training_inputs/config.toml"
-        )
-
-        try:
-            response = w.files.download(path)
-        except Exception as e:
-            LOGGER.warning(
-                "Could not download config from %s: %s",
-                path,
-                e,
-            )
-            return None
-
-        contents = getattr(response, "contents", None)
-        if contents is None:
-            LOGGER.warning("Files download response has no contents: %s", path)
-            return None
-        raw = contents.read()
-        if not isinstance(raw, bytes):
-            raw = raw.encode("utf-8") if isinstance(raw, str) else b""
-        if not raw:
-            return None
-
-        try:
-            cfg = tomllib.loads(raw.decode("utf-8"))
-        except Exception as e:
-            LOGGER.warning("Failed to parse config TOML from %s: %s", path, e)
-            return None
-
-        preprocessing = cfg.get("preprocessing")
-        if not isinstance(preprocessing, dict):
-            return None
-        selection = preprocessing.get("selection")
-        if not isinstance(selection, dict):
-            return None
-        return selection
 
     def create_custom_schema_extension(
         self,
