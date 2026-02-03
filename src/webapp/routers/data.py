@@ -341,6 +341,106 @@ def read_inst_all_output_files(
     }
 
 
+def _latest_inference_cohort_validation_response(
+    inst_id: str,
+    df_student: pd.DataFrame,
+    order_error: Optional[str],
+    default_label: str,
+    batch_name: Optional[str],
+) -> Optional[LatestInferenceCohortResponse]:
+    """Return an invalid LatestInferenceCohortResponse if order_error or missing id col; else None."""
+    if order_error is not None:
+        LOGGER.warning(
+            "Latest inference cohort invalid for inst_id=%s: %s",
+            inst_id,
+            order_error,
+        )
+        return LatestInferenceCohortResponse(
+            cohort_label=default_label,
+            valid_student_count=0,
+            status="invalid",
+            batch_name=batch_name,
+            reason=order_error,
+        )
+    id_col = "student_id" if "student_id" in df_student.columns else "study_id"
+    if id_col not in df_student.columns:
+        reason = "Student file missing student id column."
+        LOGGER.warning(
+            "Latest inference cohort invalid for inst_id=%s: %s", inst_id, reason
+        )
+        return LatestInferenceCohortResponse(
+            cohort_label=default_label,
+            valid_student_count=0,
+            status="invalid",
+            batch_name=batch_name,
+            reason=reason,
+        )
+    return None
+
+
+def _first_valid_cohort_from_ordered_terms(
+    ordered_cohort_terms: List[Dict[str, Any]],
+    df_student: pd.DataFrame,
+    df_course: pd.DataFrame,
+    selection_config: Dict[str, Any],
+    id_col: str,
+    course_id_col: str,
+    default_label: str,
+    batch_name: Optional[str],
+    inst_id: str,
+) -> LatestInferenceCohortResponse:
+    """Try each cohort term in order; return first valid, or invalid if none have course data."""
+    for candidate in ordered_cohort_terms:
+        df_student_cohort, cohort_label = _filter_students_to_cohort_term(
+            df_student, candidate
+        )
+        if df_student_cohort.empty:
+            continue
+        cohort_student_ids = set(df_student_cohort[id_col].drop_duplicates())
+        if course_id_col in df_course.columns:
+            df_course_cohort = df_course[
+                df_course[course_id_col].isin(cohort_student_ids)
+            ]
+        else:
+            df_course_cohort = df_course
+        if df_course_cohort.empty:
+            continue
+        valid_student_count, criteria_error = apply_student_criteria_count(
+            df_student_cohort, selection_config, df_course=df_course_cohort
+        )
+        if criteria_error:
+            LOGGER.warning(
+                "Latest inference cohort invalid for inst_id=%s: %s",
+                inst_id,
+                criteria_error,
+            )
+            return LatestInferenceCohortResponse(
+                cohort_label=cohort_label,
+                valid_student_count=0,
+                status="invalid",
+                batch_name=batch_name,
+                reason=criteria_error,
+            )
+        return LatestInferenceCohortResponse(
+            cohort_label=cohort_label,
+            valid_student_count=valid_student_count,
+            status="valid",
+            batch_name=batch_name,
+            reason=None,
+        )
+    reason = "No cohort term in the batch has course data for those students."
+    LOGGER.warning(
+        "Latest inference cohort invalid for inst_id=%s: %s", inst_id, reason
+    )
+    return LatestInferenceCohortResponse(
+        cohort_label=default_label,
+        valid_student_count=0,
+        status="invalid",
+        batch_name=batch_name,
+        reason=reason,
+    )
+
+
 def _resolve_latest_inference_cohort_from_dataframes(
     inst_id: str,
     df_student: pd.DataFrame,
@@ -368,84 +468,26 @@ def _resolve_latest_inference_cohort_from_dataframes(
     ordered_cohort_terms, order_error = get_ordered_cohort_terms(
         df_student, allowed_cohort_terms=allowed_cohort_terms
     )
-    if order_error is not None:
-        LOGGER.warning(
-            "Latest inference cohort invalid for inst_id=%s: %s",
-            inst_id,
-            order_error,
-        )
-        return LatestInferenceCohortResponse(
-            cohort_label=default_label,
-            valid_student_count=0,
-            status="invalid",
-            batch_name=batch_name,
-            reason=order_error,
-        )
+    validation_response = _latest_inference_cohort_validation_response(
+        inst_id, df_student, order_error, default_label, batch_name
+    )
+    if validation_response is not None:
+        return validation_response
 
     id_col = "student_id" if "student_id" in df_student.columns else "study_id"
-    if id_col not in df_student.columns:
-        reason = "Student file missing student id column."
-        LOGGER.warning(
-            "Latest inference cohort invalid for inst_id=%s: %s", inst_id, reason
-        )
-        return LatestInferenceCohortResponse(
-            cohort_label=default_label,
-            valid_student_count=0,
-            status="invalid",
-            batch_name=batch_name,
-            reason=reason,
-        )
     course_id_col = "student_id" if "student_id" in df_course.columns else "study_id"
 
     if ordered_cohort_terms:
-        for candidate in ordered_cohort_terms:
-            df_student_cohort, cohort_label = _filter_students_to_cohort_term(
-                df_student, candidate
-            )
-            if df_student_cohort.empty:
-                continue
-            cohort_student_ids = set(df_student_cohort[id_col].drop_duplicates())
-            if course_id_col in df_course.columns:
-                df_course_cohort = df_course[
-                    df_course[course_id_col].isin(cohort_student_ids)
-                ]
-            else:
-                df_course_cohort = df_course
-            if df_course_cohort.empty:
-                continue
-            valid_student_count, criteria_error = apply_student_criteria_count(
-                df_student_cohort, selection_config, df_course=df_course_cohort
-            )
-            if criteria_error:
-                LOGGER.warning(
-                    "Latest inference cohort invalid for inst_id=%s: %s",
-                    inst_id,
-                    criteria_error,
-                )
-                return LatestInferenceCohortResponse(
-                    cohort_label=cohort_label,
-                    valid_student_count=0,
-                    status="invalid",
-                    batch_name=batch_name,
-                    reason=criteria_error,
-                )
-            return LatestInferenceCohortResponse(
-                cohort_label=cohort_label,
-                valid_student_count=valid_student_count,
-                status="valid",
-                batch_name=batch_name,
-                reason=None,
-            )
-        reason = "No cohort term in the batch has course data for those students."
-        LOGGER.warning(
-            "Latest inference cohort invalid for inst_id=%s: %s", inst_id, reason
-        )
-        return LatestInferenceCohortResponse(
-            cohort_label=default_label,
-            valid_student_count=0,
-            status="invalid",
-            batch_name=batch_name,
-            reason=reason,
+        return _first_valid_cohort_from_ordered_terms(
+            ordered_cohort_terms,
+            df_student,
+            df_course,
+            selection_config,
+            id_col,
+            course_id_col,
+            default_label,
+            batch_name,
+            inst_id,
         )
 
     LOGGER.warning(
@@ -479,6 +521,8 @@ def get_latest_inference_cohort(
     recent cohort term that has course data and meets config criteria, and returns
     valid student count and status. Always returns 200; status='invalid' with reason
     when no batch, missing config, missing cohort_term, or no cohort has course data.
+
+    Config is read from Databricks using the same slug as elsewhere: databricksify_inst_name(inst.name).
 
     Args:
         inst_id: Institution UUID from path.

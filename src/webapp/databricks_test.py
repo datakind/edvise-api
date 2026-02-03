@@ -1,6 +1,8 @@
 import pytest
+from unittest import mock
 
-from .databricks import DatabricksControl
+from . import databricks as databricks_module
+from .databricks import DatabricksControl, _parse_config_toml_to_selection
 
 
 @pytest.fixture
@@ -51,3 +53,93 @@ def test_invalid_regex_is_ignored(ctrl):
 def test_returns_none_when_no_match(ctrl):
     mapping = {"student": "student.csv"}
     assert ctrl.get_key_for_file(mapping, "unknown.csv") is None
+
+
+def test_parse_config_toml_to_selection_returns_preprocessing_selection():
+    """_parse_config_toml_to_selection parses TOML bytes and returns [preprocessing.selection] only."""
+    toml_bytes = (
+        b"[preprocessing]\nsplits = { train = 0.6, test = 0.2, validate = 0.2 }\n"
+        b"[preprocessing.selection]\n"
+        b'student_criteria = { enrollment_type = "FIRST-TIME", cohort_term = ["FALL", "SPRING"] }\n'
+    )
+    result = _parse_config_toml_to_selection(toml_bytes)
+    assert result is not None
+    assert result == {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        }
+    }
+
+
+def test_parse_config_toml_to_selection_returns_none_for_invalid_or_missing_section():
+    """_parse_config_toml_to_selection returns None when TOML is invalid or section missing."""
+    assert _parse_config_toml_to_selection(b"not valid toml {{{") is None
+    assert _parse_config_toml_to_selection(b"[other]\nx = 1\n") is None
+    assert _parse_config_toml_to_selection(b"[preprocessing]\nx = 1\n") is None
+
+
+def test_read_volume_training_config_returns_none_for_empty_inst_name(ctrl):
+    """read_volume_training_config returns None when inst_name is empty."""
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        assert ctrl.read_volume_training_config("") is None
+        assert ctrl.read_volume_training_config("   ") is None
+
+
+def test_read_volume_training_config_returns_none_when_env_not_dev_or_staging(ctrl):
+    """read_volume_training_config returns None when ENV is LOCAL (no volume schema)."""
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "LOCAL"}):
+        result = ctrl.read_volume_training_config("Some University")
+    assert result is None
+
+
+def test_read_volume_training_config_returns_none_when_databricksify_raises(ctrl):
+    """read_volume_training_config returns None when databricksify_inst_name raises ValueError."""
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        with mock.patch.object(
+            databricks_module,
+            "databricksify_inst_name",
+            side_effect=ValueError("invalid chars"),
+        ):
+            result = ctrl.read_volume_training_config("Bad/Name\\Here")
+    assert result is None
+
+
+def test_read_volume_training_config_returns_none_when_workspace_client_raises(ctrl):
+    """read_volume_training_config returns None when WorkspaceClient construction fails."""
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        with mock.patch.object(
+            databricks_module,
+            "WorkspaceClient",
+            side_effect=Exception("connection refused"),
+        ):
+            result = ctrl.read_volume_training_config("Some University")
+    assert result is None
+
+
+def test_read_volume_training_config_returns_none_when_download_raises(ctrl):
+    """read_volume_training_config returns None when files.download raises."""
+    mock_client = mock.Mock()
+    mock_client.files.download.side_effect = Exception("file not found")
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        with mock.patch.object(
+            databricks_module, "WorkspaceClient", return_value=mock_client
+        ):
+            result = ctrl.read_volume_training_config("Some University")
+    assert result is None
+
+
+def test_read_volume_training_config_returns_none_when_toml_missing_selection_section(
+    ctrl,
+):
+    """read_volume_training_config returns None when config file has no [preprocessing.selection]."""
+    mock_response = mock.Mock()
+    mock_response.contents.read.return_value = b"[other]\nx = 1\n"
+    mock_client = mock.Mock()
+    mock_client.files.download.return_value = mock_response
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        with mock.patch.object(
+            databricks_module, "WorkspaceClient", return_value=mock_client
+        ):
+            result = ctrl.read_volume_training_config("Some University")
+    assert result is None

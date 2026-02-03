@@ -1764,6 +1764,48 @@ def test_get_latest_batch_with_student_and_course_no_batch(
     assert batch is None
 
 
+def test_get_latest_batch_with_student_and_course_returns_none_when_no_batch_has_both_student_and_course(
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """get_latest_batch_with_student_and_course returns None when inst has batches but none have both STUDENT and COURSE."""
+    inst_only_student_uuid = uuid.UUID("a1b2c3d4-e5f6-4789-a012-345678901234")
+    batch_student_only = BatchTable(
+        inst_id=inst_only_student_uuid,
+        name="batch_student_only",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    file_student_only = FileTable(
+        inst_id=inst_only_student_uuid,
+        name="file_student_only",
+        source="MANUAL_UPLOAD",
+        batches={batch_student_only},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    session.add_all(
+        [
+            InstTable(
+                id=inst_only_student_uuid,
+                name="inst_student_only",
+                created_at=DATETIME_TESTING,
+                updated_at=DATETIME_TESTING,
+            ),
+            batch_student_only,
+            file_student_only,
+        ]
+    )
+    session.commit()
+    batch = get_latest_batch_with_student_and_course(
+        session, uuid_to_str(inst_only_student_uuid)
+    )
+    assert batch is None
+
+
 def test_get_latest_inference_cohort_unauthorized(client: TestClient) -> None:
     """GET latest-inference-cohort returns 401 for wrong institution."""
     response = client.get(
@@ -2037,8 +2079,10 @@ def test_get_latest_inference_cohort_missing_student_id_column(
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
-        "student_criteria": {"enrollment_type": "FIRST-TIME"},
-        "cohort_term": ["FALL", "SPRING"],
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
     }
     df_student = pd.DataFrame(
         {

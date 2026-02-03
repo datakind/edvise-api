@@ -623,7 +623,7 @@ def trigger_inference_run(
         cohort=req.cohort,
     )
     try:
-        res = databricks_control.run_pdp_inference(db_req)
+        inference_run_response = databricks_control.run_pdp_inference(db_req)
     except Exception as e:
         tb = traceback.format_exc()
         logging.error(f"Databricks run failure:\n{tb}")
@@ -635,7 +635,7 @@ def trigger_inference_run(
         "run-inference: user=%s cohorts=%s job_run_id=%s",
         current_user.email,
         req.cohort,
-        res.job_run_id,
+        inference_run_response.job_run_id,
     )
     triggered_timestamp = datetime.now()
     latest_model_version = databricks_control.fetch_model_version(
@@ -644,7 +644,7 @@ def trigger_inference_run(
         model_name=model_name,
     )
     job = JobTable(
-        id=res.job_run_id,
+        id=inference_run_response.job_run_id,
         triggered_at=triggered_timestamp,
         created_by=str_to_uuid(current_user.user_id),
         batch_name=req.batch_name,
@@ -657,7 +657,7 @@ def trigger_inference_run(
     return {
         "inst_id": inst_id,
         "m_name": model_name,
-        "run_id": res.job_run_id,
+        "run_id": inference_run_response.job_run_id,
         "created_by": current_user.user_id,
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,

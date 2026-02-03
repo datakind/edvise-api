@@ -14,7 +14,7 @@ from databricks.sdk.service.sql import (
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
 from .validation_extension import generate_extension_schema
-from .config import databricks_vars, gcs_vars
+from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, Optional
 from fastapi import HTTPException
@@ -83,6 +83,33 @@ def _sha256_json(obj: Any) -> str:
             obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _parse_config_toml_to_selection(raw: bytes) -> dict | None:
+    """Parse TOML bytes and return the [preprocessing.selection] section, or None."""
+    try:
+        try:
+            import tomllib
+
+            try:
+                data = tomllib.loads(raw)
+            except TypeError:
+                data = tomllib.loads(raw.decode("utf-8"))
+        except ImportError:
+            import tomli as tomllib
+
+            data = tomllib.loads(raw.decode("utf-8"))
+    except (Exception, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    preprocessing = data.get("preprocessing")
+    if not isinstance(preprocessing, dict):
+        return None
+    selection = preprocessing.get("selection")
+    if not isinstance(selection, dict):
+        return None
+    return selection
 
 
 L1_RESP_CACHE_TTL = int("600")  # seconds
@@ -227,9 +254,9 @@ class DatabricksControl(BaseModel):
                     f"run_pdp_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
                 )
             job_id = job.job_id
-            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+            LOGGER.info("Resolved job ID for '%s': %s", pipeline_type, job_id)
         except Exception as e:
-            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            LOGGER.exception("Job lookup failed for '%s': %s", pipeline_type, e)
             raise ValueError(f"run_pdp_inference(): Failed to find job: {e}")
 
         job_params: Dict[str, str] = {
@@ -258,7 +285,7 @@ class DatabricksControl(BaseModel):
                 "Successfully triggered job run. Run ID: %s", run_job.response.run_id
             )
         except Exception as e:
-            LOGGER.exception("Failed to run the PDP inference job.")
+            LOGGER.exception("Failed to run the PDP inference job: %s", e)
             raise ValueError(f"run_pdp_inference(): Job could not be run: {e}")
 
         if not run_job.response or run_job.response.run_id is None:
@@ -531,6 +558,92 @@ class DatabricksControl(BaseModel):
         latest_version = max(model_versions, key=lambda v: int(v.version))
 
         return latest_version
+
+    def read_volume_training_config(self, inst_name: str) -> dict | None:
+        """Read training/preprocessing config from the institution's Databricks volume.
+
+        Reads from the bronze volume path:
+        /Volumes/{env_schema}/{slug}_bronze/bronze_volume/training_inputs/config.toml
+
+        inst_name is the institution display name (e.g. from inst.name). The path slug is
+        derived with databricksify_inst_name(inst_name), same as elsewhere in Databricks.
+        env_schema is derived from ENV: the app loads ENV at startup from the environment
+        (see config.startup_env_vars and ENV_FILE_PATH). Allowed values for this path are
+        DEV -> dev_sst_02, STAGING -> staging_sst_01; other values (e.g. LOCAL, PROD) return None.
+        The DS pipeline writes this TOML (same shape as edvise config.toml). This method
+        returns the [preprocessing.selection] section only (dict with student_criteria, etc.)
+        for use by latest-inference-cohort and related logic.
+
+        Returns that section dict, or None if the file or section is missing or unreadable.
+        """
+        if not inst_name or not str(inst_name).strip():
+            LOGGER.warning(
+                "read_volume_training_config: empty inst_name; cannot build volume path.",
+            )
+            return None
+        env = str(env_vars.get("ENV", "")).strip().upper()
+        if env not in ENV_TO_VOLUME_SCHEMA:
+            LOGGER.warning(
+                "read_volume_training_config: ENV %r not in %s; cannot read config for %s",
+                env_vars.get("ENV"),
+                list(ENV_TO_VOLUME_SCHEMA),
+                inst_name,
+            )
+            return None
+        env_schema = ENV_TO_VOLUME_SCHEMA[env]
+        try:
+            db_inst_name = databricksify_inst_name(inst_name)
+        except ValueError as e:
+            LOGGER.warning(
+                "read_volume_training_config: cannot databricksify inst_name %r: %s",
+                inst_name,
+                e,
+            )
+            return None
+        volume_path = (
+            f"/Volumes/{env_schema}/{db_inst_name}_bronze/bronze_volume/"
+            "training_inputs/config.toml"
+        )
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception as e:
+            LOGGER.exception(
+                "read_volume_training_config: WorkspaceClient failed for %s: %s",
+                inst_name,
+                e,
+            )
+            return None
+        try:
+            response = w.files.download(volume_path)
+            if response.contents is None:
+                LOGGER.debug(
+                    "read_volume_training_config: no contents at %s for %s",
+                    volume_path,
+                    inst_name,
+                )
+                return None
+            raw = response.contents.read()
+        except Exception as e:
+            LOGGER.debug(
+                "read_volume_training_config: no config at %s for %s: %s",
+                volume_path,
+                inst_name,
+                e,
+            )
+            return None
+        raw_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+        selection = _parse_config_toml_to_selection(raw_bytes)
+        if selection is None:
+            LOGGER.warning(
+                "read_volume_training_config: invalid TOML or missing [preprocessing.selection] at %s for %s",
+                volume_path,
+                inst_name,
+            )
+            return None
+        return selection
 
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:
         schema = databricksify_inst_name(inst_name)
