@@ -112,6 +112,51 @@ def _parse_config_toml_to_selection(raw: bytes) -> dict | None:
     return selection
 
 
+def _find_selection_in_toml_under(
+    w: WorkspaceClient,
+    directory_path: str,
+    inst_name: str,
+) -> dict | None:
+    """List directory recursively; find first .toml file with [preprocessing.selection]."""
+    try:
+        entries = list(w.files.list_directory_contents(directory_path))
+    except Exception as e:
+        LOGGER.debug(
+            "read_volume_training_config: could not list %s for %s: %s",
+            directory_path,
+            inst_name,
+            e,
+        )
+        return None
+    for entry in entries:
+        if not entry.path:
+            continue
+        if entry.is_directory:
+            selection = _find_selection_in_toml_under(w, entry.path, inst_name)
+            if selection is not None:
+                return selection
+            continue
+        if entry.name and entry.name.lower().endswith(".toml"):
+            try:
+                response = w.files.download(entry.path)
+                if response.contents is None:
+                    continue
+                raw = response.contents.read()
+            except Exception as e:
+                LOGGER.debug(
+                    "read_volume_training_config: could not read %s for %s: %s",
+                    entry.path,
+                    inst_name,
+                    e,
+                )
+                continue
+            raw_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+            selection = _parse_config_toml_to_selection(raw_bytes)
+            if selection is not None:
+                return selection
+    return None
+
+
 L1_RESP_CACHE_TTL = int("600")  # seconds
 L1_VER_CACHE_TTL = int("3600")  # seconds
 L1_RESP_CACHE: Any = TTLCache(maxsize=128, ttl=L1_RESP_CACHE_TTL)
@@ -559,26 +604,34 @@ class DatabricksControl(BaseModel):
 
         return latest_version
 
-    def read_volume_training_config(self, inst_name: str) -> dict | None:
-        """Read training/preprocessing config from the institution's Databricks volume.
+    def read_volume_training_config(
+        self, inst_name: str, model_run_id: str
+    ) -> dict | None:
+        """Read training/preprocessing config from the model's training run in the silver volume.
 
-        Reads from the bronze volume path:
-        /Volumes/{env_schema}/{slug}_bronze/bronze_volume/training_inputs/config.toml
+        Looks for any .toml file under:
+        /Volumes/{env_schema}/{slug}_silver/silver_volume/{model_run_id}/
 
+        Uses the first .toml found (any subfolder) that contains [preprocessing.selection].
         inst_name is the institution display name (e.g. from inst.name). The path slug is
-        derived with databricksify_inst_name(inst_name), same as elsewhere in Databricks.
-        env_schema is derived from ENV: the app loads ENV at startup from the environment
-        (see config.startup_env_vars and ENV_FILE_PATH). Allowed values for this path are
-        DEV -> dev_sst_02, STAGING -> staging_sst_01; other values (e.g. LOCAL, PROD) return None.
-        The DS pipeline writes this TOML (same shape as edvise config.toml). This method
-        returns the [preprocessing.selection] section only (dict with student_criteria, etc.)
+        derived with databricksify_inst_name(inst_name). model_run_id is the training run
+        identifier (e.g. 0b2e206732ce48f6b644149090c9614a). env_schema is derived from ENV
+        (see config.startup_env_vars and ENV_FILE_PATH). Allowed values: DEV -> dev_sst_02,
+        STAGING -> staging_sst_01; other values (e.g. LOCAL, PROD) return None.
+        Returns the [preprocessing.selection] section only (dict with student_criteria, etc.)
         for use by latest-inference-cohort and related logic.
 
-        Returns that section dict, or None if the file or section is missing or unreadable.
+        Returns that section dict, or None if no suitable file or section is found.
         """
         if not inst_name or not str(inst_name).strip():
             LOGGER.warning(
                 "read_volume_training_config: empty inst_name; cannot build volume path.",
+            )
+            return None
+        model_run_id_clean = str(model_run_id).strip() if model_run_id else ""
+        if not model_run_id_clean:
+            LOGGER.warning(
+                "read_volume_training_config: empty model_run_id; cannot build volume path.",
             )
             return None
         env = str(env_vars.get("ENV", "")).strip().upper()
@@ -600,9 +653,9 @@ class DatabricksControl(BaseModel):
                 e,
             )
             return None
-        volume_path = (
-            f"/Volumes/{env_schema}/{db_inst_name}_bronze/bronze_volume/"
-            "training_inputs/config.toml"
+        directory_path = (
+            f"/Volumes/{env_schema}/{db_inst_name}_silver/silver_volume/"
+            f"{model_run_id_clean}"
         )
         try:
             w = WorkspaceClient(
@@ -616,33 +669,7 @@ class DatabricksControl(BaseModel):
                 e,
             )
             return None
-        try:
-            response = w.files.download(volume_path)
-            if response.contents is None:
-                LOGGER.debug(
-                    "read_volume_training_config: no contents at %s for %s",
-                    volume_path,
-                    inst_name,
-                )
-                return None
-            raw = response.contents.read()
-        except Exception as e:
-            LOGGER.debug(
-                "read_volume_training_config: no config at %s for %s: %s",
-                volume_path,
-                inst_name,
-                e,
-            )
-            return None
-        raw_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
-        selection = _parse_config_toml_to_selection(raw_bytes)
-        if selection is None:
-            LOGGER.warning(
-                "read_volume_training_config: invalid TOML or missing [preprocessing.selection] at %s for %s",
-                volume_path,
-                inst_name,
-            )
-            return None
+        selection = _find_selection_in_toml_under(w, directory_path, inst_name)
         return selection
 
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:

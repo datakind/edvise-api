@@ -514,22 +514,33 @@ def get_latest_inference_cohort(
     sql_session: Annotated[Session, Depends(get_session)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    model_name: Optional[str] = None,
+    batch_name: Optional[str] = None,
 ) -> LatestInferenceCohortResponse:
     """Return the latest inference-ready cohort for the institution.
 
-    Uses one batch (most recent with student + course files), restricts to the most
-    recent cohort term that has course data and meets config criteria, and returns
-    valid student count and status. Always returns 200; status='invalid' with reason
-    when no batch, missing config, missing cohort_term, or no cohort has course data.
+    Uses the given batch (or the most recent with student + course files if
+    batch_name omitted), the given model (or the single registered model),
+    and the model's config to resolve the most recent cohort term that has
+    course data and meets criteria. Returns valid student count and status so
+    the user can confirm running inference on that cohort. Always returns 200;
+    status='invalid' with reason when no batch, missing config, or no cohort
+    has course data.
 
-    Config is read from Databricks using the same slug as elsewhere: databricksify_inst_name(inst.name).
+    Config is read from the model's training run in the silver volume. model_run_id
+    is derived from the latest model version for the chosen model.
 
     Args:
         inst_id: Institution UUID from path.
+        model_name: Optional. Model name; used to find config. If omitted, the
+            institution must have exactly one registered (valid, non-deleted) model.
+        batch_name: Optional. Batch name; when provided, cohort selection uses
+            this batch's data. When omitted, uses the most recent batch with
+            student + course files.
         current_user: Injected; must have access to inst_id.
         sql_session: Injected DB session.
         storage_control: Injected storage for batch files.
-        databricks_control: Injected for training config (preprocessing.selection).
+        databricks_control: Injected for model version and training config.
 
     Returns:
         LatestInferenceCohortResponse with status valid or invalid, cohort_label,
@@ -539,10 +550,10 @@ def get_latest_inference_cohort(
     local_session.set(sql_session)
     session = local_session.get()
 
-    inst_result = session.execute(
+    inst_rows = session.execute(
         select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
     ).all()
-    if not inst_result or len(inst_result) != 1:
+    if not inst_rows or len(inst_rows) != 1:
         LOGGER.warning(
             "Latest inference cohort invalid for inst_id=%s: Institution not found.",
             inst_id,
@@ -550,31 +561,212 @@ def get_latest_inference_cohort(
         return LatestInferenceCohortResponse(
             status="invalid", reason="Institution not found."
         )
-    inst = inst_result[0][0]
+    inst = inst_rows[0][0]
 
-    batch = get_latest_batch_with_student_and_course(session, inst_id)
+    resolved_model_name, model_run_id, error_response = (
+        _resolve_model_name_and_run_id_for_inference(
+            session, inst_id, model_name, inst.name, databricks_control
+        )
+    )
+    if error_response is not None:
+        return error_response
+    assert model_run_id is not None  # guaranteed when error_response is None
+
+    df_student, df_course, selection_config, batch_name_for_response, error_response = (
+        _load_batch_and_dataframes_for_inference(
+            session,
+            inst_id,
+            batch_name,
+            inst.name,
+            model_run_id,
+            databricks_control,
+            storage_control,
+        )
+    )
+    if error_response is not None:
+        return error_response
+    assert selection_config is not None  # guaranteed when error_response is None
+
+    return _resolve_latest_inference_cohort_from_dataframes(
+        inst_id=inst_id,
+        df_student=df_student,
+        df_course=df_course,
+        selection_config=selection_config,
+        batch_name=batch_name_for_response,
+    )
+
+
+def _resolve_model_name_and_run_id_for_inference(
+    session: Session,
+    inst_id: str,
+    model_name: Optional[str],
+    inst_name: str,
+    databricks_control: DatabricksControl,
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[LatestInferenceCohortResponse],
+]:
+    """
+    Resolve model name (from param or single registered), validate it exists, and fetch model_run_id.
+
+    Returns (resolved_model_name, model_run_id, None) on success, or
+    (None, None, error_response) when invalid or Databricks lookup fails.
+    """
+    if model_name and str(model_name).strip():
+        resolved_model_name = decode_url_piece(str(model_name).strip())
+    else:
+        models_result = session.execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                    ModelTable.valid == True,  # noqa: E712
+                    or_(
+                        ModelTable.deleted.is_(None),
+                        ModelTable.deleted == False,  # noqa: E712
+                    ),
+                )
+            )
+        ).all()
+        if not models_result:
+            LOGGER.warning(
+                "Latest inference cohort invalid for inst_id=%s: No registered model.",
+                inst_id,
+            )
+            return (
+                None,
+                None,
+                LatestInferenceCohortResponse(
+                    status="invalid",
+                    reason="No registered model for this institution; approve a model for use or specify model_name.",
+                ),
+            )
+        if len(models_result) > 1:
+            LOGGER.warning(
+                "Latest inference cohort invalid for inst_id=%s: Multiple registered models; model_name required.",
+                inst_id,
+            )
+            return (
+                None,
+                None,
+                LatestInferenceCohortResponse(
+                    status="invalid",
+                    reason="Multiple registered models; specify model_name to select which model's config to use.",
+                ),
+            )
+        resolved_model_name = models_result[0][0].name
+
+    model_rows = session.execute(
+        select(ModelTable).where(
+            and_(
+                ModelTable.inst_id == str_to_uuid(inst_id),
+                ModelTable.name == resolved_model_name,
+            )
+        )
+    ).all()
+    if not model_rows or len(model_rows) != 1:
+        LOGGER.warning(
+            "Latest inference cohort invalid for inst_id=%s model_name=%s: Model not found for institution.",
+            inst_id,
+            resolved_model_name,
+        )
+        return (
+            None,
+            None,
+            LatestInferenceCohortResponse(
+                status="invalid",
+                reason="Model not found for this institution.",
+            ),
+        )
+
+    try:
+        latest_model_version = databricks_control.fetch_model_version(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=inst_name,
+            model_name=resolved_model_name,
+        )
+        return (resolved_model_name, str(latest_model_version.run_id), None)
+    except ValueError as e:
+        LOGGER.warning(
+            "Latest inference cohort invalid for inst_id=%s model_name=%s: %s",
+            inst_id,
+            resolved_model_name,
+            e,
+        )
+        return (
+            None,
+            None,
+            LatestInferenceCohortResponse(
+                status="invalid",
+                reason="Could not get model version for config; no versions or lookup failed.",
+            ),
+        )
+
+
+def _load_batch_and_dataframes_for_inference(
+    session: Session,
+    inst_id: str,
+    batch_name: Optional[str],
+    inst_name: str,
+    model_run_id: str,
+    databricks_control: DatabricksControl,
+    storage_control: StorageControl,
+) -> Tuple[
+    Optional[pd.DataFrame],
+    Optional[pd.DataFrame],
+    Optional[Dict[str, Any]],
+    Optional[str],
+    Optional[LatestInferenceCohortResponse],
+]:
+    """
+    Resolve batch, load config, read batch files, and validate STUDENT/COURSE dataframes.
+
+    Returns (df_student, df_course, selection_config, batch_name_for_response, None) on success,
+    or (None, None, None, optional_batch_name, error_response) on failure.
+    """
+    batch, batch_label = get_batch_for_inference(session, inst_id, batch_name)
     if not batch:
         LOGGER.warning(
-            "Latest inference cohort invalid for inst_id=%s: No completed batch with student and course files.",
+            "Latest inference cohort invalid for inst_id=%s: Batch not found or missing student and course files.",
             inst_id,
         )
-        return LatestInferenceCohortResponse(
-            status="invalid",
-            reason="No completed batch with student and course files.",
+        reason = (
+            "Batch not found or does not have both student and course files."
+            if batch_label
+            else "No completed batch with student and course files."
+        )
+        return (
+            None,
+            None,
+            None,
+            batch_label,
+            LatestInferenceCohortResponse(
+                status="invalid",
+                batch_name=batch_label,
+                reason=reason,
+            ),
         )
 
-    selection_config = databricks_control.read_volume_training_config(inst.name)
+    selection_config = databricks_control.read_volume_training_config(
+        inst_name, model_run_id
+    )
     if not selection_config:
         LOGGER.warning(
             "Latest inference cohort invalid for inst_id=%s: Missing config in Databricks.",
             inst_id,
         )
-        return LatestInferenceCohortResponse(
-            cohort_label=batch.name or "Latest cohort",
-            valid_student_count=0,
-            status="invalid",
-            batch_name=batch.name,
-            reason="Missing config in Databricks.",
+        return (
+            None,
+            None,
+            None,
+            batch.name,
+            LatestInferenceCohortResponse(
+                cohort_label=batch.name or "Latest cohort",
+                valid_student_count=0,
+                status="invalid",
+                batch_name=batch.name,
+                reason="Missing config in Databricks.",
+            ),
         )
 
     try:
@@ -588,11 +780,17 @@ def get_latest_inference_cohort(
         LOGGER.warning(
             "Latest inference cohort invalid for inst_id=%s: %s", inst_id, detail
         )
-        return LatestInferenceCohortResponse(
-            cohort_label=batch.name or "Latest cohort",
-            status="invalid",
-            batch_name=batch.name,
-            reason=detail,
+        return (
+            None,
+            None,
+            None,
+            batch.name,
+            LatestInferenceCohortResponse(
+                cohort_label=batch.name or "Latest cohort",
+                status="invalid",
+                batch_name=batch.name,
+                reason=detail,
+            ),
         )
 
     df_student = file_dataframes.get("STUDENT")
@@ -601,11 +799,17 @@ def get_latest_inference_cohort(
             "Latest inference cohort invalid for inst_id=%s: No STUDENT file in batch.",
             inst_id,
         )
-        return LatestInferenceCohortResponse(
-            cohort_label=batch.name or "Latest cohort",
-            status="invalid",
-            batch_name=batch.name,
-            reason="No STUDENT file in batch.",
+        return (
+            None,
+            None,
+            None,
+            batch.name,
+            LatestInferenceCohortResponse(
+                cohort_label=batch.name or "Latest cohort",
+                status="invalid",
+                batch_name=batch.name,
+                reason="No STUDENT file in batch.",
+            ),
         )
 
     df_course = file_dataframes.get("COURSE")
@@ -614,20 +818,20 @@ def get_latest_inference_cohort(
             "Latest inference cohort invalid for inst_id=%s: No COURSE file in batch.",
             inst_id,
         )
-        return LatestInferenceCohortResponse(
-            cohort_label=batch.name or "Latest cohort",
-            status="invalid",
-            batch_name=batch.name,
-            reason="No COURSE file in batch.",
+        return (
+            None,
+            None,
+            None,
+            batch.name,
+            LatestInferenceCohortResponse(
+                cohort_label=batch.name or "Latest cohort",
+                status="invalid",
+                batch_name=batch.name,
+                reason="No COURSE file in batch.",
+            ),
         )
 
-    return _resolve_latest_inference_cohort_from_dataframes(
-        inst_id=inst_id,
-        df_student=df_student,
-        df_course=df_course,
-        selection_config=selection_config,
-        batch_name=batch.name,
-    )
+    return (df_student, df_course, selection_config, batch.name, None)
 
 
 # TODO: rename this function to better reflect its behavior.
@@ -1156,6 +1360,74 @@ def filter_to_most_recent_cohort(
     return filtered, label, None
 
 
+def _batch_has_student_and_course(batch: Any) -> bool:
+    """Return True if batch has at least one STUDENT and one COURSE file."""
+    all_schemas: set[str] = set()
+    for f in batch.files:
+        if getattr(f, "schemas", None):
+            for s in f.schemas:
+                all_schemas.add(str(s))
+    return SchemaType.STUDENT in all_schemas and SchemaType.COURSE in all_schemas
+
+
+def get_batch_by_name_with_student_and_course(
+    session: Session, inst_id: str, batch_name: str
+) -> Optional[Any]:
+    """Return the batch for the institution with the given name that has at least
+    one STUDENT and one COURSE file, or None if not found or missing file types.
+    Excludes deleted batches.
+    """
+    from sqlalchemy.orm import selectinload
+
+    stmt = (
+        select(BatchTable)
+        .options(selectinload(BatchTable.files))
+        .where(
+            and_(
+                BatchTable.inst_id == str_to_uuid(inst_id),
+                BatchTable.name == batch_name,
+                or_(
+                    BatchTable.deleted.is_(None),
+                    BatchTable.deleted == False,  # noqa: E712
+                ),
+            )
+        )
+    )
+    rows = session.execute(stmt).all()
+    if not rows or len(rows) != 1:
+        return None
+    batch = rows[0][0]
+    return batch if _batch_has_student_and_course(batch) else None
+
+
+def get_batch_for_inference(
+    session: Session, inst_id: str, batch_name: Optional[str]
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Return (batch, batch_name_for_response) for cohort resolution.
+
+    When batch_name is provided and non-empty (after strip/decode), looks up that
+    batch; otherwise uses the most recent batch with STUDENT and COURSE files.
+    Excludes deleted batches.
+
+    Args:
+        session: Database session.
+        inst_id: Institution UUID.
+        batch_name: Optional batch name from query; when omitted, latest batch is used.
+
+    Returns:
+        (batch, batch_name_for_response). On success batch is the BatchTable instance
+        and batch_name_for_response is its name (or the decoded requested name).
+        On not found, (None, batch_name_for_response) with batch_name_for_response
+        set when a name was requested (for error responses).
+    """
+    if batch_name and str(batch_name).strip():
+        decoded = decode_url_piece(str(batch_name).strip())
+        batch = get_batch_by_name_with_student_and_course(session, inst_id, decoded)
+        return (batch, decoded) if batch else (None, decoded)
+    batch = get_latest_batch_with_student_and_course(session, inst_id)
+    return (batch, batch.name if batch else None) if batch else (None, None)
+
+
 def get_latest_batch_with_student_and_course(
     session: Session, inst_id: str
 ) -> Optional[Any]:
@@ -1182,12 +1454,7 @@ def get_latest_batch_with_student_and_course(
     rows = session.execute(stmt).all()
     for row in rows:
         batch = row[0]
-        all_schemas: set[str] = set()
-        for f in batch.files:
-            if getattr(f, "schemas", None):
-                for s in f.schemas:
-                    all_schemas.add(str(s))
-        if SchemaType.STUDENT in all_schemas and SchemaType.COURSE in all_schemas:
+        if _batch_has_student_and_course(batch):
             return batch
     return None
 

@@ -1,6 +1,8 @@
 import pytest
 from unittest import mock
 
+from databricks.sdk.service.files import DirectoryEntry
+
 from . import databricks as databricks_module
 from .databricks import DatabricksControl, _parse_config_toml_to_selection
 
@@ -79,17 +81,27 @@ def test_parse_config_toml_to_selection_returns_none_for_invalid_or_missing_sect
     assert _parse_config_toml_to_selection(b"[preprocessing]\nx = 1\n") is None
 
 
+MODEL_RUN_ID_TEST = "0b2e206732ce48f6b644149090c9614a"
+
+
 def test_read_volume_training_config_returns_none_for_empty_inst_name(ctrl):
     """read_volume_training_config returns None when inst_name is empty."""
     with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
-        assert ctrl.read_volume_training_config("") is None
-        assert ctrl.read_volume_training_config("   ") is None
+        assert ctrl.read_volume_training_config("", MODEL_RUN_ID_TEST) is None
+        assert ctrl.read_volume_training_config("   ", MODEL_RUN_ID_TEST) is None
+
+
+def test_read_volume_training_config_returns_none_for_empty_model_run_id(ctrl):
+    """read_volume_training_config returns None when model_run_id is empty."""
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        assert ctrl.read_volume_training_config("Some University", "") is None
+        assert ctrl.read_volume_training_config("Some University", "   ") is None
 
 
 def test_read_volume_training_config_returns_none_when_env_not_dev_or_staging(ctrl):
     """read_volume_training_config returns None when ENV is LOCAL (no volume schema)."""
     with mock.patch.dict(databricks_module.env_vars, {"ENV": "LOCAL"}):
-        result = ctrl.read_volume_training_config("Some University")
+        result = ctrl.read_volume_training_config("Some University", MODEL_RUN_ID_TEST)
     assert result is None
 
 
@@ -101,7 +113,9 @@ def test_read_volume_training_config_returns_none_when_databricksify_raises(ctrl
             "databricksify_inst_name",
             side_effect=ValueError("invalid chars"),
         ):
-            result = ctrl.read_volume_training_config("Bad/Name\\Here")
+            result = ctrl.read_volume_training_config(
+                "Bad/Name\\Here", MODEL_RUN_ID_TEST
+            )
     assert result is None
 
 
@@ -113,19 +127,48 @@ def test_read_volume_training_config_returns_none_when_workspace_client_raises(c
             "WorkspaceClient",
             side_effect=Exception("connection refused"),
         ):
-            result = ctrl.read_volume_training_config("Some University")
+            result = ctrl.read_volume_training_config(
+                "Some University", MODEL_RUN_ID_TEST
+            )
+    assert result is None
+
+
+def _one_toml_entry(
+    path: str = "/Volumes/dev_sst_02/some_uni_silver/silver_volume/run_id/training.toml",
+    name: str = "training.toml",
+):
+    """Single .toml file entry as returned by list_directory_contents (any .toml name)."""
+    return [
+        DirectoryEntry(path=path, name=name, is_directory=False),
+    ]
+
+
+def test_read_volume_training_config_returns_none_when_list_raises(ctrl):
+    """read_volume_training_config returns None when list_directory_contents raises."""
+    mock_client = mock.Mock()
+    mock_client.files.list_directory_contents.side_effect = Exception("not found")
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        with mock.patch.object(
+            databricks_module, "WorkspaceClient", return_value=mock_client
+        ):
+            result = ctrl.read_volume_training_config(
+                "Some University", MODEL_RUN_ID_TEST
+            )
     assert result is None
 
 
 def test_read_volume_training_config_returns_none_when_download_raises(ctrl):
     """read_volume_training_config returns None when files.download raises."""
     mock_client = mock.Mock()
+    mock_client.files.list_directory_contents.return_value = iter(_one_toml_entry())
     mock_client.files.download.side_effect = Exception("file not found")
     with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
         with mock.patch.object(
             databricks_module, "WorkspaceClient", return_value=mock_client
         ):
-            result = ctrl.read_volume_training_config("Some University")
+            result = ctrl.read_volume_training_config(
+                "Some University", MODEL_RUN_ID_TEST
+            )
     assert result is None
 
 
@@ -136,10 +179,43 @@ def test_read_volume_training_config_returns_none_when_toml_missing_selection_se
     mock_response = mock.Mock()
     mock_response.contents.read.return_value = b"[other]\nx = 1\n"
     mock_client = mock.Mock()
+    mock_client.files.list_directory_contents.return_value = iter(_one_toml_entry())
     mock_client.files.download.return_value = mock_response
     with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
         with mock.patch.object(
             databricks_module, "WorkspaceClient", return_value=mock_client
         ):
-            result = ctrl.read_volume_training_config("Some University")
+            result = ctrl.read_volume_training_config(
+                "Some University", MODEL_RUN_ID_TEST
+            )
     assert result is None
+
+
+def test_read_volume_training_config_returns_selection_when_toml_found_under_run_dir(
+    ctrl,
+):
+    """read_volume_training_config returns [preprocessing.selection] when any .toml under run dir has it."""
+    toml_bytes = (
+        b"[preprocessing]\n[preprocessing.selection]\n"
+        b'student_criteria = { enrollment_type = "FIRST-TIME" }\n'
+    )
+    mock_response = mock.Mock()
+    mock_response.contents.read.return_value = toml_bytes
+    mock_client = mock.Mock()
+    # Any .toml name is accepted (e.g. training.toml, config.toml, preprocessing.toml)
+    mock_client.files.list_directory_contents.return_value = iter(
+        _one_toml_entry(
+            "/Volumes/dev_sst_02/some_uni_silver/silver_volume/run_id/training.toml",
+            name="training.toml",
+        )
+    )
+    mock_client.files.download.return_value = mock_response
+    with mock.patch.dict(databricks_module.env_vars, {"ENV": "DEV"}):
+        with mock.patch.object(
+            databricks_module, "WorkspaceClient", return_value=mock_client
+        ):
+            result = ctrl.read_volume_training_config(
+                "Some University", MODEL_RUN_ID_TEST
+            )
+    assert result is not None
+    assert result.get("student_criteria") == {"enrollment_type": "FIRST-TIME"}

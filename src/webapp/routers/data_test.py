@@ -23,6 +23,7 @@ from ..database import (
     FileTable,
     BatchTable,
     InstTable,
+    ModelTable,
     SchemaRegistryTable,
     DocType,
     Base,
@@ -195,6 +196,14 @@ def session_fixture():
                     ),
                     file_3,
                     file_4,
+                    ModelTable(
+                        id=uuid.UUID("b2c3d4e5-f6a7-8901-b234-567890123456"),
+                        inst_id=USER_VALID_INST_UUID,
+                        name="test_model",
+                        created_by=CREATOR_UUID,
+                        valid=False,
+                        deleted=False,
+                    ),
                 ]
             )
             session.commit()
@@ -1809,9 +1818,57 @@ def test_get_latest_batch_with_student_and_course_returns_none_when_no_batch_has
 def test_get_latest_inference_cohort_unauthorized(client: TestClient) -> None:
     """GET latest-inference-cohort returns 401 for wrong institution."""
     response = client.get(
-        "/institutions/" + uuid_to_str(UUID_INVALID) + "/latest-inference-cohort"
+        "/institutions/"
+        + uuid_to_str(UUID_INVALID)
+        + "/latest-inference-cohort?model_name=test_model"
     )
     assert response.status_code == 401
+
+
+def test_get_latest_inference_cohort_invalid_when_no_model_name_and_no_models(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when model_name omitted and institution has no registered models."""
+    # Session fixture has no ModelTable rows for USER_VALID_INST_UUID
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/latest-inference-cohort"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "registered" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_invalid_when_models_exist_but_none_registered(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when model_name omitted and all models are invalid (not registered)."""
+    model_uuid = uuid.UUID("a0b1c2d3-e4f5-6789-a012-345678901235")
+    session.add(
+        ModelTable(
+            id=model_uuid,
+            inst_id=USER_VALID_INST_UUID,
+            name="unapproved_model",
+            created_by=CREATOR_UUID,
+            valid=False,
+            deleted=False,
+        )
+    )
+    session.commit()
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/latest-inference-cohort"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "registered" in (data["reason"] or "").lower()
 
 
 def test_get_latest_inference_cohort_missing_cohort_column(client: TestClient) -> None:
@@ -1819,6 +1876,9 @@ def test_get_latest_inference_cohort_missing_cohort_column(client: TestClient) -
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {"enrollment_type": "FIRST-TIME"},
     }
@@ -1839,7 +1899,7 @@ def test_get_latest_inference_cohort_missing_cohort_column(client: TestClient) -
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -1857,6 +1917,9 @@ def test_get_latest_inference_cohort_missing_cohort_term(client: TestClient) -> 
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {"enrollment_type": "FIRST-TIME"},
     }
@@ -1882,7 +1945,7 @@ def test_get_latest_inference_cohort_missing_cohort_term(client: TestClient) -> 
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -1895,9 +1958,38 @@ def test_get_latest_inference_cohort_missing_cohort_term(client: TestClient) -> 
     assert data.get("batch_name") == "batch_foo"
 
 
+def test_get_latest_inference_cohort_model_version_lookup_fails(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when fetch_model_version raises (e.g. no versions)."""
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.side_effect = ValueError(
+        "No versions found for model"
+    )
+
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "model version" in (data["reason"] or "").lower()
+
+
 def test_get_latest_inference_cohort_missing_config(client: TestClient) -> None:
     """GET latest-inference-cohort returns 200 invalid when Databricks config is missing."""
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = None
 
     app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
@@ -1905,7 +1997,7 @@ def test_get_latest_inference_cohort_missing_config(client: TestClient) -> None:
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -1925,6 +2017,9 @@ def test_get_latest_inference_cohort_valid(
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {
             "enrollment_type": "FIRST-TIME",
@@ -1957,7 +2052,7 @@ def test_get_latest_inference_cohort_valid(
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -1973,6 +2068,100 @@ def test_get_latest_inference_cohort_valid(
     assert data.get("reason") is None
 
 
+def test_get_latest_inference_cohort_valid_with_batch_name(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort with batch_name uses that batch for cohort selection."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2"],
+            "cohort": ["2024-25", "2024-25"],
+            "cohort_term": ["FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s1", "s2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model&batch_name=batch_foo"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "valid"
+    assert data["batch_name"] == "batch_foo"
+    assert data["cohort_label"] == "Fall 2024"
+    assert data["valid_student_count"] == 2
+
+
+def test_get_latest_inference_cohort_invalid_when_model_name_not_found(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns invalid when user provides a model name that does not exist for the institution."""
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/latest-inference-cohort?model_name=nonexistent_model"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "model" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_invalid_when_batch_name_not_found(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort with batch_name returns invalid when batch not found."""
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model&batch_name=nonexistent_batch"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "batch" in (data["reason"] or "").lower()
+
+
 def test_get_latest_inference_cohort_loops_back_when_no_course_data_for_most_recent(
     client: TestClient,
 ) -> None:
@@ -1980,6 +2169,9 @@ def test_get_latest_inference_cohort_loops_back_when_no_course_data_for_most_rec
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {
             "enrollment_type": "FIRST-TIME",
@@ -2010,7 +2202,7 @@ def test_get_latest_inference_cohort_loops_back_when_no_course_data_for_most_rec
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -2031,6 +2223,9 @@ def test_get_latest_inference_cohort_invalid_when_no_cohort_has_course_data(
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {"enrollment_type": "FIRST-TIME", "cohort_term": ["FALL"]},
     }
@@ -2058,7 +2253,7 @@ def test_get_latest_inference_cohort_invalid_when_no_cohort_has_course_data(
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -2078,6 +2273,9 @@ def test_get_latest_inference_cohort_missing_student_id_column(
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {
             "enrollment_type": "FIRST-TIME",
@@ -2106,7 +2304,7 @@ def test_get_latest_inference_cohort_missing_student_id_column(
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -2126,6 +2324,9 @@ def test_get_latest_inference_cohort_valid_student_count_zero_when_no_students_m
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {
             "enrollment_type": "FIRST-TIME",
@@ -2156,7 +2357,7 @@ def test_get_latest_inference_cohort_valid_student_count_zero_when_no_students_m
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
@@ -2176,6 +2377,9 @@ def test_get_latest_inference_cohort_invalid_when_student_criteria_references_mi
     import pandas as pd
 
     MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
     MOCK_DATABRICKS.read_volume_training_config.return_value = {
         "student_criteria": {
             "enrollment_type": "FIRST-TIME",
@@ -2206,7 +2410,7 @@ def test_get_latest_inference_cohort_invalid_when_student_criteria_references_mi
         response = client.get(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/latest-inference-cohort"
+            + "/latest-inference-cohort?model_name=test_model"
         )
     finally:
         app.dependency_overrides.pop(DatabricksControl, None)
