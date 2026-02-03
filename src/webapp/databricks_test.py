@@ -136,7 +136,7 @@ def test_read_volume_training_config_returns_none_when_workspace_client_raises(c
 def _one_toml_entry(
     path: str = "/Volumes/dev_sst_02/some_uni_silver/silver_volume/run_id/training.toml",
     name: str = "training.toml",
-):
+) -> list[DirectoryEntry]:
     """Single .toml file entry as returned by list_directory_contents (any .toml name)."""
     return [
         DirectoryEntry(path=path, name=name, is_directory=False),
