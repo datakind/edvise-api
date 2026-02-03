@@ -48,8 +48,8 @@ class DatabricksInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
-    # Optional list of cohort labels; serialized as JSON for job params when set.
-    cohort: list[str] | None = None
+    # Optional term filter (e.g. cohort labels); serialized as JSON for job params when set. Used for cohort/graduation models.
+    term_filter: list[str] | None = None
 
 
 class DatabricksInferenceRunResponse(BaseModel):
@@ -319,8 +319,8 @@ class DatabricksControl(BaseModel):
             "model_name": req.model_name,
             "notification_email": req.email,
         }
-        if req.cohort is not None:
-            job_params["cohort"] = json.dumps(req.cohort)
+        if req.term_filter is not None:
+            job_params["term_filter"] = json.dumps(req.term_filter)
         try:
             run_job: Any = w.jobs.run_now(
                 job_id,

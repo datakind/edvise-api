@@ -1,10 +1,16 @@
+import json
 import pytest
 from unittest import mock
 
 from databricks.sdk.service.files import DirectoryEntry
 
 from . import databricks as databricks_module
-from .databricks import DatabricksControl, _parse_config_toml_to_selection
+from .databricks import (
+    DatabricksControl,
+    DatabricksInferenceRunRequest,
+    _parse_config_toml_to_selection,
+)
+from .utilities import SchemaType
 
 
 @pytest.fixture
@@ -219,3 +225,84 @@ def test_read_volume_training_config_returns_selection_when_toml_found_under_run
             )
     assert result is not None
     assert result.get("student_criteria") == {"enrollment_type": "FIRST-TIME"}
+
+
+def _minimal_inference_request(term_filter=None):
+    """Minimal DatabricksInferenceRunRequest with STUDENT and COURSE file types."""
+    return DatabricksInferenceRunRequest(
+        inst_name="Test Inst",
+        filepath_to_type={
+            "/path/cohort.csv": [SchemaType.STUDENT],
+            "/path/course.csv": [SchemaType.COURSE],
+        },
+        model_name="test_model",
+        email="test@example.com",
+        gcp_external_bucket_name="test-bucket",
+        term_filter=term_filter,
+    )
+
+
+def test_run_pdp_inference_omits_term_filter_from_job_params_when_none(ctrl):
+    """When term_filter is None, job_parameters passed to run_now do not contain term_filter key."""
+    req = _minimal_inference_request(term_filter=None)
+    mock_job = mock.Mock()
+    mock_job.job_id = 12345
+    mock_run_response = mock.Mock()
+    mock_run_response.response.run_id = 999
+    mock_w = mock.Mock()
+    mock_w.jobs.list.return_value = iter([mock_job])
+    mock_w.jobs.run_now.return_value = mock_run_response
+    with (
+        mock.patch.object(databricks_module, "WorkspaceClient", return_value=mock_w),
+        mock.patch.object(
+            databricks_module, "databricksify_inst_name", return_value="test_inst"
+        ),
+        mock.patch.dict(
+            databricks_module.databricks_vars,
+            {"DATABRICKS_HOST_URL": "https://x", "DATABRICKS_WORKSPACE": "ws"},
+        ),
+        mock.patch.dict(
+            databricks_module.gcs_vars, {"GCP_SERVICE_ACCOUNT_EMAIL": "a@b.com"}
+        ),
+    ):
+        result = ctrl.run_pdp_inference(req)
+    assert result.job_run_id == 999
+    mock_w.jobs.run_now.assert_called_once()
+    call_kwargs = mock_w.jobs.run_now.call_args[1]
+    job_params = call_kwargs["job_parameters"]
+    assert "term_filter" not in job_params
+
+
+def test_run_pdp_inference_includes_term_filter_in_job_params_when_set(ctrl):
+    """When term_filter is set, job_parameters include term_filter as JSON string."""
+    req = _minimal_inference_request(term_filter=["fall 2024-25", "spring 2024-25"])
+    mock_job = mock.Mock()
+    mock_job.job_id = 12345
+    mock_run_response = mock.Mock()
+    mock_run_response.response.run_id = 888
+    mock_w = mock.Mock()
+    mock_w.jobs.list.return_value = iter([mock_job])
+    mock_w.jobs.run_now.return_value = mock_run_response
+    with (
+        mock.patch.object(databricks_module, "WorkspaceClient", return_value=mock_w),
+        mock.patch.object(
+            databricks_module, "databricksify_inst_name", return_value="test_inst"
+        ),
+        mock.patch.dict(
+            databricks_module.databricks_vars,
+            {"DATABRICKS_HOST_URL": "https://x", "DATABRICKS_WORKSPACE": "ws"},
+        ),
+        mock.patch.dict(
+            databricks_module.gcs_vars, {"GCP_SERVICE_ACCOUNT_EMAIL": "a@b.com"}
+        ),
+    ):
+        result = ctrl.run_pdp_inference(req)
+    assert result.job_run_id == 888
+    mock_w.jobs.run_now.assert_called_once()
+    call_kwargs = mock_w.jobs.run_now.call_args[1]
+    job_params = call_kwargs["job_parameters"]
+    assert "term_filter" in job_params
+    assert json.loads(job_params["term_filter"]) == [
+        "fall 2024-25",
+        "spring 2024-25",
+    ]
