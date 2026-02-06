@@ -290,6 +290,30 @@ def _fuzzy_map_unresolved(
     return mapping
 
 
+def _header_missing_and_extra(
+    merged_specs: Dict[str, dict],
+    raw_to_canon: Dict[str, str],
+    unresolved: List[Tuple[str, str]],
+    known_aliases: set,
+) -> Tuple[List[str], List[str], List[str]]:
+    """Compute missing_required, missing_optional, unknown_extra from header mapping."""
+    incoming_canons = set(raw_to_canon.values())
+    missing_required = [
+        c
+        for c, spec in merged_specs.items()
+        if spec.get("required", False) and c not in incoming_canons
+    ]
+    missing_optional = [
+        c
+        for c, spec in merged_specs.items()
+        if not spec.get("required", False) and c not in incoming_canons
+    ]
+    unknown_extra = sorted(
+        {norm for (_, norm) in unresolved if norm not in known_aliases}
+    )
+    return missing_required, missing_optional, unknown_extra
+
+
 def _header_pass(
     filename: Src,
     encoding: str,
@@ -310,10 +334,8 @@ def _header_pass(
     alias2canon, canon_to_aliases_norm = _spec_alias_lookup(merged_specs)
     known_aliases = set(alias2canon.keys())
 
-    # exact (normalized) mapping first
     raw_to_canon: Dict[str, str] = {}
     unresolved: List[Tuple[str, str]] = []
-
     for raw in raw_cols:
         norm = normalize_col(raw)
         if norm in alias2canon:
@@ -321,7 +343,6 @@ def _header_pass(
         else:
             unresolved.append((raw, norm))
 
-    # fuzzy match only for unresolved headers
     if unresolved:
         choices = list(known_aliases)
         fuzzy_map = _fuzzy_map_unresolved(
@@ -329,22 +350,9 @@ def _header_pass(
         )
         raw_to_canon.update(fuzzy_map)
 
-    incoming_canons = set(raw_to_canon.values())
-    missing_required = [
-        c
-        for c, spec in merged_specs.items()
-        if spec.get("required", False) and c not in incoming_canons
-    ]
-    missing_optional = [
-        c
-        for c, spec in merged_specs.items()
-        if not spec.get("required", False) and c not in incoming_canons
-    ]
-    # normalized headers that remain unmapped and aren't known aliases
-    unknown_extra = sorted(
-        {norm for (_, norm) in unresolved if norm not in known_aliases}
+    missing_required, missing_optional, unknown_extra = _header_missing_and_extra(
+        merged_specs, raw_to_canon, unresolved, known_aliases
     )
-
     return raw_cols, raw_to_canon, missing_required, missing_optional, unknown_extra
 
 
@@ -419,87 +427,27 @@ def _build_exact_schema(
 
 
 # --------------------------------------------------------------------------- #
-# Main validation
+# Main validation helpers
 # --------------------------------------------------------------------------- #
 
 
-def validate_dataset(
+def _header_pass_and_build_canon_mappings(
     filename: Src,
-    base_schema: dict,
-    ext_schema: Optional[Dict[Any, Any]] = None,
-    models: Union[str, List[str], None] = None,
-    institution_id: str = "pdp",
-    institution_identifier: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Validate a dataset against merged base/extension schemas.
-
-    Steps:
-      1) Detect encoding (BOM/UTF-8)
-      2) Merge requested models' column specs
-      3) Header-only pass to map columns (exact + fuzzy) and detect missing/extra
-      4) Selective, typed read via pandas (skip unused columns)
-      5) For PDP (single STUDENT/COURSE): edvise repo schema validation; else JSON-based validation.
-         Edvise extension uses JSON validation only (different columns/setup).
-
-    Returns:
-        Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
-        On success also "normalized_df": the validated DataFrame (repo-shaped for PDP, canonical for JSON),
-        or None if merged_specs was empty.
-
-    Raises:
-        HardValidationError: When required columns are missing or schema validation fails.
-        UnicodeError: When file encoding is not UTF-8/UTF-16/UTF-32.
-    """
-    # ---------------------------- 1) Encoding
-    try:
-        enc = sniff_encoding(filename)
-    except UnicodeError as ex:
-        raise HardValidationError(schema_errors="decode_error", failure_cases=[str(ex)])
-
-    # Ensure both header and full reads start at the beginning for file-like handles
-    _reset_to_start_if_possible(filename)
-
-    # ---------------------------- 2) merge requested models
-    if models is None:
-        model_list: List[str] = []
-    elif isinstance(models, str):
-        model_list = [models]
-    else:
-        model_list = list(models)
-
-    # Merge base + extension for all institutions so we get all columns needed for repo validation.
-    merged_specs: Dict[str, dict] = {}
-    for m in model_list:
-        specs = merge_model_columns(base_schema, ext_schema, institution_id, m.lower())
-        merged_specs.update(specs)
-
-    if not merged_specs:
-        # nothing to validate; short-circuit
-        return {
-            "validation_status": "passed",
-            "schemas": model_list,
-            "missing_optional": [],
-            "unknown_extra_columns": [],
-            "normalized_df": None,
-        }
-
-    # ----------------------------  3) HEADER-ONLY PASS
-    raw_cols, raw_to_canon, missing_required, missing_optional, unknown_extra = (
-        _header_pass(filename, enc, merged_specs, fuzzy_threshold=90)
+    enc: str,
+    merged_specs: Dict[str, dict],
+) -> Tuple[Dict[str, str], Dict[str, str], List[str], List[str], List[str], List[str]]:
+    """Run header pass; if missing required columns raise; else return mappings and present_canons."""
+    _, raw_to_canon, missing_required, missing_optional, unknown_extra = _header_pass(
+        filename, enc, merged_specs, fuzzy_threshold=90
     )
-
     if missing_required:
         logger.error("Missing required columns: %s", missing_required)
-        # Build canon_to_raw for missing columns (may not exist in file, use canonical name)
         canon_to_raw_for_missing: Dict[str, str] = {}
         for canon in missing_required:
-            # Try to find a raw column that maps to this canonical
             for raw, mapped_canon in raw_to_canon.items():
                 if mapped_canon == canon:
                     canon_to_raw_for_missing[canon] = raw
                     break
-            # If no mapping found, use canonical name as fallback
             if canon not in canon_to_raw_for_missing:
                 canon_to_raw_for_missing[canon] = canon
         raise HardValidationError(
@@ -508,29 +456,34 @@ def validate_dataset(
             canon_to_raw=canon_to_raw_for_missing,
             merged_specs=merged_specs,
         )
-
-    # Reset again before the real read (important for file-like objects)
     _reset_to_start_if_possible(filename)
-
-    # Choose one raw header per canonical; prefer exact canonical names when available
     canon_to_raw: Dict[str, str] = {}
     for raw, canon in raw_to_canon.items():
-        # Prefer if normalized raw equals canonical name
         if canon not in canon_to_raw or normalize_col(raw) == canon:
             canon_to_raw[canon] = raw
-
     present_canons = sorted(canon_to_raw.keys())
-    raw_usecols = list(canon_to_raw.values())
+    return (
+        raw_to_canon,
+        canon_to_raw,
+        missing_required,
+        missing_optional,
+        unknown_extra,
+        present_canons,
+    )
 
-    # dtype & parse_dates maps (by canonical) -> convert to raw keys for read_csv
+
+def _get_csv_read_kwargs(
+    filename: Src,
+    enc: str,
+    canon_to_raw: Dict[str, str],
+    merged_specs: Dict[str, dict],
+) -> Tuple[Dict[str, Any], str, List[str]]:
+    """Build read_csv kwargs and return (read_kwargs, engine, parse_dates_canons)."""
     canon_dtype_map, parse_dates_canons = _pandas_dtype_and_parse_dates(merged_specs)
     raw_dtype_map = {
         canon_to_raw[c]: dt for c, dt in canon_dtype_map.items() if c in canon_to_raw
     }
     parse_dates_raw = [canon_to_raw[c] for c in parse_dates_canons if c in canon_to_raw]
-
-    # ---------------------------- 4) Selective, typed read
-    # Default to fast C engine; try pyarrow if available.
     engine = "c"
     try:
         import pyarrow  # noqa: F401
@@ -538,20 +491,30 @@ def validate_dataset(
         engine = "pyarrow"
     except ImportError:
         pass
-
     read_kwargs: Dict[str, Any] = dict(
         encoding=enc,
-        usecols=raw_usecols,
+        usecols=list(canon_to_raw.values()),
         dtype=raw_dtype_map or None,
         engine=engine,
     )
-    # memory_map works for path-like with the C engine
     if engine == "c" and isinstance(filename, (str, os.PathLike)):
         read_kwargs["memory_map"] = True
-        # only C engine supports parse_dates consistently across versions
         if parse_dates_raw:
             read_kwargs["parse_dates"] = parse_dates_raw
+    return read_kwargs, engine, parse_dates_canons
 
+
+def _read_dataframe_with_specs(
+    filename: Src,
+    enc: str,
+    canon_to_raw: Dict[str, str],
+    merged_specs: Dict[str, dict],
+) -> pd.DataFrame:
+    """Read CSV with spec-based dtypes/parse_dates; return DataFrame with canonical column names."""
+    _reset_to_start_if_possible(filename)
+    read_kwargs, engine, parse_dates_canons = _get_csv_read_kwargs(
+        filename, enc, canon_to_raw, merged_specs
+    )
     try:
         df = pd.read_csv(
             filename, **{k: v for k, v in read_kwargs.items() if v is not None}
@@ -560,64 +523,102 @@ def validate_dataset(
         logger.exception("CSV read failed: %s", read_ex)
         raise HardValidationError(
             schema_errors="The file could not be read. Please check that it is a valid CSV file.",
-            raw_to_canon=raw_to_canon,
+            raw_to_canon={raw: canon for canon, raw in canon_to_raw.items()},
             canon_to_raw=canon_to_raw,
             merged_specs=merged_specs,
         ) from read_ex
-
-    # If we used the pyarrow engine, perform datetime parsing post-read (keeps accuracy)
     if engine == "pyarrow" and parse_dates_canons:
         for canon in parse_dates_canons:
             raw = str(canon_to_raw.get(canon))
             if raw and raw in df.columns:
-                # coerce invalids to NaT; Pandera will flag according to nullability/checks
                 df[raw] = pd.to_datetime(df[raw], errors="coerce")
+    df.rename(
+        columns={
+            raw: canon for canon, raw in canon_to_raw.items() if raw in df.columns
+        },
+        inplace=True,
+    )
+    return df
 
-    # Rename raw headers -> canonical names exactly once
-    df.rename(columns={raw: canon for canon, raw in canon_to_raw.items()}, inplace=True)
 
-    # ---------------------------- 5a) PDP only: same validation as edvise repo (single-model only)
-    # Edvise extension uses JSON-based validation; different columns and setup.
+def _try_pdp_repo_validation_and_return(
+    df: pd.DataFrame,
+    model_list: List[str],
+    canon_to_raw: Dict[str, str],
+    raw_to_canon: Dict[str, str],
+    missing_optional: List[str],
+    unknown_extra: List[str],
+    merged_specs: Dict[str, dict],
+    institution_id: str,
+) -> Optional[Dict[str, Any]]:
+    """If PDP single-model, run repo schema and return result dict; otherwise return None."""
     schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
-    if schema_class is not None:
-        validation_df, display_canon_to_raw = (
-            pdp_edvise.rename_pdp_dataframe_to_repo_schema(df, canon_to_raw, model_list)
-        )
-        pdp_edvise.validate_dataframe_with_edvise_schema(
-            validation_df,
-            schema_class,
-            raw_to_canon,
-            display_canon_to_raw,
-            merged_specs,
-        )
-        # Success: return passed or passed_with_soft_errors from header-pass results only.
-        if missing_optional or unknown_extra:
-            return {
-                "validation_status": "passed_with_soft_errors",
-                "schemas": model_list,
-                "missing_optional": missing_optional,
-                "optional_validation_failures": [],
-                "failure_cases": [],
-                "unknown_extra_columns": unknown_extra,
-                "normalized_df": validation_df,
-            }
+    if schema_class is None:
+        return None
+    validation_df, display_canon_to_raw = (
+        pdp_edvise.rename_pdp_dataframe_to_repo_schema(df, canon_to_raw, model_list)
+    )
+    pdp_edvise.validate_dataframe_with_edvise_schema(
+        validation_df,
+        schema_class,
+        raw_to_canon,
+        display_canon_to_raw,
+        merged_specs,
+    )
+    if missing_optional or unknown_extra:
         return {
-            "validation_status": "passed",
+            "validation_status": "passed_with_soft_errors",
             "schemas": model_list,
-            "missing_optional": [],
-            "unknown_extra_columns": [],
+            "missing_optional": missing_optional,
+            "optional_validation_failures": [],
+            "failure_cases": [],
+            "unknown_extra_columns": unknown_extra,
             "normalized_df": validation_df,
         }
+    return {
+        "validation_status": "passed",
+        "schemas": model_list,
+        "missing_optional": [],
+        "unknown_extra_columns": [],
+        "normalized_df": validation_df,
+    }
 
-    # ---------------------------- 5) Validation: required fail-fast, optional lazy (collect soft errors)
-    required_canons = [
-        c for c in present_canons if merged_specs[c].get("required", False)
-    ]
+
+def _validate_optional_columns_json(
+    df: pd.DataFrame,
+    merged_specs: Dict[str, dict],
+    present_canons: List[str],
+) -> Tuple[List[str], List[dict]]:
+    """Validate optional columns with JSON schema; return (opt_failures, failure_cases_records)."""
     optional_canons = [
         c for c in present_canons if not merged_specs[c].get("required", False)
     ]
+    opt_failures: List[str] = []
+    failure_cases_records: List[dict] = []
+    if optional_canons:
+        opt_schema = _build_exact_schema(merged_specs, optional_canons)
+        try:
+            opt_schema.validate(df[optional_canons], lazy=True)
+        except SchemaErrors as err:
+            opt_failures = sorted(set(err.failure_cases["column"]))
+            failure_cases_records = err.failure_cases.to_dict(orient="records")
+    return opt_failures, failure_cases_records
 
-    # Build exact-name schemas (faster than regex)
+
+def _validate_with_json_schemas_return(
+    df: pd.DataFrame,
+    model_list: List[str],
+    merged_specs: Dict[str, dict],
+    present_canons: List[str],
+    canon_to_raw: Dict[str, str],
+    raw_to_canon: Dict[str, str],
+    missing_optional: List[str],
+    unknown_extra: List[str],
+) -> Dict[str, Any]:
+    """Run JSON-based Pandera validation and return result dict (passed or passed_with_soft_errors)."""
+    required_canons = [
+        c for c in present_canons if merged_specs[c].get("required", False)
+    ]
     if required_canons:
         req_schema = _build_exact_schema(merged_specs, required_canons)
         try:
@@ -631,21 +632,10 @@ def validate_dataset(
                 canon_to_raw=canon_to_raw,
                 merged_specs=merged_specs,
             )
-
-    opt_failures: List[str] = []
-    failure_cases_records: List[dict] = []
-    if optional_canons:
-        opt_schema = _build_exact_schema(merged_specs, optional_canons)
-        try:
-            opt_schema.validate(df[optional_canons], lazy=True)
-        except SchemaErrors as err:
-            # Columns are canonical already, so failure_cases['column'] are canonical names
-            opt_failures = sorted(set(err.failure_cases["column"]))
-            failure_cases_records = err.failure_cases.to_dict(orient="records")
-
+    opt_failures, failure_cases_records = _validate_optional_columns_json(
+        df, merged_specs, present_canons
+    )
     logger.info("missing_optional = %s", missing_optional)
-
-    # Success (with potential soft issues)
     if opt_failures or missing_optional or unknown_extra:
         return {
             "validation_status": "passed_with_soft_errors",
@@ -663,3 +653,122 @@ def validate_dataset(
         "unknown_extra_columns": [],
         "normalized_df": df,
     }
+
+
+def _run_validation_flow(
+    df: pd.DataFrame,
+    model_list: List[str],
+    merged_specs: Dict[str, dict],
+    present_canons: List[str],
+    canon_to_raw: Dict[str, str],
+    raw_to_canon: Dict[str, str],
+    missing_optional: List[str],
+    unknown_extra: List[str],
+    institution_id: str,
+) -> Dict[str, Any]:
+    """Run PDP path if applicable; otherwise JSON validation. Returns result dict."""
+    pdp_result = _try_pdp_repo_validation_and_return(
+        df,
+        model_list,
+        canon_to_raw,
+        raw_to_canon,
+        missing_optional,
+        unknown_extra,
+        merged_specs,
+        institution_id,
+    )
+    if pdp_result is not None:
+        return pdp_result
+    return _validate_with_json_schemas_return(
+        df,
+        model_list,
+        merged_specs,
+        present_canons,
+        canon_to_raw,
+        raw_to_canon,
+        missing_optional,
+        unknown_extra,
+    )
+
+
+def _compute_model_list_and_merged_specs(
+    base_schema: dict,
+    ext_schema: Optional[Dict[Any, Any]],
+    institution_id: str,
+    models: Union[str, List[str], None],
+) -> Tuple[List[str], Dict[str, dict]]:
+    """Compute model_list and merged_specs from models and schema."""
+    if models is None:
+        model_list = []
+    elif isinstance(models, str):
+        model_list = [models]
+    else:
+        model_list = list(models)
+    merged_specs: Dict[str, dict] = {}
+    for m in model_list:
+        specs = merge_model_columns(base_schema, ext_schema, institution_id, m.lower())
+        merged_specs.update(specs)
+    return model_list, merged_specs
+
+
+# --------------------------------------------------------------------------- #
+# Main validation
+# --------------------------------------------------------------------------- #
+
+
+def validate_dataset(
+    filename: Src,
+    base_schema: dict,
+    ext_schema: Optional[Dict[Any, Any]] = None,
+    models: Union[str, List[str], None] = None,
+    institution_id: str = "pdp",
+    institution_identifier: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Validate a dataset against merged base/extension schemas.
+
+    Steps: encoding, merge specs, header pass, typed read, then PDP repo schema
+    (if applicable) or JSON-based validation. Returns dict with validation_status,
+    schemas, normalized_df (or None if empty merged_specs). Raises HardValidationError
+    on failure; UnicodeError if encoding is not UTF-8/UTF-16/UTF-32.
+    """
+    try:
+        enc = sniff_encoding(filename)
+    except UnicodeError as ex:
+        raise HardValidationError(schema_errors="decode_error", failure_cases=[str(ex)])
+    _reset_to_start_if_possible(filename)
+
+    model_list, merged_specs = _compute_model_list_and_merged_specs(
+        base_schema, ext_schema, institution_id, models
+    )
+    if not merged_specs:
+        return {
+            "validation_status": "passed",
+            "schemas": model_list,
+            "missing_optional": [],
+            "unknown_extra_columns": [],
+            "normalized_df": None,
+        }
+
+    (
+        raw_to_canon,
+        canon_to_raw,
+        missing_required,
+        missing_optional,
+        unknown_extra,
+        present_canons,
+    ) = _header_pass_and_build_canon_mappings(filename, enc, merged_specs)
+
+    df = _read_dataframe_with_specs(filename, enc, canon_to_raw, merged_specs)
+
+    return _run_validation_flow(
+        df,
+        model_list,
+        merged_specs,
+        present_canons,
+        canon_to_raw,
+        raw_to_canon,
+        missing_optional,
+        unknown_extra,
+        institution_id,
+    )

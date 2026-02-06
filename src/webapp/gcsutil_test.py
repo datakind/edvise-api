@@ -16,7 +16,7 @@ from src.webapp.validation import HardValidationError
 # --------------------------------------------------------------------------- #
 
 
-def test_validate_file_raises_on_empty_file_name():
+def test_validate_file_raises_on_empty_file_name() -> None:
     """Rejects empty file_name with clear ValueError."""
     control = StorageControl()
     with pytest.raises(ValueError, match="file_name is required and must be non-empty"):
@@ -28,7 +28,7 @@ def test_validate_file_raises_on_empty_file_name():
         )
 
 
-def test_validate_file_raises_on_whitespace_only_file_name():
+def test_validate_file_raises_on_whitespace_only_file_name() -> None:
     """Rejects whitespace-only file_name."""
     control = StorageControl()
     with pytest.raises(ValueError, match="file_name is required and must be non-empty"):
@@ -40,7 +40,7 @@ def test_validate_file_raises_on_whitespace_only_file_name():
         )
 
 
-def test_validate_file_raises_on_file_name_with_slash():
+def test_validate_file_raises_on_file_name_with_slash() -> None:
     """Rejects file_name containing '/'."""
     control = StorageControl()
     with pytest.raises(ValueError, match="file_name must not contain"):
@@ -52,7 +52,7 @@ def test_validate_file_raises_on_file_name_with_slash():
         )
 
 
-def test_validate_file_raises_on_empty_allowed_schemas():
+def test_validate_file_raises_on_empty_allowed_schemas() -> None:
     """Rejects empty allowed_schemas."""
     control = StorageControl()
     with pytest.raises(ValueError, match="allowed_schemas must not be empty"):
@@ -69,7 +69,7 @@ def test_validate_file_raises_on_empty_allowed_schemas():
 # --------------------------------------------------------------------------- #
 
 
-def test_validate_file_raises_when_unvalidated_blob_not_found():
+def test_validate_file_raises_when_unvalidated_blob_not_found() -> None:
     """Raises ValueError with clear message when file not in unvalidated/."""
     mock_bucket = MagicMock()
     mock_blob = MagicMock()
@@ -90,7 +90,7 @@ def test_validate_file_raises_when_unvalidated_blob_not_found():
             )
 
 
-def test_validate_file_raises_when_normalized_df_none():
+def test_validate_file_raises_when_normalized_df_none() -> None:
     """Raises ValueError when validation returns normalized_df None (e.g. empty schema)."""
     mock_bucket = MagicMock()
     mock_blob = MagicMock()
@@ -119,7 +119,7 @@ def test_validate_file_raises_when_normalized_df_none():
                 )
 
 
-def test_validate_file_raises_when_validated_blob_already_exists():
+def test_validate_file_raises_when_validated_blob_already_exists() -> None:
     """Raises ValueError when validated/{file_name} already exists."""
     mock_bucket = MagicMock()
     mock_unvalidated_blob = MagicMock()
@@ -161,7 +161,9 @@ def test_validate_file_raises_when_validated_blob_already_exists():
 # --------------------------------------------------------------------------- #
 
 
-def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated():
+def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated() -> (
+    None
+):
     """On success: copies to raw/, writes normalized CSV to validated/, deletes unvalidated/."""
     mock_bucket = MagicMock()
     mock_unvalidated_blob = MagicMock()
@@ -215,7 +217,7 @@ def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated
 # --------------------------------------------------------------------------- #
 
 
-def test_validate_file_propagates_hard_validation_error():
+def test_validate_file_propagates_hard_validation_error() -> None:
     """HardValidationError from validation is not wrapped and propagates."""
     mock_bucket = MagicMock()
     mock_blob = MagicMock()
@@ -246,7 +248,7 @@ def test_validate_file_propagates_hard_validation_error():
 # --------------------------------------------------------------------------- #
 
 
-def test_run_validation_and_get_normalized_df_returns_names_and_df():
+def test_run_validation_and_get_normalized_df_returns_names_and_df() -> None:
     """Returns (inferred_schema_names, normalized_df) when validation succeeds."""
     mock_blob = MagicMock()
     mock_file = io.StringIO("foo_col,bar_col\n1,a\n2,b\n")
@@ -274,7 +276,9 @@ def test_run_validation_and_get_normalized_df_returns_names_and_df():
     assert list(df.columns) == ["x"]
 
 
-def test_run_validation_and_get_normalized_df_propagates_hard_validation_error():
+def test_run_validation_and_get_normalized_df_propagates_hard_validation_error() -> (
+    None
+):
     """HardValidationError is re-raised without wrapping."""
     mock_blob = MagicMock()
     mock_file = io.StringIO("bad")
@@ -291,12 +295,48 @@ def test_run_validation_and_get_normalized_df_propagates_hard_validation_error()
             )
 
 
+def test_run_validation_and_get_normalized_df_propagates_value_error() -> None:
+    """ValueError from validate_file_reader (e.g. encoding) is re-raised."""
+    mock_blob = MagicMock()
+    mock_file = io.StringIO("data")
+    mock_blob.open.return_value.__enter__ = lambda self: mock_file
+    mock_blob.open.return_value.__exit__ = lambda self, *args: None
+
+    control = StorageControl()
+    with patch(
+        "src.webapp.gcsutil.validate_file_reader",
+        side_effect=ValueError("Invalid file format"),
+    ):
+        with pytest.raises(ValueError, match="Invalid file format"):
+            control._run_validation_and_get_normalized_df(
+                mock_blob, "f.csv", ["STUDENT"], {}, None, "pdp", None
+            )
+
+
+def test_run_validation_and_get_normalized_df_propagates_unicode_error() -> None:
+    """UnicodeError from validate_file_reader (e.g. decode) is re-raised."""
+    mock_blob = MagicMock()
+    mock_file = io.StringIO("data")
+    mock_blob.open.return_value.__enter__ = lambda self: mock_file
+    mock_blob.open.return_value.__exit__ = lambda self, *args: None
+
+    control = StorageControl()
+    with patch(
+        "src.webapp.gcsutil.validate_file_reader",
+        side_effect=UnicodeDecodeError("utf-8", b"x", 0, 1, "invalid"),
+    ):
+        with pytest.raises(UnicodeDecodeError):
+            control._run_validation_and_get_normalized_df(
+                mock_blob, "f.csv", ["STUDENT"], {}, None, "pdp", None
+            )
+
+
 # --------------------------------------------------------------------------- #
 # _write_dataframe_to_gcs_as_csv
 # --------------------------------------------------------------------------- #
 
 
-def test_write_dataframe_to_gcs_as_csv_uploads_utf8_csv():
+def test_write_dataframe_to_gcs_as_csv_uploads_utf8_csv() -> None:
     """Writes DataFrame as UTF-8 CSV with correct content_type."""
     mock_blob = MagicMock()
     mock_bucket = MagicMock()

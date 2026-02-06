@@ -188,3 +188,39 @@ def test_validate_file_reader_uses_institution_id_for_extension_block(
             institution_identifier="optional-uuid-for-edvise-only",
         )
         assert result_with_id["validation_status"] == "passed"
+
+
+def test_validate_file_reader_csv_read_failure_raises_hard_validation_error(
+    tmp_csv_file: str,
+) -> None:
+    """When the CSV body cannot be read (e.g. malformed), HardValidationError is raised with a clear message."""
+    with (
+        patch("src.webapp.validation.load_json") as mock_load,
+        patch("os.path.exists", return_value=True),
+        patch("src.webapp.validation.pd.read_csv") as mock_read_csv,
+    ):
+        mock_load.side_effect = lambda path: (
+            MOCK_BASE_SCHEMA if "base" in path else MOCK_EXT_SCHEMA
+        )
+        # First call is header-only (nrows=0); second is full read. Fail the full read.
+        call_count = 0
+
+        def read_csv_side_effect(*args: object, **kwargs: object) -> pd.DataFrame:
+            nonlocal call_count
+            call_count += 1
+            if kwargs.get("nrows") == 0:
+                return pd.DataFrame({"foo_col": [], "bar_col": []})
+            raise ValueError("Bad CSV data")
+
+        mock_read_csv.side_effect = read_csv_side_effect
+
+        with pytest.raises(HardValidationError, match="valid CSV file") as exc_info:
+            validate_file_reader(
+                tmp_csv_file,
+                ["test_model"],
+                base_schema=MOCK_BASE_SCHEMA,
+                inst_schema=MOCK_EXT_SCHEMA,
+            )
+        assert "could not be read" in str(exc_info.value).lower() or "valid CSV" in str(
+            exc_info.value
+        )

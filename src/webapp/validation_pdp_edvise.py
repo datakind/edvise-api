@@ -5,9 +5,8 @@ RawPDPCourseDataSchema) for PDP uploads only, so PDP validation rules match pipe
 and audits. The edvise extension/institution uses JSON-based validation only (different
 columns and setup). All logic is in edvise-api; the edvise package is consumed read-only.
 
-When the edvise package is not installed, PDP strict schema validation is skipped
-and the existing JSON-based validation is used. To enable strict validation for PDP,
-add edvise to pyproject.toml (e.g. path or published package).
+The edvise package is required for PDP validation: it must be installed (e.g. in
+pyproject.toml) so that PDP uploads are validated with the same schemas as the repo.
 """
 
 from __future__ import annotations
@@ -21,6 +20,9 @@ if TYPE_CHECKING:
 import pandas as pd
 from pandera.errors import SchemaError, SchemaErrors
 
+from edvise.data_audit.schemas.raw_cohort import RawPDPCohortDataSchema
+from edvise.data_audit.schemas.raw_course import RawPDPCourseDataSchema
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,49 +33,9 @@ def _get_hard_validation_error_class() -> type:
     return HardValidationError
 
 
-# Lazy import so missing edvise dependency does not break the app at import time.
-_EDVISE_COHORT_SCHEMA: Optional[type] = None
-_EDVISE_COURSE_SCHEMA: Optional[type] = None
-_EDVISE_AVAILABLE = False
-
-try:
-    from edvise.data_audit.schemas.raw_cohort import RawPDPCohortDataSchema
-    from edvise.data_audit.schemas.raw_course import RawPDPCourseDataSchema
-
-    _EDVISE_COHORT_SCHEMA = RawPDPCohortDataSchema
-    _EDVISE_COURSE_SCHEMA = RawPDPCourseDataSchema
-    _EDVISE_AVAILABLE = True
-except ImportError as e:
-    logger.warning(
-        "edvise package not available; PDP strict repo schema validation disabled: %s",
-        e,
-    )
-
 # Institution namespaces that use edvise repo schemas (RawPDPCohortDataSchema / RawPDPCourseDataSchema).
-# Only PDP uses repo validation; edvise extension has different columns and uses JSON validation.
+# Only PDP uses repo validation; Edvise has a different shape and uses JSON-based validation only.
 PDP_EDVISE_NAMESPACES = frozenset({"pdp"})
-
-# Single credit columns (from base merge) -> repo expects per-year for cohort; we map to year_1 and fill 2–4 with NA.
-# Only applied when is_cohort; course keeps single number_of_credits_attempted / number_of_credits_earned.
-PDP_CREDIT_ATTEMPTED_CANON = "number_of_credits_attempted"
-PDP_CREDIT_EARNED_CANON = "number_of_credits_earned"
-PDP_CREDIT_REPO_YEARS = ["year_1", "year_2", "year_3", "year_4"]
-
-
-def _ensure_per_year_credit_columns(
-    out: pd.DataFrame,
-    prefix: str,
-    canon_to_raw: Dict[str, str],
-    display_canon_to_raw: Dict[str, str],
-) -> None:
-    """Ensure all 4 per-year columns exist; fill missing with pd.NA. Update display_canon_to_raw."""
-    raw_year_1 = canon_to_raw.get(f"{prefix}_year_1", prefix + "_year_1")
-    for suf in PDP_CREDIT_REPO_YEARS:
-        col = f"{prefix}_{suf}"
-        if col not in out.columns:
-            out[col] = pd.NA
-        if col not in display_canon_to_raw:
-            display_canon_to_raw[col] = canon_to_raw.get(col, raw_year_1)
 
 
 def rename_pdp_dataframe_to_repo_schema(
@@ -84,10 +46,9 @@ def rename_pdp_dataframe_to_repo_schema(
     """
     Ensure PDP DataFrame column names and shape match edvise repo schemas.
 
-    Extension + base merge already use repo-shaped canonicals (first_gen, student_age,
-    cohort_term, number_of_credits_attempted, delivery_method, etc.), so no renames needed.
+    Uploads are expected to have all required columns (e.g. per-year credit columns
+    for cohort). Extension + base merge use repo-shaped canonicals.
     - Cohort only: if program_of_study_year_1 is missing, copy from program_of_study_term_1.
-    - Cohort only: ensure 8 per-year credit columns exist; expand single number_of_credits_attempted/earned to year_1 + year_2–4 pd.NA when present.
 
     Returns:
         (df, display_canon_to_raw): DataFrame (repo-shaped) and repo column name -> raw header for errors.
@@ -108,84 +69,44 @@ def rename_pdp_dataframe_to_repo_schema(
                 "program_of_study_term_1", "program_of_study_year_1"
             )
 
-        raw_attempted = canon_to_raw.get(
-            PDP_CREDIT_ATTEMPTED_CANON,
-            canon_to_raw.get(
-                "number_of_credits_attempted_year_1",
-                "number_of_credits_attempted_year_1",
-            ),
-        )
-        raw_earned = canon_to_raw.get(
-            PDP_CREDIT_EARNED_CANON,
-            canon_to_raw.get(
-                "number_of_credits_earned_year_1", "number_of_credits_earned_year_1"
-            ),
-        )
-        if PDP_CREDIT_ATTEMPTED_CANON in out.columns:
-            out["number_of_credits_attempted_year_1"] = out[PDP_CREDIT_ATTEMPTED_CANON]
-            out = out.drop(columns=[PDP_CREDIT_ATTEMPTED_CANON], errors="ignore")
-            for suf in PDP_CREDIT_REPO_YEARS[1:]:
-                out[f"number_of_credits_attempted_{suf}"] = pd.NA
-            display_canon_to_raw["number_of_credits_attempted_year_1"] = raw_attempted
-            for suf in PDP_CREDIT_REPO_YEARS[1:]:
-                display_canon_to_raw[f"number_of_credits_attempted_{suf}"] = (
-                    raw_attempted
-                )
-        _ensure_per_year_credit_columns(
-            out, "number_of_credits_attempted", canon_to_raw, display_canon_to_raw
-        )
-
-        if PDP_CREDIT_EARNED_CANON in out.columns:
-            out["number_of_credits_earned_year_1"] = out[PDP_CREDIT_EARNED_CANON]
-            out = out.drop(columns=[PDP_CREDIT_EARNED_CANON], errors="ignore")
-            for suf in PDP_CREDIT_REPO_YEARS[1:]:
-                out[f"number_of_credits_earned_{suf}"] = pd.NA
-            display_canon_to_raw["number_of_credits_earned_year_1"] = raw_earned
-            for suf in PDP_CREDIT_REPO_YEARS[1:]:
-                display_canon_to_raw[f"number_of_credits_earned_{suf}"] = raw_earned
-        _ensure_per_year_credit_columns(
-            out, "number_of_credits_earned", canon_to_raw, display_canon_to_raw
-        )
-
     return out, display_canon_to_raw
 
 
 def is_edvise_schema_available() -> bool:
-    """Return True if the edvise package is installed and schemas can be used."""
-    return _EDVISE_AVAILABLE
+    """Return True; edvise is required for PDP validation and is always available when this module loads."""
+    return True
 
 
 def get_edvise_schema_for_upload(
     institution_id: str,
-    model_list: List[str],
+    model_list: Optional[List[str]] = None,
 ) -> Optional[type]:
     """
     Return the edvise repo schema class for this upload, or None.
 
     Use this as the single check: when not None, run that schema and skip JSON
-    Pandera. Only PDP uses repo validation; edvise institution uses JSON validation.
+    Pandera. Only PDP uses repo validation (edvise package required); Edvise
+    institution has a different shape and uses JSON validation only.
 
     Args:
         institution_id: Schema namespace (e.g. "pdp", or institution UUID). Only "pdp" uses repo schema.
-        model_list: Inferred model names from filename (e.g. ["STUDENT"], ["COURSE"]).
+        model_list: Inferred model names from filename (e.g. ["STUDENT"], ["COURSE"]). May be None.
 
     Returns:
         RawPDPCohortDataSchema for PDP+STUDENT, RawPDPCourseDataSchema for PDP+COURSE,
-        or None (use JSON-based validation).
+        or None (non-PDP or multi-model; use JSON-based validation).
     """
     if not institution_id or not isinstance(institution_id, str):
         return None
-    if institution_id not in PDP_EDVISE_NAMESPACES or not _EDVISE_AVAILABLE:
-        return None
-    if not _EDVISE_COHORT_SCHEMA or not _EDVISE_COURSE_SCHEMA:
+    if institution_id not in PDP_EDVISE_NAMESPACES:
         return None
     if model_list is not None and not isinstance(model_list, list):
         return None
     model_set = {str(m).strip().upper() for m in (model_list or []) if m}
     if model_set == {"STUDENT"}:
-        return _EDVISE_COHORT_SCHEMA
+        return cast(Optional[type], RawPDPCohortDataSchema)
     if model_set == {"COURSE"}:
-        return _EDVISE_COURSE_SCHEMA
+        return cast(Optional[type], RawPDPCourseDataSchema)
     return None
 
 

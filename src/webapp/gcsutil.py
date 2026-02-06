@@ -5,6 +5,7 @@ import io
 import logging
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from pydantic import BaseModel
 from google.cloud import storage
 import google.auth
@@ -22,10 +23,10 @@ SIGNED_URL_EXPIRY_MIN = 30
 
 
 def rename_file(
-    bucket_name,
-    file_name,
-    new_file_name,
-):
+    bucket_name: str,
+    file_name: str,
+    new_file_name: str,
+) -> None:
     """Moves a blob from one bucket to another with a new name."""
     storage_client = storage.Client()
     source_bucket = storage_client.bucket(bucket_name)
@@ -342,8 +343,8 @@ class StorageControl(BaseModel):
             inst_schema: Optional extension schema with institutions.* blocks.
             institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
                 institution UUID for custom. Default "pdp" for backward compatibility.
-            institution_identifier: Optional institution ID (e.g. UUID) for Edvise
-                normalization. Pass when institution_id == "edvise".
+            institution_identifier: Optional institution ID (e.g. UUID). Reserved for
+                future use; Edvise uses JSON-based validation only (different shape).
 
         Returns:
             List of inferred schema names (e.g. ["STUDENT"]).
@@ -386,21 +387,30 @@ class StorageControl(BaseModel):
                 "cannot write validated output (e.g. empty schema list)."
             )
 
-        raw_blob_name = f"raw/{file_name}"
         validated_blob_name = f"validated/{file_name}"
         validated_blob = bucket.blob(validated_blob_name)
         if validated_blob.exists():
             raise ValueError(validated_blob_name + ": File already exists.")
 
+        self._archive_raw_and_write_validated(bucket, blob, file_name, normalized_df)
+        return inferred_schema_names
+
+    def _archive_raw_and_write_validated(
+        self,
+        bucket: Any,
+        blob: Any,
+        file_name: str,
+        normalized_df: pd.DataFrame,
+    ) -> None:
+        """Copy blob to raw/, write normalized DataFrame to validated/, delete from unvalidated/."""
+        raw_blob_name = f"raw/{file_name}"
+        validated_blob_name = f"validated/{file_name}"
         bucket.copy_blob(blob, bucket, raw_blob_name)
         logging.debug("Archived original to %s", raw_blob_name)
-
         self._write_dataframe_to_gcs_as_csv(bucket, validated_blob_name, normalized_df)
         logging.debug("Wrote normalized data to %s", validated_blob_name)
-
         blob.delete()
         logging.debug("Validation complete: validated=normalized, raw=archived")
-        return inferred_schema_names
 
     def _run_validation_and_get_normalized_df(
         self,
@@ -434,11 +444,12 @@ class StorageControl(BaseModel):
             logging.exception("Validation failed for %s: %s", file_name, e)
             raise
         except Exception as e:
+            # Log any other error with context before re-raising (no silent failures).
             logging.exception("Validation failed for %s: %s", file_name, e)
             raise
 
     def _write_dataframe_to_gcs_as_csv(
-        self, bucket: Any, blob_name: str, normalized_df: Any
+        self, bucket: Any, blob_name: str, normalized_df: pd.DataFrame
     ) -> None:
         """Write a DataFrame to GCS as UTF-8 CSV. Used for validated/ output."""
         csv_buffer = io.StringIO()

@@ -1022,8 +1022,10 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(EDVISE_INST_UUID)
     assert response.json()["source"] == "MANUAL_UPLOAD"
 
-    # Verify that validate_file was called (Edvise schema was used)
+    # Verify that validate_file was called with institution_identifier for Edvise
     assert MOCK_STORAGE.validate_file.called
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
 
 def test_validation_helper_edvise_schema_not_found(
