@@ -324,6 +324,7 @@ class StorageControl(BaseModel):
         base_schema: dict,
         inst_schema: Optional[Dict[Any, Any]] = None,
         institution_id: str = "pdp",
+        institution_identifier: Optional[str] = None,
     ) -> List[str]:
         """Validate that a file conforms to one of the allowed schemas.
 
@@ -335,6 +336,8 @@ class StorageControl(BaseModel):
             inst_schema: Optional extension schema with institutions.* blocks.
             institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
                 institution UUID for custom. Default "pdp" for backward compatibility.
+            institution_identifier: Optional institution ID (e.g. UUID) for Edvise
+                normalization. Pass when institution_id == "edvise".
 
         Returns:
             List of inferred schema names (e.g. ["STUDENT"]).
@@ -352,6 +355,7 @@ class StorageControl(BaseModel):
                     base_schema,
                     inst_schema,
                     institution_id=institution_id,
+                    institution_identifier=institution_identifier,
                 )
                 schems = [str(s) for s in schemas.get("schemas", [])]
                 logging.debug(

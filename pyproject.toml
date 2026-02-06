@@ -8,7 +8,7 @@ dependencies = [
     "databricks-sdk~=0.38.0",
     "pydantic~=2.10",
     "fastapi[standard]~=0.115.4",
-    "google-cloud-storage~=2.18.2",
+    "google-cloud-storage>=2.18.2",
     "paramiko~=3.5.0",
     "cloud-sql-python-connector[pymysql]~=1.14.0",
     "sqlalchemy~=2.0.36",
@@ -28,7 +28,8 @@ dependencies = [
     "thefuzz[speedup]~=0.22.1",
     "databricks-sql-connector~=3.5.0",
     "pandera~=0.13",
-    "mlflow~=2.15.0",
+    "edvise @ git+https://github.com/datakind/edvise.git@v0.1.8",
+    "mlflow>=2.15.0,<3",
     "cachetools",
     "types-cachetools",
 ]
@@ -51,6 +52,10 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# Required so the edvise git dependency is allowed (same source as Databricks notebooks).
+allow-direct-references = true
 
 [tool.uv]
 default-groups = ["dev"]

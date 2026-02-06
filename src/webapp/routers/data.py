@@ -1816,6 +1816,7 @@ def validation_helper(
             base_schema,
             updated_inst_schema,
             institution_id=schema_namespace,
+            institution_identifier=inst_id if schema_namespace == "edvise" else None,
         )
         logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:

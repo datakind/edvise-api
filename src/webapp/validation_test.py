@@ -89,18 +89,22 @@ def test_validate_file_reader_fails_missing_required(tmp_path):
         mock_load.side_effect = lambda path: (
             MOCK_BASE_SCHEMA if "base" in path else MOCK_EXT_SCHEMA
         )
+        # Use a custom institution_id so we merge base + extension (not extension-only).
+        # PDP/Edvise use extension-only and this test's extension has empty pdp data_models.
         with pytest.raises(HardValidationError) as exc_info:
             validate_file_reader(
                 str(file_path),
                 ["test_model"],
                 base_schema=MOCK_BASE_SCHEMA,
                 inst_schema=MOCK_EXT_SCHEMA,
+                institution_id="custom-inst-id",
             )
         assert "Missing required columns" in str(exc_info.value)
 
 
 def test_validate_file_reader_uses_institution_id_for_extension_block(
     tmp_path: Path,
+    tmp_csv_file: str,
 ) -> None:
     """Passing institution_id selects the correct extension block (e.g. edvise vs pdp)."""
     # File has base columns only; extension has required "baz_col" only under institutions["edvise"]
@@ -136,3 +140,16 @@ def test_validate_file_reader_uses_institution_id_for_extension_block(
             institution_id="pdp",
         )
         assert result["validation_status"] == "passed"
+
+        # institution_identifier is accepted and does not affect non-Edvise path
+        mock_load.side_effect = lambda path: (
+            MOCK_BASE_SCHEMA if "base" in path else MOCK_EXT_SCHEMA
+        )
+        result_with_id = validate_file_reader(
+            tmp_csv_file,
+            ["test_model"],
+            base_schema=MOCK_BASE_SCHEMA,
+            inst_schema=MOCK_EXT_SCHEMA,
+            institution_identifier="optional-uuid-for-edvise-only",
+        )
+        assert result_with_id["validation_status"] == "passed"

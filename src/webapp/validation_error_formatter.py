@@ -94,6 +94,15 @@ MAX_VALUE_LENGTH = 200  # Maximum length for non-PII values in error messages
 MAX_MESSAGE_LENGTH = 10000  # Maximum total error message length
 MAX_ERROR_EXAMPLES = 10  # Maximum examples per column
 
+# Human-readable messages for PDP schema check names (edvise repo schemas).
+# Keeps messaging consistent without changing the edvise package.
+PDP_EDVISE_CHECK_MESSAGES: Dict[str, str] = {
+    "check_num_institutions": "All rows must have the same institution ID.",
+    "num_credits_attempted_ge_earned": "Credits attempted must be greater than or equal to credits earned for each course row.",
+    "unique": "Duplicate rows are not allowed; each row must be unique (e.g. unique student_id for cohort, or unique combination of student_id, term, and course for course files).",
+    "column_in_dataframe": "This column is required but is missing from the file.",
+}
+
 
 def _sanitize_string(value: str, max_length: int = MAX_VALUE_LENGTH) -> str:
     """
@@ -1286,6 +1295,10 @@ def _format_check_error(check_type: str, spec: dict, value: Any) -> str:
 
     if base_check_type == "nullable":
         return "Value validation failed"
+
+    # PDP/Edvise schema check names (same validation as edvise repo)
+    if base_check_type in PDP_EDVISE_CHECK_MESSAGES:
+        return PDP_EDVISE_CHECK_MESSAGES[base_check_type]
 
     # Generic fallback - use original check_type for display (may include parameters)
     # This handles cases where check type doesn't match any spec (e.g., "greater_than" with "ge" spec)

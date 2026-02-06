@@ -24,6 +24,8 @@ import pandas as pd
 from pandera import Column, Check, DataFrameSchema
 from pandera.errors import SchemaErrors
 
+from . import validation_pdp_edvise as pdp_edvise
+
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
@@ -41,6 +43,7 @@ def validate_file_reader(
     base_schema: dict,
     inst_schema: Optional[Dict[Any, Any]] = None,
     institution_id: str = "pdp",
+    institution_identifier: Optional[str] = None,
 ) -> dict[str, Any]:
     """Validates a dataset given a filename and schema selection.
 
@@ -51,12 +54,22 @@ def validate_file_reader(
         inst_schema: Optional extension schema with institutions.* blocks.
         institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
             institution UUID for custom. Default "pdp" for backward compatibility.
+        institution_identifier: Optional institution identifier (e.g. UUID) for display/context.
 
     Returns:
         Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
+
+    Raises:
+        HardValidationError: When required columns are missing or schema validation fails.
+        UnicodeError: When file encoding is not UTF-8/UTF-16/UTF-32.
     """
     return validate_dataset(
-        filename, base_schema, inst_schema, allowed_schema, institution_id
+        filename,
+        base_schema,
+        inst_schema,
+        allowed_schema,
+        institution_id,
+        institution_identifier,
     )
 
 
@@ -130,6 +143,24 @@ def merge_model_columns(
         if model in ext_models:
             merged.update(ext_models[model].get("columns", {}))
     return merged
+
+
+def get_extension_model_columns_only(
+    extension_schema: Any,
+    institution: str,
+    model: str,
+) -> Dict[str, dict]:
+    """
+    Return only the extension columns for the given institution and model (no base).
+    Used for PDP and Edvise so we do not pull in base columns that don't match the repo schema.
+    """
+    if not extension_schema:
+        return {}
+    inst_block = extension_schema.get("institutions", {}).get(institution, {})
+    ext_models = inst_block.get("data_models", {})
+    if model not in ext_models:
+        return {}
+    return dict(ext_models[model].get("columns", {}))
 
 
 # --------------------------------------------------------------------------- #
@@ -397,6 +428,7 @@ def validate_dataset(
     ext_schema: Optional[Dict[Any, Any]] = None,
     models: Union[str, List[str], None] = None,
     institution_id: str = "pdp",
+    institution_identifier: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Validate a dataset against merged base/extension schemas.
@@ -406,7 +438,15 @@ def validate_dataset(
       2) Merge requested models' column specs
       3) Header-only pass to map columns (exact + fuzzy) and detect missing/extra
       4) Selective, typed read via pandas (skip unused columns)
-      5) Fail-fast validation for required columns; collect soft errors for optional
+      5) For PDP (single STUDENT/COURSE): edvise repo schema validation; else JSON-based validation.
+         Edvise extension uses JSON validation only (different columns/setup).
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
+
+    Raises:
+        HardValidationError: When required columns are missing or schema validation fails.
+        UnicodeError: When file encoding is not UTF-8/UTF-16/UTF-32.
     """
     # ---------------------------- 1) Encoding
     try:
@@ -425,6 +465,7 @@ def validate_dataset(
     else:
         model_list = list(models)
 
+    # Merge base + extension for all institutions so we get all columns needed for repo validation.
     merged_specs: Dict[str, dict] = {}
     for m in model_list:
         specs = merge_model_columns(base_schema, ext_schema, institution_id, m.lower())
@@ -507,9 +548,18 @@ def validate_dataset(
         if parse_dates_raw:
             read_kwargs["parse_dates"] = parse_dates_raw
 
-    df = pd.read_csv(
-        filename, **{k: v for k, v in read_kwargs.items() if v is not None}
-    )
+    try:
+        df = pd.read_csv(
+            filename, **{k: v for k, v in read_kwargs.items() if v is not None}
+        )
+    except Exception as read_ex:
+        logger.exception("CSV read failed: %s", read_ex)
+        raise HardValidationError(
+            schema_errors="The file could not be read. Please check that it is a valid CSV file.",
+            raw_to_canon=raw_to_canon,
+            canon_to_raw=canon_to_raw,
+            merged_specs=merged_specs,
+        ) from read_ex
 
     # If we used the pyarrow engine, perform datetime parsing post-read (keeps accuracy)
     if engine == "pyarrow" and parse_dates_canons:
@@ -521,6 +571,37 @@ def validate_dataset(
 
     # Rename raw headers -> canonical names exactly once
     df.rename(columns={raw: canon for canon, raw in canon_to_raw.items()}, inplace=True)
+
+    # ---------------------------- 5a) PDP only: same validation as edvise repo (single-model only)
+    # Edvise extension uses JSON-based validation; different columns and setup.
+    schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
+    if schema_class is not None:
+        validation_df, display_canon_to_raw = (
+            pdp_edvise.rename_pdp_dataframe_to_repo_schema(df, canon_to_raw, model_list)
+        )
+        pdp_edvise.validate_dataframe_with_edvise_schema(
+            validation_df,
+            schema_class,
+            raw_to_canon,
+            display_canon_to_raw,
+            merged_specs,
+        )
+        # Success: return passed or passed_with_soft_errors from header-pass results only.
+        if missing_optional or unknown_extra:
+            return {
+                "validation_status": "passed_with_soft_errors",
+                "schemas": model_list,
+                "missing_optional": missing_optional,
+                "optional_validation_failures": [],
+                "failure_cases": [],
+                "unknown_extra_columns": unknown_extra,
+            }
+        return {
+            "validation_status": "passed",
+            "schemas": model_list,
+            "missing_optional": [],
+            "unknown_extra_columns": [],
+        }
 
     # ---------------------------- 5) Validation: required fail-fast, optional lazy (collect soft errors)
     required_canons = [

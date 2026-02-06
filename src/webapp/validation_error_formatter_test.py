@@ -718,6 +718,15 @@ def test_format_check_error_not_nullable() -> None:
     assert "cannot be empty" in result.lower()
 
 
+def test_format_check_error_pdp_check_num_institutions() -> None:
+    """PDP/Edvise schema check names get human-readable messages."""
+    spec: Dict[str, Any] = {}
+    result = _format_check_error("check_num_institutions", spec, None)
+    assert "institution" in result.lower()
+    assert "same" in result.lower()
+    assert "check_num_institutions" not in result
+
+
 def test_format_check_error_unknown() -> None:
     """Test formatting unknown check type."""
     spec: Dict[str, Any] = {"checks": []}
