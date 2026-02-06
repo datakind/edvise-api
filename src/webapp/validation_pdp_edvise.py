@@ -13,7 +13,10 @@ add edvise to pyproject.toml (e.g. path or published package).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
+
+if TYPE_CHECKING:
+    from .validation import HardValidationError
 
 import pandas as pd
 from pandera.errors import SchemaError, SchemaErrors
@@ -26,6 +29,7 @@ def _get_hard_validation_error_class() -> type:
     from .validation import HardValidationError
 
     return HardValidationError
+
 
 # Lazy import so missing edvise dependency does not break the app at import time.
 _EDVISE_COHORT_SCHEMA: Optional[type] = None
@@ -95,14 +99,28 @@ def rename_pdp_dataframe_to_repo_schema(
     display_canon_to_raw = dict(canon_to_raw)
 
     if is_cohort:
-        if "program_of_study_term_1" in out.columns and "program_of_study_year_1" not in out.columns:
+        if (
+            "program_of_study_term_1" in out.columns
+            and "program_of_study_year_1" not in out.columns
+        ):
             out["program_of_study_year_1"] = out["program_of_study_term_1"].copy()
             display_canon_to_raw["program_of_study_year_1"] = display_canon_to_raw.get(
                 "program_of_study_term_1", "program_of_study_year_1"
             )
 
-        raw_attempted = canon_to_raw.get(PDP_CREDIT_ATTEMPTED_CANON, canon_to_raw.get("number_of_credits_attempted_year_1", "number_of_credits_attempted_year_1"))
-        raw_earned = canon_to_raw.get(PDP_CREDIT_EARNED_CANON, canon_to_raw.get("number_of_credits_earned_year_1", "number_of_credits_earned_year_1"))
+        raw_attempted = canon_to_raw.get(
+            PDP_CREDIT_ATTEMPTED_CANON,
+            canon_to_raw.get(
+                "number_of_credits_attempted_year_1",
+                "number_of_credits_attempted_year_1",
+            ),
+        )
+        raw_earned = canon_to_raw.get(
+            PDP_CREDIT_EARNED_CANON,
+            canon_to_raw.get(
+                "number_of_credits_earned_year_1", "number_of_credits_earned_year_1"
+            ),
+        )
         if PDP_CREDIT_ATTEMPTED_CANON in out.columns:
             out["number_of_credits_attempted_year_1"] = out[PDP_CREDIT_ATTEMPTED_CANON]
             out = out.drop(columns=[PDP_CREDIT_ATTEMPTED_CANON], errors="ignore")
@@ -110,8 +128,12 @@ def rename_pdp_dataframe_to_repo_schema(
                 out[f"number_of_credits_attempted_{suf}"] = pd.NA
             display_canon_to_raw["number_of_credits_attempted_year_1"] = raw_attempted
             for suf in PDP_CREDIT_REPO_YEARS[1:]:
-                display_canon_to_raw[f"number_of_credits_attempted_{suf}"] = raw_attempted
-        _ensure_per_year_credit_columns(out, "number_of_credits_attempted", canon_to_raw, display_canon_to_raw)
+                display_canon_to_raw[f"number_of_credits_attempted_{suf}"] = (
+                    raw_attempted
+                )
+        _ensure_per_year_credit_columns(
+            out, "number_of_credits_attempted", canon_to_raw, display_canon_to_raw
+        )
 
         if PDP_CREDIT_EARNED_CANON in out.columns:
             out["number_of_credits_earned_year_1"] = out[PDP_CREDIT_EARNED_CANON]
@@ -121,7 +143,9 @@ def rename_pdp_dataframe_to_repo_schema(
             display_canon_to_raw["number_of_credits_earned_year_1"] = raw_earned
             for suf in PDP_CREDIT_REPO_YEARS[1:]:
                 display_canon_to_raw[f"number_of_credits_earned_{suf}"] = raw_earned
-        _ensure_per_year_credit_columns(out, "number_of_credits_earned", canon_to_raw, display_canon_to_raw)
+        _ensure_per_year_credit_columns(
+            out, "number_of_credits_earned", canon_to_raw, display_canon_to_raw
+        )
 
     return out, display_canon_to_raw
 
@@ -204,7 +228,9 @@ def _normalize_failure_cases_for_formatter(failure_cases: Any) -> List[Dict[str,
                 "column": row.get("column"),
                 "index": row.get("index", -1),
                 "check": row.get("check", "validation"),
-                "failure_case": row.get("failure_case", row.get("failure_cases", "N/A")),
+                "failure_case": row.get(
+                    "failure_case", row.get("failure_cases", "N/A")
+                ),
             }
             records.append(normalized)
         return records
@@ -215,7 +241,9 @@ def _normalize_failure_cases_for_formatter(failure_cases: Any) -> List[Dict[str,
                     "column": item.get("column"),
                     "index": item.get("index", -1),
                     "check": item.get("check", "validation"),
-                    "failure_case": item.get("failure_case", item.get("failure_cases", "N/A")),
+                    "failure_case": item.get(
+                        "failure_case", item.get("failure_cases", "N/A")
+                    ),
                 }
                 records.append(normalized)
     return records
@@ -253,7 +281,7 @@ def _convert_schema_errors_to_hard_validation_error(
     raw_to_canon: Dict[str, str],
     canon_to_raw: Dict[str, str],
     merged_specs: Dict[str, dict],
-) -> HardValidationError:
+) -> "HardValidationError":
     """
     Convert a Pandera SchemaErrors (or single SchemaError) to HardValidationError.
 
@@ -275,15 +303,18 @@ def _convert_schema_errors_to_hard_validation_error(
         missing_required,
         len(normalized_failure_cases),
     )
-    HardValidationError = _get_hard_validation_error_class()
-    return HardValidationError(
-        missing_required=missing_required if missing_required else None,
-        extra_columns=None,
-        schema_errors=schema_errors,
-        failure_cases=normalized_failure_cases,
-        raw_to_canon=raw_to_canon,
-        canon_to_raw=canon_to_raw,
-        merged_specs=merged_specs,
+    HardValidationErrorClass = _get_hard_validation_error_class()
+    return cast(
+        "HardValidationError",
+        HardValidationErrorClass(
+            missing_required=missing_required if missing_required else None,
+            extra_columns=None,
+            schema_errors=schema_errors,
+            failure_cases=normalized_failure_cases,
+            raw_to_canon=raw_to_canon,
+            canon_to_raw=canon_to_raw,
+            merged_specs=merged_specs,
+        ),
     )
 
 
@@ -321,7 +352,7 @@ def validate_dataframe_with_edvise_schema(
         )
     try:
         # Lazy=True so all failures are collected in one SchemaErrors.
-        schema_class.validate(df, lazy=True)
+        schema_class.validate(df, lazy=True)  # type: ignore[attr-defined]
     except (SchemaErrors, SchemaError) as e:
         # Pandera raises SchemaErrors for lazy validation; single failure may raise SchemaError.
         hard = _convert_schema_errors_to_hard_validation_error(

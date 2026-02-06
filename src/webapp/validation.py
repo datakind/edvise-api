@@ -58,6 +58,7 @@ def validate_file_reader(
 
     Returns:
         Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
+        On success also contains "normalized_df" (DataFrame, or None if nothing was validated).
 
     Raises:
         HardValidationError: When required columns are missing or schema validation fails.
@@ -443,6 +444,8 @@ def validate_dataset(
 
     Returns:
         Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
+        On success also "normalized_df": the validated DataFrame (repo-shaped for PDP, canonical for JSON),
+        or None if merged_specs was empty.
 
     Raises:
         HardValidationError: When required columns are missing or schema validation fails.
@@ -478,6 +481,7 @@ def validate_dataset(
             "schemas": model_list,
             "missing_optional": [],
             "unknown_extra_columns": [],
+            "normalized_df": None,
         }
 
     # ----------------------------  3) HEADER-ONLY PASS
@@ -532,7 +536,7 @@ def validate_dataset(
         import pyarrow  # noqa: F401
 
         engine = "pyarrow"
-    except Exception:
+    except ImportError:
         pass
 
     read_kwargs: Dict[str, Any] = dict(
@@ -595,12 +599,14 @@ def validate_dataset(
                 "optional_validation_failures": [],
                 "failure_cases": [],
                 "unknown_extra_columns": unknown_extra,
+                "normalized_df": validation_df,
             }
         return {
             "validation_status": "passed",
             "schemas": model_list,
             "missing_optional": [],
             "unknown_extra_columns": [],
+            "normalized_df": validation_df,
         }
 
     # ---------------------------- 5) Validation: required fail-fast, optional lazy (collect soft errors)
@@ -648,11 +654,12 @@ def validate_dataset(
             "optional_validation_failures": opt_failures,
             "failure_cases": failure_cases_records,
             "unknown_extra_columns": unknown_extra,
+            "normalized_df": df,
         }
-
     return {
         "validation_status": "passed",
         "schemas": model_list,
         "missing_optional": [],
         "unknown_extra_columns": [],
+        "normalized_df": df,
     }

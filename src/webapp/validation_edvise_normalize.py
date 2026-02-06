@@ -13,7 +13,7 @@ Mapping reference: .cursor/docs/EDVISE_TO_PDP_NORMALIZATION.md
 from __future__ import annotations
 
 import logging
-from typing import Any, Collection, Dict, List, Optional, Tuple
+from typing import Collection, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -180,7 +180,11 @@ def _first_valid_academic_year_series(series: pd.Series) -> str:
     s = str(val).strip()
     if len(s) >= ACADEMIC_YEAR_STR_MIN_LENGTH and s[4] in "-/":
         return s[:ACADEMIC_YEAR_STR_MIN_LENGTH].replace("/", "-")
-    return s[:ACADEMIC_YEAR_STR_MIN_LENGTH] if len(s) >= ACADEMIC_YEAR_STR_MIN_LENGTH else s
+    return (
+        s[:ACADEMIC_YEAR_STR_MIN_LENGTH]
+        if len(s) >= ACADEMIC_YEAR_STR_MIN_LENGTH
+        else s
+    )
 
 
 def _add_required_repo_columns_course(
@@ -198,7 +202,9 @@ def _add_required_repo_columns_course(
         out["cohort_term"] = out["academic_term"]
     # Unique placeholder per row so (student_id, academic_year, academic_term, course_prefix, course_number, section_id) stays unique.
     if "section_id" not in out.columns:
-        out["section_id"] = out.index.astype(str).str.zfill(SECTION_ID_PLACEHOLDER_WIDTH)
+        out["section_id"] = out.index.astype(str).str.zfill(
+            SECTION_ID_PLACEHOLDER_WIDTH
+        )
     return out
 
 
@@ -280,7 +286,11 @@ def normalize_edvise_dataframe_to_pdp(
         display = _build_pdp_to_edvise_display(
             EDVISE_TO_PDP_COHORT_RENAME,
             df.columns,
-            {"institution_id": "institution_id", "retention": "retention", "persistence": "persistence"},
+            {
+                "institution_id": "institution_id",
+                "retention": "retention",
+                "persistence": "persistence",
+            },
         )
         return out, display
 
@@ -296,7 +306,11 @@ def normalize_edvise_dataframe_to_pdp(
         display = _build_pdp_to_edvise_display(
             EDVISE_TO_PDP_COURSE_RENAME,
             df.columns,
-            {"institution_id": "institution_id", "cohort": "academic_year", "section_id": "section_id"},
+            {
+                "institution_id": "institution_id",
+                "cohort": "academic_year",
+                "section_id": "section_id",
+            },
         )
         return out, display
 

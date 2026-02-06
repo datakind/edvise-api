@@ -1197,7 +1197,9 @@ def test_edvise_schema_takes_precedence_over_custom(
     captured_institution_identifier = None
 
     def capture_schema(*args, **kwargs):
+        # fmt: off
         nonlocal captured_schema, captured_institution_id, captured_institution_identifier
+        # fmt: on
         # validate_file(bucket, file_name, allowed_schemas, base_schema, inst_schema, institution_id=..., institution_identifier=...)
         if len(args) >= 5:
             captured_schema = args[4]

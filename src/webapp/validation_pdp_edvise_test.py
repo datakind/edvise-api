@@ -2,9 +2,8 @@
 
 import pandas as pd
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-from src.webapp.validation import HardValidationError
 from src.webapp.validation_pdp_edvise import (
     PDP_EDVISE_NAMESPACES,
     _extract_missing_required_from_pandera_error,
@@ -24,7 +23,10 @@ def test_should_use_edvise_schema_returns_false_for_empty_institution_id() -> No
 
 def test_should_use_edvise_schema_returns_false_for_custom_namespace() -> None:
     """Custom institution UUID should not use edvise schema."""
-    assert should_use_edvise_schema("a1b2c3d4-e5f6-7890-abcd-ef1234567890", ["STUDENT"]) is False
+    assert (
+        should_use_edvise_schema("a1b2c3d4-e5f6-7890-abcd-ef1234567890", ["STUDENT"])
+        is False
+    )
 
 
 def test_should_use_edvise_schema_returns_false_for_multi_model() -> None:
@@ -147,7 +149,12 @@ def test_extract_missing_required_does_not_treat_value_checks_as_missing() -> No
     err = MagicMock()
     err.failure_cases = pd.DataFrame(
         [
-            {"column": "cohort_term", "check": "isin", "index": 0, "failure_case": "Fall"},
+            {
+                "column": "cohort_term",
+                "check": "isin",
+                "index": 0,
+                "failure_case": "Fall",
+            },
         ]
     )
     assert _extract_missing_required_from_pandera_error(err) == []
@@ -180,7 +187,9 @@ def test_get_edvise_schema_for_upload_single_entry_point() -> None:
 
 def test_get_edvise_schema_for_upload_rejects_non_list_model_list() -> None:
     """When model_list is not a list (e.g. wrong type), return None to fall back to JSON validation."""
-    assert get_edvise_schema_for_upload("pdp", None) is None  # None is allowed, treated as []
+    assert (
+        get_edvise_schema_for_upload("pdp", None) is None
+    )  # None is allowed, treated as []
     assert get_edvise_schema_for_upload("pdp", "STUDENT") is None  # str is not a list
     assert get_edvise_schema_for_upload("pdp", {"STUDENT"}) is None  # set is not a list
 

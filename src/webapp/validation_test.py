@@ -77,6 +77,41 @@ def test_validate_file_reader_passes(tmp_csv_file):
         assert result["schemas"] == ["test_model"]
 
 
+def test_validate_file_reader_return_normalized_df(tmp_csv_file):
+    """On success, result includes normalized_df (canonical columns)."""
+    with (
+        patch("src.webapp.validation.load_json") as mock_load,
+        patch("os.path.exists", return_value=True),
+    ):
+        mock_load.side_effect = lambda path: (
+            MOCK_BASE_SCHEMA if "base" in path else MOCK_EXT_SCHEMA
+        )
+        result = validate_file_reader(
+            tmp_csv_file,
+            ["test_model"],
+            base_schema=MOCK_BASE_SCHEMA,
+            inst_schema=MOCK_EXT_SCHEMA,
+        )
+        assert result["validation_status"] == "passed"
+        assert "normalized_df" in result
+        assert result["normalized_df"] is not None
+        assert list(result["normalized_df"].columns) == ["foo_col", "bar_col"]
+
+
+def test_validate_file_reader_empty_schema_returns_normalized_df_none(tmp_csv_file):
+    """When allowed_schema is empty, short-circuit returns normalized_df: None."""
+    result = validate_file_reader(
+        tmp_csv_file,
+        [],
+        base_schema=MOCK_BASE_SCHEMA,
+        inst_schema=MOCK_EXT_SCHEMA,
+    )
+    assert result["validation_status"] == "passed"
+    assert result["schemas"] == []
+    assert "normalized_df" in result
+    assert result["normalized_df"] is None
+
+
 def test_validate_file_reader_fails_missing_required(tmp_path):
     df = pd.DataFrame({"bar_col": ["x", "y"]})  # Missing "foo_col"
     file_path = tmp_path / "invalid.csv"
