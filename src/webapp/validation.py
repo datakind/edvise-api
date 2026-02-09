@@ -17,12 +17,17 @@ import os
 import json
 import re
 import logging
-from functools import lru_cache
-from typing import Union, List, Dict, Optional, Any, BinaryIO, cast, Tuple
+import tempfile
+from contextlib import contextmanager
+from functools import lru_cache, partial
+from typing import Any, BinaryIO, Dict, Generator, List, Optional, Tuple, Union, cast
 
 import pandas as pd
 from pandera import Column, Check, DataFrameSchema
-from pandera.errors import SchemaErrors
+from pandera.errors import SchemaError, SchemaErrors
+
+from edvise.dataio.read import read_raw_pdp_cohort_data, read_raw_pdp_course_data
+from edvise.utils.data_cleaning import handling_duplicates
 
 from . import validation_pdp_edvise as pdp_edvise
 
@@ -38,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def validate_file_reader(
-    filename: Union[str, os.PathLike[str], BinaryIO, io.TextIOWrapper],
+    filename: Union[str, os.PathLike[str], BinaryIO, io.TextIOWrapper, io.StringIO],
     allowed_schema: list[str],
     base_schema: dict,
     inst_schema: Optional[Dict[Any, Any]] = None,
@@ -168,7 +173,7 @@ def get_extension_model_columns_only(
 # Encoding sniffing (mypy-friendly)
 # --------------------------------------------------------------------------- #
 
-Src = Union[str, os.PathLike[str], BinaryIO, io.TextIOWrapper]
+Src = Union[str, os.PathLike[str], BinaryIO, io.TextIOWrapper, io.StringIO]
 
 
 def _read_sample(buf: BinaryIO, n: int) -> bytes:
@@ -712,6 +717,190 @@ def _compute_model_list_and_merged_specs(
 
 
 # --------------------------------------------------------------------------- #
+# PDP: use edvise read + validate (single source of truth)
+# --------------------------------------------------------------------------- #
+
+# Datetime formats to try for PDP course (same order as pdp_data_audit)
+PDP_COURSE_DTTM_FORMATS = ("ISO8601", "%Y%m%d.0", "%Y%m%d")
+
+
+@contextmanager
+def _path_for_edvise_read(filename: Src, enc: str) -> Generator[str, None, None]:
+    """
+    Yield a file path that edvise read_raw_pdp_* can use.
+
+    If filename is a path, yield it. If file-like, read content, write to a temp
+    file (utf-8), yield that path; the temp file is always removed on exit.
+
+    Args:
+        filename: Path or file-like to read from.
+        enc: Encoding used to decode file-like content before writing utf-8 temp.
+
+    Yields:
+        Path to a CSV file (original or temp).
+
+    Raises:
+        HardValidationError: If file-like read fails (with failure_cases=[str(e)]).
+    """
+    if isinstance(filename, (str, os.PathLike)):
+        yield str(filename)
+        return
+    try:
+        raw = filename.read()
+    except Exception as e:
+        # Intentionally broad: any read failure becomes HardValidationError for API.
+        logger.error("Could not read file for validation: %s", e, exc_info=True)
+        raise HardValidationError(
+            schema_errors="Could not read file for validation.",
+            failure_cases=[str(e)],
+        ) from e
+    if isinstance(raw, bytes):
+        raw = raw.decode(enc)
+    fd, path = tempfile.mkstemp(suffix=".csv")
+    try:
+        os.write(fd, raw.encode("utf-8"))
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(fd)
+    try:
+        yield path
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _read_pdp_course_edvise(path: str) -> pd.DataFrame:
+    """
+    Read and validate PDP course data via edvise (same as pipeline).
+
+    Tries each datetime format with each converter: first
+    handling_duplicates(..., school_type="pdp"), then handling_duplicates(df)
+    for older edvise. Raises HardValidationError if all attempts fail.
+
+    Args:
+        path: Path to course CSV.
+
+    Returns:
+        Validated DataFrame (same as pipeline output).
+
+    Raises:
+        HardValidationError: If no (converter, format) pair succeeded.
+    """
+    converters = (
+        partial(handling_duplicates, school_type="pdp"),
+        handling_duplicates,
+    )
+    last_error: Optional[Exception] = None
+    for converter in converters:
+        for fmt in PDP_COURSE_DTTM_FORMATS:
+            try:
+                return read_raw_pdp_course_data(
+                    file_path=path,
+                    schema=pdp_edvise.get_edvise_schema_for_models(["COURSE"]),
+                    dttm_format=fmt,
+                    converter_func=converter,
+                    spark_session=None,
+                )
+            except ValueError as e:
+                last_error = e
+            except TypeError as e:
+                if "school_type" in str(e):
+                    last_error = None
+                    break
+                raise
+    error_message = (
+        "Course data did not parse with any known datetime format."
+        if last_error is not None
+        else "Course validation failed (datetime format or schema)."
+    )
+    validation_error = HardValidationError(
+        schema_errors=error_message,
+        failure_cases=[str(last_error)] if last_error else [],
+    )
+    logger.error(
+        "PDP course validation failed: path=%s, last_error=%s",
+        path,
+        last_error,
+    )
+    if last_error is not None:
+        raise validation_error from last_error
+    raise validation_error
+
+
+def _validate_pdp_with_edvise_read(
+    filename: Src,
+    enc: str,
+    model_list: List[str],
+    institution_id: str,
+) -> Dict[str, Any]:
+    """
+    Validate PDP cohort or course via edvise read + schema (same as pipeline).
+
+    Resolves filename to a path (temp file if file-like), then calls
+    read_raw_pdp_cohort_data or read_raw_pdp_course_data. Converts Pandera
+    SchemaErrors to HardValidationError for API/formatter consistency.
+
+    Args:
+        filename: Path or file-like to CSV.
+        enc: Encoding (from sniff_encoding) for file-like decode.
+        model_list: Single model, e.g. ["STUDENT"] or ["COURSE"].
+        institution_id: Institution schema key (e.g. "pdp").
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional,
+        unknown_extra_columns, normalized_df.
+
+    Raises:
+        HardValidationError: If read/schema fails (or SchemaErrors converted).
+    """
+    _reset_to_start_if_possible(filename)
+    model_set = {str(m).strip().upper() for m in model_list if m}
+
+    with _path_for_edvise_read(filename, enc) as path:
+        try:
+            if model_set == {"STUDENT"}:
+                df = read_raw_pdp_cohort_data(
+                    file_path=path,
+                    schema=pdp_edvise.get_edvise_schema_for_models(["STUDENT"]),
+                    converter_func=None,
+                    spark_session=None,
+                )
+            elif model_set == {"COURSE"}:
+                df = _read_pdp_course_edvise(path)
+            else:
+                raise HardValidationError(
+                    schema_errors=f"PDP single-model expected; got models={model_list}",
+                    failure_cases=[],
+                )
+
+            return {
+                "validation_status": "passed",
+                "schemas": model_list,
+                "missing_optional": [],
+                "unknown_extra_columns": [],
+                "normalized_df": df,
+            }
+        except (SchemaErrors, SchemaError) as e:
+            logger.error(
+                "PDP edvise schema validation failed: model_set=%s, error=%s",
+                model_set,
+                e,
+                exc_info=True,
+            )
+            hard = pdp_edvise._convert_schema_errors_to_hard_validation_error(
+                e, raw_to_canon={}, canon_to_raw={}, merged_specs={}
+            )
+            raise hard from e
+
+
+# --------------------------------------------------------------------------- #
 # Main validation
 # --------------------------------------------------------------------------- #
 
@@ -749,6 +938,10 @@ def validate_dataset(
             "unknown_extra_columns": [],
             "normalized_df": None,
         }
+
+    # PDP single-model: use edvise read + validate (same as pipeline)
+    if pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list) is not None:
+        return _validate_pdp_with_edvise_read(filename, enc, model_list, institution_id)
 
     (
         raw_to_canon,
