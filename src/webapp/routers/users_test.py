@@ -78,7 +78,9 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, None, None]:
+def client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for non-Datakinder."""
 
     def get_session_override():
@@ -97,7 +99,9 @@ def client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, Non
 
 
 @pytest.fixture(name="datakinder_client")
-def datakinder_client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, None, None]:
+def datakinder_client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for datakinder."""
 
     def get_session_override():
