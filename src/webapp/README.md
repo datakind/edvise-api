@@ -51,7 +51,7 @@ In the long-term, look into a way to have the API key --> token conversion be ha
 
 ## Databases
 
-All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/sst-app-api/blob/develop/src/webapp/database.py).
+All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/edvise-api/blob/develop/src/webapp/database.py).
 
 At time of writing, the databases the API cares about and tracks, are as follows:
 
@@ -112,7 +112,7 @@ Enter into the root directory of the repo.
 
 You're now in your virtual env with all your dependencies added.
 
-For all of the following, the steps above are pre-requisites and you should be in the root folder of `sst-app-api/`.
+For all of the following, the steps above are pre-requisites and you should be in the root folder of `edvise-api/`.
 
 ### Spin up the app locally:
 
