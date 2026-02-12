@@ -13,3 +13,14 @@ This repo contains:
 
 
 NOTE: this repo was forked from the https://github.com/datakind/student-success-tool repo, which means some of the static files (e.g. CONTRIBUTING.md) may be outdated or may include irrelevant information from that repo. Please update those as you see fit. For information about the specific items listed above, defer to the specific readmes in the relevant directory.
+
+## Local edvise development override
+
+Production uses a pinned Git reference for `edvise`. For local development, use an
+editable install after syncing the environment.
+
+1. Clone `edvise` alongside `edvise-api` (so `../edvise` exists).
+2. Run `uv sync`.
+3. Override locally: `uv pip install -e ../edvise`
+
+To revert back to the pinned Git dependency, run `uv sync --reinstall-package edvise`.
