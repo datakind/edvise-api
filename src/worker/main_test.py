@@ -68,8 +68,8 @@ def test_execute_pdp_pull(
     dummy_credentials.universe_domain = "googleapis.com"  # Set the expected domain
     mock_auth_default.return_value = (dummy_credentials, "dummy-project")
 
-    MOCK_STORAGE.copy_from_sftp_to_gcs.side_effect = (
-        lambda filename: f"processed_{filename}"
+    MOCK_STORAGE.copy_from_sftp_to_gcs.side_effect = lambda filename: (
+        f"processed_{filename}"
     )
     MOCK_STORAGE.create_bucket_if_not_exists.return_value = None
 
