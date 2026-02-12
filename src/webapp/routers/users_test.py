@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Generator
 from fastapi.testclient import TestClient
 import pytest
 import sqlalchemy
@@ -77,7 +78,7 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session):
+def client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for non-Datakinder."""
 
     def get_session_override():
@@ -96,7 +97,7 @@ def client_fixture(session: sqlalchemy.orm.Session):
 
 
 @pytest.fixture(name="datakinder_client")
-def datakinder_client_fixture(session: sqlalchemy.orm.Session):
+def datakinder_client_fixture(session: sqlalchemy.orm.Session) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for datakinder."""
 
     def get_session_override():
@@ -114,7 +115,7 @@ def datakinder_client_fixture(session: sqlalchemy.orm.Session):
     app.dependency_overrides.clear()
 
 
-def test_read_inst_users(client: TestClient):
+def test_read_inst_users(client: TestClient) -> None:
     """Test GET /institutions/<uuid>/users."""
     response = client.get(
         "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/users"
@@ -138,7 +139,7 @@ def test_read_inst_users(client: TestClient):
     ]
 
 
-def test_read_inst_user(client: TestClient):
+def test_read_inst_user(client: TestClient) -> None:
     """Test GET /institutions/<uuid>/users/<uuid>. For various user access types."""
     # Authorized.
     response = client.get(
@@ -157,7 +158,7 @@ def test_read_inst_user(client: TestClient):
     }
 
 
-def test_read_inst_allowed_emails(datakinder_client: TestClient):
+def test_read_inst_allowed_emails(datakinder_client: TestClient) -> None:
     """Test GET /institutions/<uuid>/allowable-emails."""
     # Authorized.
     response = datakinder_client.get(
