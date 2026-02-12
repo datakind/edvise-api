@@ -105,8 +105,6 @@ def session_fixture():
     """Unit test database setup."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
-        echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -886,7 +884,6 @@ def edvise_session_fixture():
     """Unit test database setup for Edvise tests."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=False,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )

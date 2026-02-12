@@ -781,7 +781,6 @@ def init_connection_pool_local() -> sqlalchemy.engine.base.Engine:
     """Creates a local sqlite db for local env testing."""
     return sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
         echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
