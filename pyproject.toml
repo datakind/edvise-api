@@ -8,7 +8,7 @@ dependencies = [
     "databricks-sdk~=0.38.0",
     "pydantic~=2.10",
     "fastapi[standard]~=0.115.4",
-    "google-cloud-storage~=2.18.2",
+    "google-cloud-storage==2.19.0",
     "paramiko~=3.5.0",
     "cloud-sql-python-connector[pymysql]~=1.14.0",
     "sqlalchemy~=2.0.36",
@@ -28,13 +28,14 @@ dependencies = [
     "thefuzz[speedup]~=0.22.1",
     "databricks-sql-connector~=3.5.0",
     "pandera~=0.13",
-    "mlflow~=2.15.0",
+    "mlflow~=2.22",
     "cachetools",
     "types-cachetools",
+    "edvise",
 ]
 
 [project.urls]
-Repository = "https://github.com/datakind/sst-app-api"
+Repository = "https://github.com/datakind/edvise-api"
 
 [dependency-groups]
 dev = [
@@ -52,8 +53,16 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.uv]
 default-groups = ["dev"]
+
+[tool.uv.sources]
+# Install edvise from GitHub (branch, tag, or commit).
+# Use rev = "main" for default branch, or rev = "v1.0.0" for a release tag.
+edvise = { git = "https://github.com/datakind/edvise.git", rev = "feat/eda_summary_class" }
 
 [tool.ruff]
 line-length = 88

@@ -7,7 +7,7 @@ resource "google_project_service" "services" {
 
 resource "google_artifact_registry_repository" "student_success_tool" {
   location               = var.region
-  repository_id          = "sst-app-api"
+  repository_id          = "edvise-api"
   format                 = "DOCKER"
   cleanup_policy_dry_run = false
   cleanup_policies {
@@ -35,7 +35,7 @@ resource "google_artifact_registry_repository" "student_success_tool" {
 
 resource "google_artifact_registry_repository" "sst_app_ui" {
   location               = var.region
-  repository_id          = "sst-app-ui"
+  repository_id          = "edvise-ui"
   format                 = "DOCKER"
   cleanup_policy_dry_run = false
   cleanup_policies {
@@ -70,7 +70,7 @@ resource "google_cloudbuild_trigger" "python_apps" {
     for_each = var.environment == "dev" ? [1] : []
     content {
       owner = "datakind"
-      name  = "sst-app-api"
+      name  = "edvise-api"
       push {
         branch = "develop"
       }
@@ -81,7 +81,7 @@ resource "google_cloudbuild_trigger" "python_apps" {
     content {
       ref       = "refs/heads/develop"
       repo_type = "GITHUB"
-      uri       = "https://github.com/datakind/sst-app-api"
+      uri       = "https://github.com/datakind/edvise-api"
     }
   }
   build {
@@ -92,19 +92,19 @@ resource "google_cloudbuild_trigger" "python_apps" {
         "-f",
         "src/${each.key}/Dockerfile",
         "-t",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-api/${each.key}:$COMMIT_SHA",
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:$COMMIT_SHA",
         "-t",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-api/${each.key}:latest",
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:latest",
         "."
       ]
     }
     step {
       name = "gcr.io/cloud-builders/docker"
-      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/sst-app-api/${each.key}:$COMMIT_SHA"]
+      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:$COMMIT_SHA"]
     }
     step {
       name = "gcr.io/cloud-builders/docker"
-      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/sst-app-api/${each.key}:latest"]
+      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:latest"]
     }
     step {
       name = "gcr.io/cloud-builders/gcloud"
@@ -113,7 +113,7 @@ resource "google_cloudbuild_trigger" "python_apps" {
         "deploy",
         "${var.environment}-${each.key}",
         "--image",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-api/${each.key}:$COMMIT_SHA",
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:$COMMIT_SHA",
         "--region",
         "${var.region}",
       ]
@@ -133,7 +133,7 @@ resource "google_cloudbuild_trigger" "frontend" {
     for_each = var.environment == "dev" ? [1] : []
     content {
       owner = "datakind"
-      name  = "sst-app-ui"
+      name  = "edvise-ui"
       push {
         branch = "develop"
       }
@@ -144,7 +144,7 @@ resource "google_cloudbuild_trigger" "frontend" {
     content {
       ref       = "refs/heads/develop"
       repo_type = "GITHUB"
-      uri       = "https://github.com/datakind/sst-app-ui"
+      uri       = "https://github.com/datakind/edvise-ui"
     }
   }
   build {
@@ -174,29 +174,29 @@ resource "google_cloudbuild_trigger" "frontend" {
         "build",
         "--builder=gcr.io/buildpacks/builder",
         "--publish",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:$COMMIT_SHA",
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA",
       ]
     }
     step {
       id   = "PULL and TAG latest"
       name = "gcr.io/cloud-builders/docker"
-      args = ["pull", "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:$COMMIT_SHA"]
+      args = ["pull", "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA"]
     }
     step {
       name = "gcr.io/cloud-builders/docker"
       args = [
         "tag",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:$COMMIT_SHA",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:latest"
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA",
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:latest"
       ]
     }
     step {
       name = "gcr.io/cloud-builders/docker"
-      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:$COMMIT_SHA"]
+      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA"]
     }
     step {
       name = "gcr.io/cloud-builders/docker"
-      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:latest"]
+      args = ["push", "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:latest"]
     }
     step {
       id         = "DEPLOY and RUN migration job"
@@ -207,7 +207,7 @@ resource "google_cloudbuild_trigger" "frontend" {
         "jobs",
         "deploy",
         "${var.environment}-migrate",
-        "--image=${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:$COMMIT_SHA",
+        "--image=${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA",
         "--region=${var.region}",
         "--execute-now"
       ]
@@ -221,7 +221,7 @@ resource "google_cloudbuild_trigger" "frontend" {
         "deploy",
         "${var.environment}-frontend",
         "--image",
-        "${var.region}-docker.pkg.dev/${var.project}/sst-app-ui/frontend:$COMMIT_SHA",
+        "${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA",
         "--region",
         "${var.region}",
       ]
@@ -240,7 +240,7 @@ resource "google_cloudbuild_trigger" "terraform" {
   source_to_build {
     ref       = "refs/heads/develop"
     repo_type = "GITHUB"
-    uri       = "https://github.com/datakind/sst-app-api"
+    uri       = "https://github.com/datakind/edvise-api"
   }
   build {
     step {
