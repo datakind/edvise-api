@@ -668,13 +668,6 @@ def get_eda_data(
     has_full_data_access_or_err(current_user, "EDA data")
     local_session.set(sql_session)
 
-    cache_key = f"{inst_id}:{batch_id}"
-    cached_result = EDA_CACHE.get(cache_key)
-    if cached_result is not None:
-        logger.debug(f"EDA cache hit for {cache_key}")
-        return cached_result
-    logger.debug(f"EDA cache miss for {cache_key}, computing...")
-
     batch_result = (
         local_session.get()
         .execute(
@@ -692,6 +685,13 @@ def get_eda_data(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Batch not found.",
         )
+
+    cache_key = f"{inst_id}:{batch_id}"
+    cached_result = EDA_CACHE.get(cache_key)
+    if cached_result is not None:
+        logger.debug(f"EDA cache hit for {cache_key}")
+        return cached_result
+    logger.debug(f"EDA cache miss for {cache_key}, computing...")
 
     file_dataframes = read_batch_files_as_dataframes(
         inst_id, batch_result.files, storage_control
