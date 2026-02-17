@@ -63,6 +63,9 @@ DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
 # Test institution - same ID as DEV USC Beaufort for testing
 TEST_INST_UUID = uuid.UUID("942d4b0e-12e7-4d2a-9187-9508ae3cef7c")
 TEST_BATCH_UUID = uuid.UUID("3182f472-e079-4678-a0a1-9ca5ead6c49a")
+# Montana Tech test institution + batch (matches DEV data for local EDA testing)
+MONTANA_TECH_INST_UUID = uuid.UUID("1e2c628cabda4088b900cfd9ced44268")
+MONTANA_TECH_BATCH_UUID = uuid.UUID("1df31913e1fe4c458f5039527c967b13")
 
 
 @event.listens_for(Mapper, "before_insert")
@@ -224,6 +227,57 @@ def init_db(env: str) -> None:
                 session.merge(test_file_student)
                 session.merge(test_file_course)
                 session.merge(test_batch)
+
+            # Montana Tech - matches DEV data for local EDA testing
+            session.merge(
+                InstTable(
+                    id=MONTANA_TECH_INST_UUID,
+                    name="Montana Tech",
+                    state="MT",
+                    schemas=["COURSE", "STUDENT"],
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                    created_by=LOCAL_USER_UUID,
+                )
+            )
+            montana_student_file = FileTable(
+                id=uuid.UUID("a2b0f7b2-0c57-4aa9-8dd0-8e1a49d1be01"),
+                inst_id=MONTANA_TECH_INST_UUID,
+                name="1764013161378_AO1600pdp_AO1600_AR_DEIDENTIFIED_STUDYID_20251028121051.csv",
+                source="MANUAL_UPLOAD",
+                uploader=LOCAL_USER_UUID,
+                sst_generated=False,
+                valid=True,
+                schemas=["STUDENT"],
+                created_at=DATETIME_TESTING,
+                updated_at=DATETIME_TESTING,
+            )
+            montana_course_file = FileTable(
+                id=uuid.UUID("d8b0f2c3-2d5a-4d7b-8e33-7e4c3b2609d2"),
+                inst_id=MONTANA_TECH_INST_UUID,
+                name="1764013161379_AO1600pdp_AO1600_COURSE_LEVEL_AR_DEIDENTIFIED_STUDYID_20251028121051.csv",
+                source="MANUAL_UPLOAD",
+                uploader=LOCAL_USER_UUID,
+                sst_generated=False,
+                valid=True,
+                schemas=["COURSE"],
+                created_at=DATETIME_TESTING,
+                updated_at=DATETIME_TESTING,
+            )
+            montana_batch = BatchTable(
+                id=MONTANA_TECH_BATCH_UUID,
+                inst_id=MONTANA_TECH_INST_UUID,
+                name="Batch_2025-10-28_1764013161000",
+                completed=True,
+                created_by=LOCAL_USER_UUID,
+                created_at=DATETIME_TESTING,
+                updated_at=DATETIME_TESTING,
+            )
+            montana_batch.files.add(montana_student_file)
+            montana_batch.files.add(montana_course_file)
+            session.merge(montana_student_file)
+            session.merge(montana_course_file)
+            session.merge(montana_batch)
             session.commit()
     except Exception as e:
         session.rollback()
@@ -781,7 +835,6 @@ def init_connection_pool_local() -> sqlalchemy.engine.base.Engine:
     """Creates a local sqlite db for local env testing."""
     return sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
         echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,

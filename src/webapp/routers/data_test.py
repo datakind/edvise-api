@@ -105,8 +105,6 @@ def session_fixture():
     """Unit test database setup."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
-        echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -766,17 +764,16 @@ def test_get_eda_data_success(
     session.add_all([eda_batch, student_file, course_file])
     session.commit()
 
-    # Create mock DataFrames
-    df_student = pd.DataFrame(
+    df_cohort = pd.DataFrame(
         {
-            "study_id": ["S001", "S002", "S003", "S001"],  # S001 appears twice
+            "student_id": ["S001", "S002", "S003", "S001"],
             "cohort": ["2020", "2020", "2021", "2021"],
             "cohort_term": ["FALL", "FALL", "SPRING", "SPRING"],
             "enrollment_type": [
-                "First-Time",
-                "Transfer-In",
-                "First-Time",
-                "Transfer-In",
+                "FIRST-TIME",
+                "TRANSFER-IN",
+                "FIRST-TIME",
+                "TRANSFER-IN",
             ],
             "enrollment_intensity_first_term": [
                 "Full-Time",
@@ -798,7 +795,6 @@ def test_get_eda_data_success(
             "student_age": ["20 - 24", "20 or younger", "Older than 24", "20 - 24"],
         }
     )
-
     df_course = pd.DataFrame(
         {
             "study_id": ["S001", "S002", "S003"],
@@ -810,7 +806,7 @@ def test_get_eda_data_success(
     # Mock storage to return our test DataFrames
     def mock_read_csv(bucket_name: str, blob_path: str) -> pd.DataFrame:
         if "student" in blob_path.lower():
-            return df_student
+            return df_cohort
         elif "course" in blob_path.lower():
             return df_course
         else:
@@ -830,38 +826,45 @@ def test_get_eda_data_success(
     data = response.json()
 
     # Check response structure
-    assert "summary_stats" in data
+    assert "total_students" in data
+    assert "transfer_students" in data
+    assert "avg_year1_gpa_all_students" in data
     assert "gpa_by_enrollment_type" in data
     assert "gpa_by_enrollment_intensity" in data
     assert "students_by_cohort_term" in data
     assert "course_enrollments" in data
     assert "degree_types" in data
+    assert "total" in data["degree_types"]
+    assert "degrees" in data["degree_types"]
     assert "enrollment_type_by_intensity" in data
+    assert "pell_recipient_status" in data
     assert "pell_recipient_by_first_gen" in data
     assert "student_age_by_gender" in data
     assert "race_by_pell_status" in data
 
-    # Check summary stats
-    assert data["summary_stats"]["total_students"] == "3"  # 3 unique study_ids
-    assert data["summary_stats"]["transfer_students"] == "2"  # 2 Transfer-In
+    # Check summary stats (each is { name, value })
+    assert data["total_students"]["name"] == "Total Students"
+    assert data["total_students"]["value"] == 3  # unique student_id (S001, S002, S003)
+    assert data["transfer_students"]["name"] == "Transfer Students"
+    assert data["transfer_students"]["value"] == 2  # 2 TRANSFER-IN
 
-    # Check GPA charts have cohort years
+    # Check GPAs have cohort years
     assert "cohort_years" in data["gpa_by_enrollment_type"]
     assert len(data["gpa_by_enrollment_type"]["cohort_years"]) == 2  # 2020, 2021
     assert "2020" in data["gpa_by_enrollment_type"]["cohort_years"]
     assert "2021" in data["gpa_by_enrollment_type"]["cohort_years"]
 
     # Check term data structure
-    assert "fall" in data["students_by_cohort_term"]
-    assert "spring" in data["students_by_cohort_term"]
-    assert len(data["students_by_cohort_term"]["fall"]) == 2  # One per cohort year
+    assert "years" in data["students_by_cohort_term"]
+    assert "terms" in data["students_by_cohort_term"]
+    assert len(data["students_by_cohort_term"]["years"]) == 2
 
     # Check enrollment type by intensity has categories and series
     assert "categories" in data["enrollment_type_by_intensity"]
     assert "series" in data["enrollment_type_by_intensity"]
     assert len(data["enrollment_type_by_intensity"]["series"]) > 0
 
-    # Check pell recipient chart structure
+    # Check pell recipients
     assert "categories" in data["pell_recipient_by_first_gen"]
     assert "series" in data["pell_recipient_by_first_gen"]
 
@@ -886,7 +889,6 @@ def edvise_session_fixture():
     """Unit test database setup for Edvise tests."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=False,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )

@@ -976,8 +976,8 @@ wheels = [
 
 [[package]]
 name = "edvise"
-version = "0.1.8"
-source = { git = "https://github.com/datakind/edvise.git?rev=v0.1.8#3d74559572e46798ca4abbcad465ecc5d5691c7a" }
+version = "0.1.10"
+source = { git = "https://github.com/datakind/edvise.git?rev=feat%2Feda_summary_class#86ca8dfdacaa0836c3d83b452bac913acbe2dea7" }
 dependencies = [
     { name = "databricks-connect", version = "16.1.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "databricks-connect", version = "16.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -998,6 +998,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydyf" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "scikit-learn" },
     { name = "seaborn" },
     { name = "shap" },
@@ -4188,11 +4189,11 @@ requires-dist = [
     { name = "cloud-sql-python-connector", extras = ["pymysql"], specifier = "~=1.14.0" },
     { name = "databricks-sdk", specifier = "~=0.38.0" },
     { name = "databricks-sql-connector", specifier = "~=3.5.0" },
-    { name = "edvise", git = "https://github.com/datakind/edvise.git?rev=v0.1.8" },
+    { name = "edvise", git = "https://github.com/datakind/edvise.git?rev=feat%2Feda_summary_class" },
     { name = "fastapi", extras = ["standard"], specifier = "~=0.115.4" },
-    { name = "google-cloud-storage", specifier = ">=2.18.2" },
+    { name = "google-cloud-storage", specifier = "==2.19.0" },
     { name = "jsonpickle", specifier = "~=4.0.1" },
-    { name = "mlflow", specifier = ">=2.15.0,<3" },
+    { name = "mlflow", specifier = "~=2.22" },
     { name = "pandas", specifier = "~=2.0" },
     { name = "pandera", specifier = "~=0.13" },
     { name = "paramiko", specifier = "~=3.5.0" },
