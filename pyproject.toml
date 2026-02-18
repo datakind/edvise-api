@@ -60,9 +60,7 @@ allow-direct-references = true
 default-groups = ["dev"]
 
 [tool.uv.sources]
-# Install edvise from GitHub (branch, tag, or commit).
-# Use rev = "main" for default branch, or rev = "v1.0.0" for a release tag.
-edvise = { git = "https://github.com/datakind/edvise.git", rev = "feat/eda_summary_class" }
+edvise = { git = "https://github.com/datakind/edvise.git", rev = "main" }
 
 [tool.ruff]
 line-length = 88
