@@ -1709,7 +1709,7 @@ def list_bronze_datasets(
     "/{inst_id}/input/import-from-bronze",
     response_model=BronzeImportResponse,
 )
-def import_from_bronze(
+def upload_from_volume_to_gcs_bucket(
     inst_id: str,
     req: BronzeImportRequest,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],

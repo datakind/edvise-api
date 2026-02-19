@@ -312,7 +312,7 @@ def test_list_bronze_datasets(client: TestClient) -> Any:
     MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
 
 
-def test_import_from_bronze(client: TestClient) -> Any:
+def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
     """Test POST /institutions/<uuid>/input/import-from-bronze."""
     MOCK_DATABRICKS.reset_mock()
     MOCK_STORAGE.reset_mock()
