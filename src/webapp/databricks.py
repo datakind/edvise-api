@@ -16,7 +16,7 @@ from google.api_core import exceptions as gcs_errors
 from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
-from typing import List, Any, Dict, Optional
+from typing import List, Any, Dict, Optional, IO
 from fastapi import HTTPException
 import requests
 import hashlib
@@ -215,7 +215,7 @@ class DatabricksControl(BaseModel):
         )
 
         try:
-            entries = list(w.dbfs.list(volume_root) or [])
+            entries = list(w.dbfs.list(f"dbfs:{volume_root}") or [])
         except Exception as e:
             LOGGER.exception("Failed to list bronze volume directory: %s", volume_root)
             raise ValueError(f"Failed to list bronze volume directory: {e}")
@@ -232,6 +232,49 @@ class DatabricksControl(BaseModel):
             csvs.append(basename)
         csvs.sort()
         return csvs
+
+    def download_bronze_volume_file(self, inst_name: str, file_name: str) -> IO[bytes]:
+        """Download a file from the institution's bronze volume root and return a byte stream."""
+        if "/" in file_name:
+            raise ValueError("file_name must not contain '/'.")
+        if not VALID_BRONZE_FILE_RE.match(file_name):
+            raise ValueError("Invalid bronze dataset filename.")
+        if not databricks_vars.get("DATABRICKS_HOST_URL") or not databricks_vars.get(
+            "CATALOG_NAME"
+        ):
+            raise ValueError("Databricks integration not configured.")
+        if not gcs_vars.get("GCP_SERVICE_ACCOUNT_EMAIL"):
+            raise ValueError("GCP service account email not configured.")
+
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars.get("DATABRICKS_HOST_URL"),
+                gcs_vars.get("GCP_SERVICE_ACCOUNT_EMAIL"),
+            )
+            raise ValueError(f"Workspace client creation failed: {e}")
+
+        db_inst_name = databricksify_inst_name(inst_name)
+        volume_path = (
+            f"/Volumes/{databricks_vars['CATALOG_NAME']}/"
+            f"{db_inst_name}_bronze/bronze_volume/{file_name}"
+        )
+
+        try:
+            response = w.files.download(volume_path)
+        except Exception as e:
+            LOGGER.exception("Failed to download from %s", volume_path)
+            raise ValueError(f"Failed to download bronze dataset: {e}")
+
+        stream = getattr(response, "contents", None)
+        if stream is None:
+            raise ValueError("Databricks download returned no contents.")
+        return stream
 
     # Note that for each unique PIPELINE, we'll need a new function, this is by nature of how unique pipelines
     # may have unique parameters and would have a unique name (i.e. the name field specified in w.jobs.list()). But any run of a given pipeline (even across institutions) can use the same function.

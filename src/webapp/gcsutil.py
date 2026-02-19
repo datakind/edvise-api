@@ -3,7 +3,7 @@
 import datetime
 import io
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, IO
 
 import pandas as pd
 from pydantic import BaseModel
@@ -119,6 +119,28 @@ class StorageControl(BaseModel):
             method="GET",
         )
         return url
+
+    def upload_unvalidated_csv_from_file(
+        self, bucket_name: str, file_name: str, file_obj: IO[bytes]
+    ) -> None:
+        """Upload a CSV into unvalidated/ while enforcing no-overwrite semantics."""
+        if not file_name or not file_name.strip():
+            raise ValueError("file_name is required and must be non-empty.")
+        if "/" in file_name:
+            raise ValueError("file_name must not contain '/'.")
+
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        if not bucket.exists():
+            raise ValueError("Storage bucket not found.")
+
+        for prefix in ("unvalidated/", "validated/"):
+            blob = bucket.blob(prefix + file_name)
+            if blob.exists():
+                raise ValueError("File already exists.")
+
+        blob = bucket.blob("unvalidated/" + file_name)
+        blob.upload_from_file(file_obj, content_type="text/csv")
 
     def delete_bucket(self, bucket_name: str) -> None:
         """Delete a given bucket."""

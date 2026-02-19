@@ -1,5 +1,6 @@
 """Test file for the data.py file and constituent API functions."""
 
+import io
 import uuid
 import time
 from unittest import mock
@@ -28,7 +29,12 @@ from ..database import (
     Base,
     get_session,
 )
-from ..utilities import uuid_to_str, get_current_active_user, SchemaType
+from ..utilities import (
+    uuid_to_str,
+    get_current_active_user,
+    SchemaType,
+    get_external_bucket_name,
+)
 from .data import router, DataOverview, DataInfo
 from ..gcsutil import StorageControl
 from ..databricks import DatabricksControl
@@ -304,6 +310,47 @@ def test_list_bronze_datasets(client: TestClient) -> Any:
     assert response.status_code == 200
     assert response.json() == ["a.csv", "b.csv"]
     MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
+
+
+def test_import_from_bronze(client: TestClient) -> Any:
+    """Test POST /institutions/<uuid>/input/import-from-bronze."""
+    MOCK_DATABRICKS.reset_mock()
+    MOCK_STORAGE.reset_mock()
+
+    response = client.post(
+        "/institutions/" + uuid_to_str(UUID_INVALID) + "/input/import-from-bronze",
+        json={"name": "file.csv"},
+    )
+    assert response.status_code == 401
+
+    MOCK_DATABRICKS.list_bronze_volume_csvs.return_value = ["file.csv"]
+    MOCK_DATABRICKS.download_bronze_volume_file.return_value = io.BytesIO(
+        b"col1,col2\n1,2\n"
+    )
+    MOCK_STORAGE.generate_upload_signed_url.return_value = "https://signed.example"
+
+    with mock.patch("src.webapp.routers.data.requests.put") as mock_put:
+        mock_put.return_value.raise_for_status.return_value = None
+        response = client.post(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/input/import-from-bronze",
+            json={"name": "file.csv"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"file_name": "file.csv"}
+
+    MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
+    MOCK_DATABRICKS.download_bronze_volume_file.assert_called_with("school_1", "file.csv")
+    MOCK_STORAGE.generate_upload_signed_url.assert_called_with(
+        get_external_bucket_name(uuid_to_str(USER_VALID_INST_UUID)), "file.csv"
+    )
+    mock_put.assert_called_with(
+        "https://signed.example",
+        data=mock.ANY,
+        headers={"Content-Type": "text/csv"},
+        timeout=600,
+    )
 
 
 def test_read_inst_all_output_files(client: TestClient) -> Any:
