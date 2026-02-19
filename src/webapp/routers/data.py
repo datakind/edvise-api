@@ -1659,6 +1659,37 @@ def get_upload_url(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
+@router.get("/{inst_id}/input/bronze-datasets", response_model=list[str])
+def list_bronze_datasets(
+    inst_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """List `.csv` files directly under the institution's Databricks bronze volume root."""
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+
+    try:
+        return databricks_control.list_bronze_volume_csvs(inst.name)
+    except ValueError as ve:
+        msg = str(ve)
+        if "not configured" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=msg)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+
+
 @router.post("/{inst_id}/add-custom-school-job/{job_run_id}")
 def add_custom_school_job(
     inst_id: str,

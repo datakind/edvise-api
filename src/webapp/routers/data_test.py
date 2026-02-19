@@ -31,8 +31,10 @@ from ..database import (
 from ..utilities import uuid_to_str, get_current_active_user, SchemaType
 from .data import router, DataOverview, DataInfo
 from ..gcsutil import StorageControl
+from ..databricks import DatabricksControl
 
 MOCK_STORAGE = mock.Mock()
+MOCK_DATABRICKS = mock.Mock()
 
 UUID_2 = uuid.UUID("9bcbc782-2e71-4441-afa2-7a311024a5ec")
 FILE_UUID_1 = uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a")
@@ -205,10 +207,14 @@ def client_fixture(session: sqlalchemy.orm.Session, monkeypatch: Any) -> Any:
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -280,6 +286,24 @@ def test_read_inst_all_input_files(client: TestClient) -> Any:
             ],
         },
     )
+
+
+def test_list_bronze_datasets(client: TestClient) -> Any:
+    """Test GET /institutions/<uuid>/input/bronze-datasets."""
+    MOCK_DATABRICKS.reset_mock()
+    MOCK_DATABRICKS.list_bronze_volume_csvs.return_value = ["a.csv", "b.csv"]
+
+    response = client.get(
+        "/institutions/" + uuid_to_str(UUID_INVALID) + "/input/bronze-datasets"
+    )
+    assert response.status_code == 401
+
+    response = client.get(
+        "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/input/bronze-datasets"
+    )
+    assert response.status_code == 200
+    assert response.json() == ["a.csv", "b.csv"]
+    MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
 
 
 def test_read_inst_all_output_files(client: TestClient) -> Any:
