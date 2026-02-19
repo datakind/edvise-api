@@ -341,7 +341,9 @@ def test_import_from_bronze(client: TestClient) -> Any:
         assert response.json() == {"file_name": "file.csv"}
 
     MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
-    MOCK_DATABRICKS.download_bronze_volume_file.assert_called_with("school_1", "file.csv")
+    MOCK_DATABRICKS.download_bronze_volume_file.assert_called_with(
+        "school_1", "file.csv"
+    )
     MOCK_STORAGE.generate_upload_signed_url.assert_called_with(
         get_external_bucket_name(uuid_to_str(USER_VALID_INST_UUID)), "file.csv"
     )

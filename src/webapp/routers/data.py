@@ -1700,7 +1700,9 @@ def list_bronze_datasets(
         msg = str(ve)
         if "not configured" in msg.lower():
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=msg)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg
+        )
 
 
 @router.post(
@@ -1749,7 +1751,9 @@ def import_from_bronze(
         msg = str(ve)
         if "not configured" in msg.lower():
             raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=msg)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg
+        )
 
     available_map = {x.lower(): x for x in available}
     file_name = available_map.get(requested_name.lower())
