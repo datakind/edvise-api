@@ -233,7 +233,7 @@ class DatabricksControl(BaseModel):
         csvs.sort()
         return csvs
 
-    def download_bronze_volume_file(self, inst_name: str, file_name: str) -> IO[bytes]:
+    def download_bronze_volume_file(self, inst_name: str, file_name: str) -> Any:
         """Download a file from the institution's bronze volume root and return a byte stream."""
         if "/" in file_name:
             raise ValueError("file_name must not contain '/'.")
