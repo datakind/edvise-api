@@ -16,7 +16,7 @@ from google.api_core import exceptions as gcs_errors
 from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
-from typing import List, Any, Dict, Optional, IO
+from typing import List, Any, Dict, Optional
 from fastapi import HTTPException
 import requests
 import hashlib
