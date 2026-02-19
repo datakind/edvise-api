@@ -1,6 +1,14 @@
 # Cloud Build config for webapp (dev-webapp trigger).
 # _REGION and _ENVIRONMENT are set by the trigger (Terraform).
 steps:
+  - name: ghcr.io/astral-sh/uv:debian
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        apt-get update && apt-get install -y --no-install-recommends git
+        uv lock --upgrade-package edvise
   - name: gcr.io/cloud-builders/docker
     args:
       - build
