@@ -1706,7 +1706,7 @@ def list_bronze_datasets(
 
 
 @router.post(
-    "/{inst_id}/input/import-from-bronze",
+    "/{inst_id}/input/upload-from-volume-to-gcs-bucket",
     response_model=BronzeImportResponse,
 )
 def upload_from_volume_to_gcs_bucket(

@@ -313,12 +313,14 @@ def test_list_bronze_datasets(client: TestClient) -> Any:
 
 
 def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
-    """Test POST /institutions/<uuid>/input/import-from-bronze."""
+    """Test POST /institutions/<uuid>/input/upload-from-volume-to-gcs-bucket."""
     MOCK_DATABRICKS.reset_mock()
     MOCK_STORAGE.reset_mock()
 
     response = client.post(
-        "/institutions/" + uuid_to_str(UUID_INVALID) + "/input/import-from-bronze",
+        "/institutions/"
+        + uuid_to_str(UUID_INVALID)
+        + "/input/upload-from-volume-to-gcs-bucket",
         json={"name": "file.csv"},
     )
     assert response.status_code == 401
@@ -334,7 +336,7 @@ def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
         response = client.post(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
-            + "/input/import-from-bronze",
+            + "/input/upload-from-volume-to-gcs-bucket",
             json={"name": "file.csv"},
         )
         assert response.status_code == 200
