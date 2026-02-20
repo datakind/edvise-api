@@ -198,6 +198,7 @@ def test_validate_pdp_with_edvise_read_schema_errors_converted_to_hard_validatio
     bad_df = pd.DataFrame(
         {"institution_id": [1], "cohort": ["x"], "student_guid": ["y"]}
     )
+    schema_err_to_raise: SchemaErrors | None = None
     try:
         RawPDPCohortDataSchema.validate(bad_df, lazy=True)  # type: ignore[attr-defined]
     except SchemaErrors as real_err:
@@ -206,6 +207,7 @@ def test_validate_pdp_with_edvise_read_schema_errors_converted_to_hard_validatio
         pytest.skip(
             "RawPDPCohortDataSchema did not raise SchemaErrors for minimal bad df"
         )
+    assert schema_err_to_raise is not None
 
     with patch(
         "src.webapp.validation.read_raw_pdp_cohort_data",
