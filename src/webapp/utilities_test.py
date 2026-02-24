@@ -7,8 +7,8 @@ from .utilities import (
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
     uuid_to_str,
-    databricksify_inst_name,
 )
+from edvise.utils.api_requests import databricksify_inst_name
 
 from .test_helper import USR, DATAKINDER, VIEWER, UUID_INVALID, USER_VALID_INST_UUID
 
@@ -71,4 +71,4 @@ def test_databricksify_inst_name():
 
     with pytest.raises(ValueError) as err:
         databricksify_inst_name("Northwest (invalid)")
-    assert str(err.value) == "Unexpected character found in Databricks compatible name."
+    assert "Unexpected character found in Databricks compatible name" in str(err.value)
