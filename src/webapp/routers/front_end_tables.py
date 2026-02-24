@@ -17,7 +17,7 @@ from ..utilities import (
     str_to_uuid,
     get_current_active_user,
 )
-from edvise.utils.api_requests import databricksify_inst_name
+from edvise.utils.databricks import databricksify_inst_name
 
 from ..database import (
     get_session,
