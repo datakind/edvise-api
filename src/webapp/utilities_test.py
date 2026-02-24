@@ -8,7 +8,6 @@ from .utilities import (
     has_full_data_access_or_err,
     uuid_to_str,
 )
-from edvise.utils.api_requests import databricksify_inst_name
 
 from .test_helper import USR, DATAKINDER, VIEWER, UUID_INVALID, USER_VALID_INST_UUID
 
@@ -41,34 +40,3 @@ def test_has_full_data_access_or_err():
         has_full_data_access_or_err(VIEWER, "models")
     assert err.value.status_code == 401
     assert err.value.detail == "Not authorized to view models for this institution."
-
-
-def test_databricksify_inst_name():
-    """
-    Testing databricksifying institution name
-    """
-    assert (
-        databricksify_inst_name("Motlow State Community College") == "motlow_state_cc"
-    )
-    assert (
-        databricksify_inst_name("Metro State University Denver")
-        == "metro_state_uni_denver"
-    )
-    assert databricksify_inst_name("Kentucky State University") == "kentucky_state_uni"
-    assert databricksify_inst_name("Central Arizona College") == "central_arizona_col"
-    assert (
-        databricksify_inst_name("Harrisburg University of Science and Technology")
-        == "harrisburg_uni_st"
-    )
-    assert (
-        databricksify_inst_name("Southeast Kentucky community technical college")
-        == "southeast_kentucky_ctc"
-    )
-    assert (
-        databricksify_inst_name("Northwest State Community College")
-        == "northwest_state_cc"
-    )
-
-    with pytest.raises(ValueError) as err:
-        databricksify_inst_name("Northwest (invalid)")
-    assert "Unexpected character found in Databricks compatible name" in str(err.value)
