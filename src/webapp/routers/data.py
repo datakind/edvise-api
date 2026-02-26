@@ -19,6 +19,7 @@ from cachetools import TTLCache
 
 from ..utilities import (
     has_access_to_inst_or_err,
+    has_at_most_one_school_type,
     has_full_data_access_or_err,
     BaseUser,
     model_owner_and_higher_or_err,
@@ -1361,14 +1362,15 @@ def validation_helper(
     # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
-    if pdp_id and edvise_id:
+    legacy_id = getattr(inst, "legacy_id", None)
+    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution configuration error: cannot have both pdp_id and edvise_id set",
+            detail="Institution configuration error: cannot have more than one of pdp_id, edvise_id, or legacy_id set",
         )
 
     # schema_namespace is the key into extension_schema["institutions"] during
-    # validation so merge_model_columns uses the correct block (edvise / pdp / inst).
+    # validation so merge_model_columns uses the correct block (edvise / pdp / inst / legacy).
     if edvise_id:
         # Edvise institutions: use active Edvise extension (cached)
         schema_namespace = "edvise"
@@ -1413,6 +1415,10 @@ def validation_helper(
                 detail="PDP schema not found for institution with pdp_id. Please ensure an active PDP schema extension is registered.",
             )
         updated_inst_schema = inst_schema
+    elif legacy_id:
+        # Legacy institutions: any-format uploads (no schema validation)
+        schema_namespace = "legacy"
+        updated_inst_schema = None
     else:
         # custom institutions: try cached extension first
         schema_namespace = str(getattr(inst, "id", ""))

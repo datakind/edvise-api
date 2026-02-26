@@ -882,6 +882,80 @@ def test_get_eda_data_success(
 EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EDVISE_INST_2_UUID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 EDVISE_SCHEMA_UUID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+LEGACY_INST_UUID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+
+
+@pytest.fixture(name="legacy_session")
+def legacy_session_fixture():
+    """Database setup for Legacy (any-format) tests: one institution with legacy_id."""
+    engine = sqlalchemy.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    try:
+        with sqlalchemy.orm.Session(engine) as session:
+            session.add_all(
+                [
+                    InstTable(
+                        id=LEGACY_INST_UUID,
+                        name="legacy_school",
+                        legacy_id="legacy123",
+                        pdp_id=None,
+                        edvise_id=None,
+                        schemas=["STUDENT", "COURSE"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.base,
+                        is_pdp=False,
+                        is_edvise=False,
+                        version_label="1.0.0",
+                        json_doc={"version": "1.0.0", "base": {"data_models": {}}},
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                ]
+            )
+            session.commit()
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(name="legacy_client")
+def legacy_client_fixture(
+    legacy_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> Any:
+    """Test client for Legacy institution tests."""
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    def get_session_override():
+        return legacy_session
+
+    def get_current_active_user_override():
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            None,
+            AccessType.DATAKINDER,
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(name="edvise_session")
@@ -1030,6 +1104,26 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
 
+def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
+    """Test file upload validation uses legacy (any-format) path when legacy_id is set."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+    response = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/legacy_student_data.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "legacy_student_data.csv"
+    assert response.json()["file_types"] == ["STUDENT"]
+    assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "legacy"
+
+
 def test_validation_helper_edvise_schema_not_found(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
@@ -1088,7 +1182,7 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
     )
 
     assert response.status_code == 500
-    assert "cannot have both pdp_id and edvise_id set" in response.json()["detail"]
+    assert "cannot have more than one of pdp_id, edvise_id, or legacy_id set" in response.json()["detail"]
 
     # Restore for other tests
     corrupted_inst.pdp_id = None  # type: ignore

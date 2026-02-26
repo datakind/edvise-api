@@ -11,6 +11,7 @@ from sqlalchemy import and_, delete, func
 
 from ..utilities import (
     has_access_to_inst_or_err,
+    has_at_most_one_school_type,
     BaseUser,
     AccessType,
     get_external_bucket_name_from_uuid,
@@ -20,6 +21,7 @@ from ..utilities import (
     SchemaType,
     PDP_SCHEMA_GROUP,
     EDVISE_SCHEMA_GROUP,
+    LEGACY_SCHEMA_GROUP,
     UsState,
     get_external_bucket_name,
 )
@@ -58,6 +60,8 @@ class InstitutionCreationRequest(BaseModel):
     # Note: is_edvise is kept for backward compatibility but is ignored. Edvise status is derived from edvise_id presence.
     is_edvise: bool | None = None
     edvise_id: str | None = None
+    # Legacy schools: upload data in any format (no strict schema validation).
+    legacy_id: str | None = None
     retention_days: int | None = None
 
 
@@ -72,6 +76,7 @@ class Institution(BaseModel):
     retention_days: int | None = None  # In Days
     pdp_id: str | None = None
     edvise_id: str | None = None
+    legacy_id: str | None = None
 
 
 @router.get("/institutions", response_model=list[Institution])
@@ -100,6 +105,7 @@ def read_all_inst(
                 "retention_days": elem[0].retention_days,
                 "pdp_id": None if elem[0].pdp_id is None else elem[0].pdp_id,
                 "edvise_id": None if elem[0].edvise_id is None else elem[0].edvise_id,
+                "legacy_id": None if elem[0].legacy_id is None else elem[0].legacy_id,
             }
         )
     return res
@@ -131,11 +137,11 @@ def create_institution(
     # Strip whitespace and convert empty strings to None
     pdp_id = (req.pdp_id or "").strip() or None
     edvise_id = (req.edvise_id or "").strip() or None
-    # Validate mutual exclusivity: cannot be both PDP and Edvise
-    if pdp_id and edvise_id:
+    legacy_id = (req.legacy_id or "").strip() or None
+    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be both PDP and Edvise. Please choose one schema type.",
+            detail="An institution cannot be more than one of PDP, Edvise, or Legacy. Please choose one schema type.",
         )
 
     pattern = "^[A-Za-z0-9&_ -]*$"
@@ -166,7 +172,10 @@ def create_institution(
         # Derive Edvise status from edvise_id presence (ignore is_edvise for backward compat)
         if edvise_id:
             requested_schemas += EDVISE_SCHEMA_GROUP
-        # if no schema is set and neither PDP nor Edvise is set, we default to custom.
+        # Derive Legacy status from legacy_id presence (any-format uploads)
+        if legacy_id:
+            requested_schemas += LEGACY_SCHEMA_GROUP
+        # if no schema is set and neither PDP nor Edvise nor Legacy is set, we default to custom.
         if not requested_schemas:
             requested_schemas = [SchemaType.UNKNOWN]
         local_session.get().add(
@@ -175,6 +184,7 @@ def create_institution(
                 retention_days=req.retention_days,
                 pdp_id=pdp_id,
                 edvise_id=edvise_id,
+                legacy_id=legacy_id,
                 # Sets aren't json serializable, so turn them into lists first
                 schemas=list(set(requested_schemas)),
                 allowed_emails=req.allowed_emails,
@@ -225,6 +235,7 @@ def create_institution(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
         "retention_days": query_result[0][0].retention_days,
     }
 
@@ -274,7 +285,9 @@ def update_inst(
         update_data["pdp_id"] = (update_data["pdp_id"] or "").strip() or None
     if "edvise_id" in update_data:
         update_data["edvise_id"] = (update_data["edvise_id"] or "").strip() or None
-    # Validate mutual exclusivity: cannot be both PDP and Edvise
+    if "legacy_id" in update_data:
+        update_data["legacy_id"] = (update_data["legacy_id"] or "").strip() or None
+    # Validate mutual exclusivity: at most one of PDP, Edvise, or Legacy
     final_pdp_id = (
         update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
     )
@@ -283,10 +296,17 @@ def update_inst(
         if "edvise_id" in update_data
         else existing_inst.edvise_id
     )
-    if final_pdp_id and final_edvise_id:
+    final_legacy_id = (
+        update_data.get("legacy_id")
+        if "legacy_id" in update_data
+        else existing_inst.legacy_id
+    )
+    if not has_at_most_one_school_type(
+        final_pdp_id, final_edvise_id, final_legacy_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be both PDP and Edvise. Please choose one schema type.",
+            detail="An institution cannot be more than one of PDP, Edvise, or Legacy. Please choose one schema type.",
         )
 
     if "state" in update_data:
@@ -301,6 +321,8 @@ def update_inst(
     # Note: is_edvise is ignored - Edvise status is derived from edvise_id presence
     if "edvise_id" in update_data:
         existing_inst.edvise_id = update_data["edvise_id"]
+    if "legacy_id" in update_data:
+        existing_inst.legacy_id = update_data["legacy_id"]
     if "retention_days" in update_data:
         existing_inst.retention_days = update_data["retention_days"]
 
@@ -320,6 +342,7 @@ def update_inst(
         "state": res[0][0].state,
         "pdp_id": res[0][0].pdp_id,
         "edvise_id": res[0][0].edvise_id,
+        "legacy_id": res[0][0].legacy_id,
         "retention_days": res[0][0].retention_days,
     }
 
@@ -420,6 +443,7 @@ def read_inst_name(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
     }
 
 
@@ -455,6 +479,7 @@ def read_inst_pdp_id(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
     }
 
 
@@ -492,4 +517,5 @@ def read_inst_id(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
     }

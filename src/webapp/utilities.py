@@ -152,6 +152,25 @@ EDVISE_SCHEMA_GROUP: Final = {
     SchemaType.COURSE,
 }
 
+LEGACY_SCHEMA_GROUP: Final = {
+    SchemaType.STUDENT,
+    SchemaType.COURSE,
+}
+
+
+def has_at_most_one_school_type(
+    pdp_id: str | None,
+    edvise_id: str | None,
+    legacy_id: str | None,
+) -> bool:
+    """
+    Return True if at most one of pdp_id, edvise_id, or legacy_id is set.
+
+    Used to enforce mutual exclusivity: an institution must be exactly one
+    of PDP, Edvise, or Legacy (or none, for custom).
+    """
+    return sum(bool(x) for x in (pdp_id, edvise_id, legacy_id)) <= 1
+
 
 class BaseUser(BaseModel):
     """BaseUser represents an access type. The frontend will include more detailed User info."""

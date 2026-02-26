@@ -169,10 +169,11 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
     response = datakinder_client.get("/institutions")
     assert response.status_code == 200
     data = response.json()
-    # Verify all institutions have edvise_id field
+    # Verify all institutions have edvise_id, pdp_id, and legacy_id fields
     for inst in data:
         assert "edvise_id" in inst
         assert "pdp_id" in inst
+        assert "legacy_id" in inst
     # Verify specific expected values
     assert len(data) == 4  # UUID_1, UUID_2, UUID_3, USER_VALID_INST_UUID
     school_1 = next(i for i in data if i["name"] == "school_1")
@@ -187,6 +188,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "school_1",
             "pdp_id": "456",
             "edvise_id": None,
+            "legacy_id": None,
             "retention_days": None,
             "state": "GA",
         },
@@ -195,6 +197,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "school_2",
             "pdp_id": None,
             "edvise_id": None,
+            "legacy_id": None,
             "retention_days": None,
             "state": None,
         },
@@ -203,6 +206,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "valid_school",
             "pdp_id": "12345",
             "edvise_id": None,
+            "legacy_id": None,
             "retention_days": None,
             "state": "NY",
         },
@@ -211,6 +215,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "edvise_test_school",
             "pdp_id": None,
             "edvise_id": "edvise456",
+            "legacy_id": None,
             "retention_days": None,
             "state": "CA",
         },
@@ -456,7 +461,7 @@ def test_create_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> 
 
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 400
-    assert "cannot be both PDP and Edvise" in response.json()["detail"]
+    assert "Please choose one schema type" in response.json()["detail"]
 
 
 def test_create_inst_empty_string_normalization(datakinder_client: TestClient) -> None:
@@ -610,7 +615,7 @@ def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> 
         json={"pdp_id": "pdp123", "edvise_id": "edvise456"},
     )
     assert response.status_code == 400
-    assert "cannot be both PDP and Edvise" in response.json()["detail"]
+    assert "Please choose one schema type" in response.json()["detail"]
 
 
 def test_update_inst_clear_edvise_id(datakinder_client: TestClient) -> None:
@@ -764,7 +769,7 @@ def test_update_inst_final_state_validation(datakinder_client: TestClient) -> No
         json={"edvise_id": "edvise999"},  # Try to add Edvise
     )
     assert response.status_code == 400
-    assert "cannot be both PDP and Edvise" in response.json()["detail"]
+    assert "Please choose one schema type" in response.json()["detail"]
 
 
 # ============================================================================

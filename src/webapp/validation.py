@@ -57,8 +57,8 @@ def validate_file_reader(
         allowed_schema: List of model names to validate against.
         base_schema: Base schema dict (e.g. base.data_models).
         inst_schema: Optional extension schema with institutions.* blocks.
-        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
-            institution UUID for custom. Default "pdp" for backward compatibility.
+        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
+            "legacy" (any-format), or institution UUID for custom. Default "pdp".
         institution_identifier: Optional institution identifier (e.g. UUID) for display/context.
 
     Returns:
@@ -905,6 +905,59 @@ def _validate_pdp_with_edvise_read(
 # --------------------------------------------------------------------------- #
 
 
+def _validate_legacy_any_format(
+    filename: Src,
+    enc: str,
+    models: Union[str, List[str], None],
+) -> Dict[str, Any]:
+    """
+    Legacy institutions: accept any CSV format (encoding check only, no schema).
+
+    Reads the file as CSV with no column or type checks; returns the DataFrame
+    as-is as normalized_df so it can be written to validated/.
+
+    Args:
+        filename: Path or file-like object for the CSV.
+        enc: Encoding already sniffed for the file.
+        models: Allowed schema names (e.g. ["STUDENT"]); used for response only.
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
+        and normalized_df (the DataFrame as read, or empty if read failed/empty).
+
+    Raises:
+        HardValidationError: If the file cannot be read or parsed as CSV.
+    """
+    if models is None:
+        model_list: List[str] = ["UNKNOWN"]
+    elif isinstance(models, str):
+        model_list = [models]
+    else:
+        model_list = list(models)
+    if not model_list:
+        model_list = ["UNKNOWN"]
+
+    with _path_for_edvise_read(filename, enc) as path:
+        read_enc = "utf-8" if not isinstance(filename, (str, os.PathLike)) else enc
+        try:
+            df = pd.read_csv(path, encoding=read_enc)
+        except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeDecodeError, OSError) as e:
+            logger.exception("Legacy CSV read failed: %s", e)
+            raise HardValidationError(
+                schema_errors="Legacy upload: could not read CSV.",
+                failure_cases=[str(e)],
+            ) from e
+    if df is None or not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame()
+    return {
+        "validation_status": "passed",
+        "schemas": model_list,
+        "missing_optional": [],
+        "unknown_extra_columns": [],
+        "normalized_df": df,
+    }
+
+
 def validate_dataset(
     filename: Src,
     base_schema: dict,
@@ -920,12 +973,16 @@ def validate_dataset(
     (if applicable) or JSON-based validation. Returns dict with validation_status,
     schemas, normalized_df (or None if empty merged_specs). Raises HardValidationError
     on failure; UnicodeError if encoding is not UTF-8/UTF-16/UTF-32.
+    Legacy institutions (institution_id=="legacy"): accept any format (encoding + CSV read only).
     """
     try:
         enc = sniff_encoding(filename)
     except UnicodeError as ex:
         raise HardValidationError(schema_errors="decode_error", failure_cases=[str(ex)])
     _reset_to_start_if_possible(filename)
+
+    if institution_id == "legacy":
+        return _validate_legacy_any_format(filename, enc, models)
 
     model_list, merged_specs = _compute_model_list_and_merged_specs(
         base_schema, ext_schema, institution_id, models

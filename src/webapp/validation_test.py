@@ -190,6 +190,25 @@ def test_validate_file_reader_uses_institution_id_for_extension_block(
         assert result_with_id["validation_status"] == "passed"
 
 
+def test_validate_file_reader_legacy_accepts_any_format(tmp_path: Path) -> None:
+    """Legacy institutions: any CSV format is accepted (encoding + read only, no schema)."""
+    csv_path = tmp_path / "any_columns.csv"
+    csv_path.write_text("a,b,c\n1,2,hello\n3,4,world", encoding="utf-8")
+    result = validate_file_reader(
+        str(csv_path),
+        ["STUDENT"],
+        base_schema=MOCK_BASE_SCHEMA,
+        inst_schema=None,
+        institution_id="legacy",
+    )
+    assert result["validation_status"] == "passed"
+    assert result["schemas"] == ["STUDENT"]
+    assert result["normalized_df"] is not None
+    df = result["normalized_df"]
+    assert list(df.columns) == ["a", "b", "c"]
+    assert len(df) == 2
+
+
 def test_validate_file_reader_csv_read_failure_raises_hard_validation_error(
     tmp_csv_file: str,
 ) -> None:
