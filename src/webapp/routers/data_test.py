@@ -29,7 +29,14 @@ from ..database import (
     get_session,
 )
 from ..utilities import uuid_to_str, get_current_active_user, SchemaType
-from .data import router, DataOverview, DataInfo
+from .data import (
+    router,
+    DataOverview,
+    DataInfo,
+    _infer_allowed_schemas_from_filename,
+    _ext_models_set,
+)
+from fastapi import HTTPException
 from ..gcsutil import StorageControl
 
 MOCK_STORAGE = mock.Mock()
@@ -1124,6 +1131,54 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert call_kwargs.get("institution_id") == "legacy"
 
 
+def test_validate_upload_rejects_empty_file_name(legacy_client: TestClient) -> None:
+    """Empty or whitespace-only file name returns 422."""
+    # Trailing space in path decodes to " "
+    response = legacy_client.post(
+        "/institutions/" + uuid_to_str(LEGACY_INST_UUID) + "/input/validate-upload/%20",
+    )
+    assert response.status_code == 422
+    assert (
+        "required" in response.json()["detail"].lower()
+        or "non-empty" in response.json()["detail"].lower()
+    )
+
+
+def test_validate_upload_invalid_inst_id_returns_404(legacy_client: TestClient) -> None:
+    """Invalid institution id (non-UUID) returns 404, not 500."""
+    response = legacy_client.post(
+        "/institutions/not-a-valid-uuid/input/validate-upload/foo.csv",
+    )
+    assert response.status_code == 404
+    assert (
+        "institution" in response.json()["detail"].lower()
+        or "invalid" in response.json()["detail"].lower()
+    )
+
+
+def test_validate_file_legacy_accepts_arbitrary_filename(
+    legacy_client: TestClient,
+) -> None:
+    """Legacy schools may use any filename; when inference fails, allowed_schemas is UNKNOWN."""
+    MOCK_STORAGE.validate_file.return_value = ["UNKNOWN"]
+
+    response = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/export_2024.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "export_2024.csv"
+    assert response.json()["file_types"] == ["UNKNOWN"]
+    assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    # allowed_schemas is passed positionally (args[2])
+    assert MOCK_STORAGE.validate_file.call_args.args[2] == ["UNKNOWN"]
+    assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "legacy"
+
+
 def test_validate_file_legacy_pii_rejection_returns_400(
     legacy_client: TestClient,
 ) -> None:
@@ -1147,6 +1202,141 @@ def test_validate_file_legacy_pii_rejection_returns_400(
 
     MOCK_STORAGE.validate_file.side_effect = None
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+
+# --- Unit tests for validation helpers ---
+
+
+def _make_inst(legacy_id: Any = None) -> Any:
+    """Minimal institution-like object for _infer_allowed_schemas_from_filename."""
+
+    class Inst:
+        legacy_id: Any = None
+
+    inst = Inst()
+    inst.legacy_id = legacy_id
+    return inst
+
+
+def test_infer_allowed_schemas_course_only() -> None:
+    """Filename with 'course' infers [COURSE]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("course_export.csv", inst) == ["COURSE"]
+
+
+def test_infer_allowed_schemas_student_only() -> None:
+    """Filename with 'student' infers [STUDENT]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("student_data.csv", inst) == ["STUDENT"]
+
+
+def test_infer_allowed_schemas_semester_only() -> None:
+    """Filename with 'semester' infers [SEMESTER]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("semester.csv", inst) == ["SEMESTER"]
+
+
+def test_infer_allowed_schemas_cohort_infers_student() -> None:
+    """Filename with 'cohort' (no course) infers [STUDENT]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("cohort_2024.csv", inst) == ["STUDENT"]
+
+
+def test_infer_allowed_schemas_multiple_keywords() -> None:
+    """Filename with student and course infers both, sorted."""
+    inst = _make_inst(legacy_id=None)
+    result = _infer_allowed_schemas_from_filename("student_course_combined.csv", inst)
+    assert sorted(result) == ["COURSE", "STUDENT"]
+
+
+def test_infer_allowed_schemas_legacy_arbitrary_returns_unknown() -> None:
+    """Legacy institution with non-descriptive filename gets [UNKNOWN]."""
+    inst = _make_inst(legacy_id="legacy_1")
+    assert _infer_allowed_schemas_from_filename("report_2024.csv", inst) == ["UNKNOWN"]
+
+
+def test_infer_allowed_schemas_non_legacy_arbitrary_raises_422() -> None:
+    """Non-legacy institution with non-descriptive filename raises 422."""
+    inst = _make_inst(legacy_id=None)
+    with pytest.raises(HTTPException) as exc_info:
+        _infer_allowed_schemas_from_filename("random.csv", inst)
+    assert exc_info.value.status_code == 422
+    assert "Could not infer model(s)" in exc_info.value.detail
+    assert "random" in exc_info.value.detail
+
+
+def test_ext_models_set_none_returns_empty() -> None:
+    """None doc returns empty set."""
+    inst = _make_inst()
+    assert _ext_models_set(None, inst, "inst-id") == set()
+
+
+def test_ext_models_set_root_data_models() -> None:
+    """Doc with root data_models returns lowercase keys."""
+    inst = _make_inst()
+    doc: dict[str, Any] = {"data_models": {"STUDENT": {}, "COURSE": {}}}
+    assert _ext_models_set(doc, inst, "x") == {"course", "student"}
+
+
+def test_ext_models_set_institutions_block() -> None:
+    """Doc with institutions[inst_id].data_models returns keys."""
+    inst = _make_inst()
+    inst.id = uuid.UUID("12345678-1234-1234-1234-123456789abc")  # type: ignore
+    doc: dict[str, Any] = {
+        "institutions": {
+            "12345678123412341234123456789abc": {
+                "data_models": {"student": {}, "course": {}},
+            }
+        }
+    }
+    assert _ext_models_set(doc, inst, "12345678123412341234123456789abc") == {
+        "course",
+        "student",
+    }
+
+
+def test_validate_edvise_non_descriptive_filename_returns_422(
+    edvise_client: TestClient,
+) -> None:
+    """Edvise institution with non-descriptive filename (no student/course/semester) returns 422."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/report_2024.csv",
+    )
+
+    assert response.status_code == 422
+    assert "Could not infer model(s)" in response.json()["detail"]
+    assert "report" in response.json()["detail"]
+
+
+def test_validate_upload_second_call_succeeds_and_idempotent(
+    legacy_client: TestClient,
+) -> None:
+    """Validating the same file twice returns 200 both times; no duplicate insert failure."""
+    MOCK_STORAGE.validate_file.return_value = ["UNKNOWN"]
+
+    response1 = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/duplicate_test.csv",
+    )
+    assert response1.status_code == 200
+    assert response1.json()["name"] == "duplicate_test.csv"
+    assert response1.json()["file_types"] == ["UNKNOWN"]
+
+    response2 = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/duplicate_test.csv",
+    )
+    assert response2.status_code == 200
+    # Second call hits existing-file path; response payload is unchanged (ValidationResult omits status)
+    assert response2.json()["name"] == response1.json()["name"]
+    assert response2.json()["file_types"] == response1.json()["file_types"]
+    assert response2.json()["inst_id"] == response1.json()["inst_id"]
 
 
 def test_validation_helper_edvise_schema_not_found(
