@@ -926,7 +926,9 @@ def _validate_legacy_any_format(
         and normalized_df (the DataFrame as read, or empty if read failed/empty).
 
     Raises:
-        HardValidationError: If the file cannot be read or parsed as CSV.
+        HardValidationError: If the file cannot be read or parsed as CSV, or if
+            column names indicate PII (e.g. email, ssn, first_name); such files
+            are rejected before being written to raw/ or validated/.
     """
     if models is None:
         model_list: List[str] = ["UNKNOWN"]
@@ -941,7 +943,12 @@ def _validate_legacy_any_format(
         read_enc = "utf-8" if not isinstance(filename, (str, os.PathLike)) else enc
         try:
             df = pd.read_csv(path, encoding=read_enc)
-        except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeDecodeError, OSError) as e:
+        except (
+            pd.errors.ParserError,
+            pd.errors.EmptyDataError,
+            UnicodeDecodeError,
+            OSError,
+        ) as e:
             logger.exception("Legacy CSV read failed: %s", e)
             raise HardValidationError(
                 schema_errors="Legacy upload: could not read CSV.",
@@ -949,6 +956,25 @@ def _validate_legacy_any_format(
             ) from e
     if df is None or not isinstance(df, pd.DataFrame):
         df = pd.DataFrame()
+
+    # PII check: reject legacy uploads that contain columns indicating PII (before moving to raw/validated)
+    if not df.empty and len(df.columns) > 0:
+        # Lazy import to avoid circular dependency: validation_error_formatter imports from this module.
+        from .validation_error_formatter import _is_pii_column
+
+        pii_columns = [str(c) for c in df.columns if _is_pii_column(str(c))]
+        if pii_columns:
+            logger.warning(
+                "Legacy upload rejected: PII columns detected: %s", pii_columns
+            )
+            raise HardValidationError(
+                schema_errors=(
+                    "Legacy upload: file contains columns that may contain personally identifiable information (PII). "
+                    "Please remove or de-identify these columns before uploading."
+                ),
+                failure_cases=pii_columns,
+            )
+
     return {
         "validation_status": "passed",
         "schemas": model_list,

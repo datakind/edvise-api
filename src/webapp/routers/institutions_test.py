@@ -525,26 +525,120 @@ def test_create_inst_backward_compatibility_is_pdp_ignored(
     assert data["pdp_id"] is None  # No PDP schema assigned
 
 
-def test_create_inst_backward_compatibility_is_edvise_ignored(
+def test_create_inst_auto_assign_edvise_id(
     datakinder_client: TestClient,
 ) -> None:
-    """Test POST /institutions - is_edvise flag is accepted but ignored."""
+    """Test POST /institutions - is_edvise=True with no edvise_id auto-assigns edvise_id."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # Send is_edvise=True but no edvise_id - should work (is_edvise ignored)
     request_data = {
-        "name": "backward_compat_edvise_test",
-        "is_edvise": True,  # Should be ignored
-        "edvise_id": None,  # No actual Edvise ID
+        "name": "auto_edvise_test",
+        "is_edvise": True,
+        "edvise_id": None,
     }
 
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 200
     data = response.json()
-    assert data["edvise_id"] is None  # No Edvise schema assigned
+    assert data["edvise_id"] is not None and data["edvise_id"].startswith("edvise_")
+    assert data["pdp_id"] is None
+    assert data["legacy_id"] is None
+
+
+def test_create_inst_auto_assign_legacy_id(
+    datakinder_client: TestClient,
+) -> None:
+    """Test POST /institutions - is_legacy=True with no legacy_id auto-assigns legacy_id."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    request_data = {
+        "name": "auto_legacy_test",
+        "is_legacy": True,
+        "legacy_id": None,
+    }
+
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["legacy_id"] == "legacy_1"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+
+
+def test_create_inst_reject_both_edvise_and_legacy(
+    datakinder_client: TestClient,
+) -> None:
+    """Test POST /institutions - is_edvise and is_legacy both True returns 400."""
+    request_data = {
+        "name": "both_types_test",
+        "is_edvise": True,
+        "is_legacy": True,
+    }
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 400
+    assert "cannot be more than one" in response.json()["detail"]
+
+
+def test_create_inst_with_legacy_id_explicit(datakinder_client: TestClient) -> None:
+    """Test POST /institutions with explicit legacy_id (no auto-assign)."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    request_data = {
+        "name": "explicit_legacy_school",
+        "state": "TX",
+        "legacy_id": "custom_legacy_123",
+    }
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["legacy_id"] == "custom_legacy_123"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+
+
+def test_create_inst_storage_bucket_fails(datakinder_client: TestClient) -> None:
+    """Test POST /institutions returns 500 when storage bucket creation raises."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.side_effect = ValueError("Bucket already exists")
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "school_bucket_fail", "state": "NY"},
+    )
+    assert response.status_code == 500
+    assert "Storage bucket creation failed" in response.json()["detail"]
+
+    MOCK_STORAGE.create_bucket.side_effect = None
+
+
+def test_create_inst_databricks_setup_fails(datakinder_client: TestClient) -> None:
+    """Test POST /institutions returns 500 when Databricks setup raises."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.side_effect = Exception(
+        "Databricks connection failed"
+    )
+
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "school_dbc_fail", "state": "CA"},
+    )
+    assert response.status_code == 500
+    assert "Databricks setup failed" in response.json()["detail"]
+
+    MOCK_DATABRICKS.setup_new_inst.side_effect = None
 
 
 # ============================================================================
@@ -567,6 +661,23 @@ def test_update_inst_add_edvise_id(datakinder_client: TestClient) -> None:
     data = response.json()
     assert data["edvise_id"] == "new_edvise_id"
     assert data["pdp_id"] is None
+
+
+def test_update_inst_add_legacy_id(datakinder_client: TestClient) -> None:
+    """Test PATCH /institutions - add legacy_id to existing custom institution."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_2),
+        json={"legacy_id": "legacy_abc"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["legacy_id"] == "legacy_abc"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
 
 
 def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient) -> None:

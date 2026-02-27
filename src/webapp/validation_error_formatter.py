@@ -66,7 +66,7 @@ PII_MEDIUM_RISK_INDICATORS = {
     "middle_name",
     "full_name",
     "address",
-    "student_id",  # Even if de-identified, treat as sensitive
+    # Note: student_id is excluded; it is a standard de-identified identifier for all institution types.
     # Note: Patterns like "student_name", "employee_name", "guardian_name" will
     # be caught because they contain "name" as a token, but we check
     # false positives first
@@ -75,6 +75,7 @@ PII_MEDIUM_RISK_INDICATORS = {
 # Common non-PII column name patterns that should NOT be flagged
 # These are compound names where a PII indicator appears but isn't actually PII
 PII_FALSE_POSITIVE_PATTERNS = {
+    "student_id",  # Standard de-identified identifier for all institution types
     "course_name",
     "school_name",
     "district_name",

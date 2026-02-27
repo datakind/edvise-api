@@ -1124,6 +1124,31 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert call_kwargs.get("institution_id") == "legacy"
 
 
+def test_validate_file_legacy_pii_rejection_returns_400(
+    legacy_client: TestClient,
+) -> None:
+    """When legacy validation raises HardValidationError (e.g. PII columns), API returns 400."""
+    from ..validation import HardValidationError
+
+    MOCK_STORAGE.validate_file.side_effect = HardValidationError(
+        schema_errors="Legacy upload: file contains columns that may contain personally identifiable information (PII).",
+        failure_cases=["email", "first_name"],
+    )
+
+    response = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/legacy_student_data.csv",
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "PII" in detail or "personally" in detail.lower()
+
+    MOCK_STORAGE.validate_file.side_effect = None
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+
 def test_validation_helper_edvise_schema_not_found(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
@@ -1182,7 +1207,10 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
     )
 
     assert response.status_code == 500
-    assert "cannot have more than one of pdp_id, edvise_id, or legacy_id set" in response.json()["detail"]
+    assert (
+        "cannot have more than one of pdp_id, edvise_id, or legacy_id set"
+        in response.json()["detail"]
+    )
 
     # Restore for other tests
     corrupted_inst.pdp_id = None  # type: ignore

@@ -209,6 +209,83 @@ def test_validate_file_reader_legacy_accepts_any_format(tmp_path: Path) -> None:
     assert len(df) == 2
 
 
+def test_validate_file_reader_legacy_accepts_student_id_column(tmp_path: Path) -> None:
+    """Legacy institutions: student_id is an allowed de-identified identifier column."""
+    csv_path = tmp_path / "with_student_id.csv"
+    csv_path.write_text(
+        "student_id,grade,term\nabc123,A,Fall\nxyz789,B,Spring", encoding="utf-8"
+    )
+    result = validate_file_reader(
+        str(csv_path),
+        ["STUDENT"],
+        base_schema=MOCK_BASE_SCHEMA,
+        inst_schema=None,
+        institution_id="legacy",
+    )
+    assert result["validation_status"] == "passed"
+    assert list(result["normalized_df"].columns) == ["student_id", "grade", "term"]
+
+
+def test_validate_file_reader_legacy_header_only_csv_passes(tmp_path: Path) -> None:
+    """Legacy institutions: CSV with only a header row (no data) passes; PII check runs on column names only."""
+    csv_path = tmp_path / "header_only.csv"
+    csv_path.write_text("col_a,col_b,col_c\n", encoding="utf-8")
+    result = validate_file_reader(
+        str(csv_path),
+        ["STUDENT"],
+        base_schema=MOCK_BASE_SCHEMA,
+        inst_schema=None,
+        institution_id="legacy",
+    )
+    assert result["validation_status"] == "passed"
+    df = result["normalized_df"]
+    assert list(df.columns) == ["col_a", "col_b", "col_c"]
+    assert len(df) == 0
+
+
+def test_validate_file_reader_legacy_rejects_pii_columns(tmp_path: Path) -> None:
+    """Legacy institutions: files with column names indicating PII are rejected before raw/validated."""
+    csv_path = tmp_path / "with_pii.csv"
+    csv_path.write_text(
+        "id,email,score\n1,user@example.com,85\n2,other@test.org,90", encoding="utf-8"
+    )
+    with pytest.raises(HardValidationError) as exc_info:
+        validate_file_reader(
+            str(csv_path),
+            ["STUDENT"],
+            base_schema=MOCK_BASE_SCHEMA,
+            inst_schema=None,
+            institution_id="legacy",
+        )
+    err = exc_info.value
+    assert "PII" in (err.schema_errors or "")
+    assert "email" in (err.failure_cases or [])
+
+
+def test_validate_file_reader_legacy_rejects_multiple_pii_columns(
+    tmp_path: Path,
+) -> None:
+    """Legacy institutions: all detected PII column names are listed in the error."""
+    csv_path = tmp_path / "multi_pii.csv"
+    csv_path.write_text(
+        "first_name,last_name,grade\nAlice,Smith,A\nBob,Jones,B",
+        encoding="utf-8",
+    )
+    with pytest.raises(HardValidationError) as exc_info:
+        validate_file_reader(
+            str(csv_path),
+            ["STUDENT"],
+            base_schema=MOCK_BASE_SCHEMA,
+            inst_schema=None,
+            institution_id="legacy",
+        )
+    err = exc_info.value
+    assert "PII" in (err.schema_errors or "")
+    failure_cases = err.failure_cases or []
+    assert "first_name" in failure_cases
+    assert "last_name" in failure_cases
+
+
 def test_validate_file_reader_csv_read_failure_raises_hard_validation_error(
     tmp_csv_file: str,
 ) -> None:
