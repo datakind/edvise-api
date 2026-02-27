@@ -243,6 +243,27 @@ def test_validate_file_reader_legacy_header_only_csv_passes(tmp_path: Path) -> N
     assert len(df) == 0
 
 
+def test_validate_file_reader_legacy_rejects_header_only_pii_columns(
+    tmp_path: Path,
+) -> None:
+    """Legacy institutions: header-only CSV with PII column names is rejected (no data rows)."""
+    csv_path = tmp_path / "header_only_pii.csv"
+    csv_path.write_text("email,ssn\n", encoding="utf-8")
+    with pytest.raises(HardValidationError) as exc_info:
+        validate_file_reader(
+            str(csv_path),
+            ["STUDENT"],
+            base_schema=MOCK_BASE_SCHEMA,
+            inst_schema=None,
+            institution_id="legacy",
+        )
+    err = exc_info.value
+    assert "PII" in (err.schema_errors or "")
+    failure_cases = err.failure_cases or []
+    assert "email" in failure_cases
+    assert "ssn" in failure_cases
+
+
 def test_validate_file_reader_legacy_rejects_pii_columns(tmp_path: Path) -> None:
     """Legacy institutions: files with column names indicating PII are rejected before raw/validated."""
     csv_path = tmp_path / "with_pii.csv"

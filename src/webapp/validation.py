@@ -957,8 +957,9 @@ def _validate_legacy_any_format(
     if df is None or not isinstance(df, pd.DataFrame):
         df = pd.DataFrame()
 
-    # PII check: reject legacy uploads that contain columns indicating PII (before moving to raw/validated)
-    if not df.empty and len(df.columns) > 0:
+    # PII check: reject legacy uploads that contain columns indicating PII (before moving to raw/validated).
+    # Run whenever there are columns (including header-only CSVs: df.empty is True for 0 rows).
+    if len(df.columns) > 0:
         # Lazy import to avoid circular dependency: validation_error_formatter imports from this module.
         from .validation_error_formatter import _is_pii_column
 
