@@ -1372,7 +1372,7 @@ def validation_helper(
     # schema_namespace is the key into extension_schema["institutions"] during
     # validation so merge_model_columns uses the correct block (edvise / pdp / inst / legacy).
     if edvise_id:
-        # Edvise institutions: use active Edvise extension (cached)
+        # Edvise Schema (ES) institutions: use active Edvise Schema (ES) extension (cached)
         schema_namespace = "edvise"
         edvise_exp, edvise_doc = STATE._edvise_cache
         if now < edvise_exp and edvise_doc is not None:
@@ -1390,7 +1390,7 @@ def validation_helper(
         if inst_schema is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Edvise schema not found for institution with edvise_id. Please ensure an active Edvise schema extension is registered.",
+                detail="Edvise Schema (ES) not found for institution with edvise_id. Please ensure an active Edvise Schema (ES) extension is registered.",
             )
         updated_inst_schema = inst_schema
     elif pdp_id:

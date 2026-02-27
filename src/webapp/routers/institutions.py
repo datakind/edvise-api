@@ -118,7 +118,7 @@ def _request_has_more_than_one_school_type(
     edvise_id: Optional[str],
     legacy_id: Optional[str],
 ) -> bool:
-    """Return True if the request indicates more than one of PDP, Edvise, or Legacy."""
+    """Return True if the request indicates more than one of PDP, Edvise Schema (ES), or Legacy."""
     pdp_set = bool(pdp_id)
     edvise_set = bool(req.is_edvise) or bool(edvise_id)
     legacy_set = bool(req.is_legacy) or bool(legacy_id)
@@ -200,7 +200,7 @@ def _validate_and_prepare_create_institution(
     if _request_has_more_than_one_school_type(req, pdp_id, edvise_id, legacy_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise, or Legacy. Please choose one schema type.",
+            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
         )
     local_session.set(sql_session)
     sess = local_session.get()
@@ -210,7 +210,7 @@ def _validate_and_prepare_create_institution(
     if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise, or Legacy. Please choose one schema type.",
+            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
         )
     if not re.match(r"^[A-Za-z0-9&_ -]*$", req.name):
         raise HTTPException(
@@ -384,7 +384,7 @@ def update_inst(
         update_data["edvise_id"] = (update_data["edvise_id"] or "").strip() or None
     if "legacy_id" in update_data:
         update_data["legacy_id"] = (update_data["legacy_id"] or "").strip() or None
-    # Validate mutual exclusivity: at most one of PDP, Edvise, or Legacy
+    # Validate mutual exclusivity: at most one of PDP, Edvise Schema (ES), or Legacy
     final_pdp_id = (
         update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
     )
@@ -401,7 +401,7 @@ def update_inst(
     if not has_at_most_one_school_type(final_pdp_id, final_edvise_id, final_legacy_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise, or Legacy. Please choose one schema type.",
+            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
         )
 
     if "state" in update_data:
@@ -413,7 +413,7 @@ def update_inst(
     # Note: is_pdp is ignored - PDP status is derived from pdp_id presence
     if "pdp_id" in update_data:
         existing_inst.pdp_id = update_data["pdp_id"]
-    # Note: is_edvise is ignored - Edvise status is derived from edvise_id presence
+    # Note: is_edvise is ignored - Edvise Schema (ES) status is derived from edvise_id presence
     if "edvise_id" in update_data:
         existing_inst.edvise_id = update_data["edvise_id"]
     if "legacy_id" in update_data:

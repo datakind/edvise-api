@@ -1297,7 +1297,7 @@ def _format_check_error(check_type: str, spec: dict, value: Any) -> str:
     if base_check_type == "nullable":
         return "Value validation failed"
 
-    # PDP/Edvise schema check names (same validation as edvise repo)
+    # PDP/Edvise Schema (ES) check names (same validation as edvise repo)
     if base_check_type in PDP_EDVISE_CHECK_MESSAGES:
         return PDP_EDVISE_CHECK_MESSAGES[base_check_type]
 

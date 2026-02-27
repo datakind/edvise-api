@@ -960,7 +960,7 @@ def legacy_client_fixture(
 
 @pytest.fixture(name="edvise_session")
 def edvise_session_fixture():
-    """Unit test database setup for Edvise tests."""
+    """Unit test database setup for Edvise Schema (ES) tests."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -968,7 +968,7 @@ def edvise_session_fixture():
     )
     Base.metadata.create_all(engine)
 
-    # Mock Edvise schema extension
+    # Mock Edvise Schema (ES) extension (schema type, not product)
     edvise_schema_doc = {
         "version": "1.0.0",
         "institutions": {
@@ -1047,7 +1047,7 @@ def edvise_session_fixture():
 def edvise_client_fixture(
     edvise_session: sqlalchemy.orm.Session, monkeypatch: Any
 ) -> Any:
-    """Unit test mocks setup for Edvise tests."""
+    """Unit test mocks setup for Edvise Schema (ES) tests."""
     monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
 
     def get_session_override():
@@ -1055,7 +1055,7 @@ def edvise_client_fixture(
 
     def get_current_active_user_override():
         # Create DATAKINDER user with access to all institutions (needed for tests
-        # that access multiple Edvise institutions)
+        # that access multiple Edvise Schema (ES) institutions)
         from ..utilities import AccessType, BaseUser
 
         return BaseUser(
@@ -1083,7 +1083,7 @@ def edvise_client_fixture(
 
 
 def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
-    """Test file upload validation uses Edvise schema when edvise_id is set."""
+    """Test file upload validation uses Edvise Schema (ES) when edvise_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
 
     response = edvise_client.post(
@@ -1098,7 +1098,7 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(EDVISE_INST_UUID)
     assert response.json()["source"] == "MANUAL_UPLOAD"
 
-    # Verify that validate_file was called with institution_identifier for Edvise
+    # Verify that validate_file was called with institution_identifier for Edvise Schema (ES)
     assert MOCK_STORAGE.validate_file.called
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
@@ -1152,8 +1152,8 @@ def test_validate_file_legacy_pii_rejection_returns_400(
 def test_validation_helper_edvise_schema_not_found(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test error when edvise_id is set but no active Edvise schema exists."""
-    # Deactivate the Edvise schema
+    """Test error when edvise_id is set but no active Edvise Schema (ES) exists."""
+    # Deactivate the Edvise Schema (ES)
     edvise_schema = edvise_session.execute(
         select(SchemaRegistryTable).where(
             SchemaRegistryTable.is_edvise.is_(True),
@@ -1178,7 +1178,7 @@ def test_validation_helper_edvise_schema_not_found(
     )
 
     assert response.status_code == 500
-    assert "Edvise schema not found" in response.json()["detail"]
+    assert "Edvise Schema (ES) not found" in response.json()["detail"]
     assert "edvise_id" in response.json()["detail"]
 
 
@@ -1220,7 +1220,7 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 def test_edvise_schema_cache(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test that Edvise schema is cached and reused."""
+    """Test that Edvise Schema (ES) is cached and reused."""
     from .data import STATE
 
     # Clear cache
@@ -1254,7 +1254,7 @@ def test_edvise_schema_cache(
     assert cache_doc2 is not None
     assert cache_exp2 == cache_exp  # Same expiration means cache was reused
 
-    # Both institutions should use the same cached Edvise schema
+    # Both institutions should use the same cached Edvise Schema (ES)
     assert STATE._edvise_cache[1] is not None
     assert STATE._edvise_cache[1] is cache_doc
 
@@ -1262,7 +1262,7 @@ def test_edvise_schema_cache(
 def test_validate_file_edvise_schema_validation_errors(
     edvise_client: TestClient,
 ) -> None:
-    """Test that validation errors are returned correctly for Edvise schema."""
+    """Test that validation errors are returned correctly for Edvise Schema (ES)."""
     from ..validation import HardValidationError
 
     # Mock validation to raise an error
@@ -1297,7 +1297,7 @@ def test_validate_file_edvise_schema_validation_errors(
 def test_edvise_schema_takes_precedence_over_custom(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test that Edvise schema is used instead of custom when edvise_id is set."""
+    """Test that Edvise Schema (ES) is used instead of custom when edvise_id is set."""
     # Add a custom extension for this institution with unique version_label
     custom_schema = SchemaRegistryTable(
         doc_type=DocType.extension,
@@ -1343,12 +1343,12 @@ def test_edvise_schema_takes_precedence_over_custom(
         + "/input/validate-upload/test_student_file.csv",
     )
 
-    # Should succeed using Edvise schema, not custom
+    # Should succeed using Edvise Schema (ES), not custom
     assert response.status_code == 200
 
-    # Verify Edvise schema was passed to validation (not custom)
+    # Verify Edvise Schema (ES) was passed to validation (not custom)
     assert captured_schema is not None
-    # Edvise schema should have "edvise" or "institutions" structure
+    # Edvise Schema (ES) should have "edvise" or "institutions" structure
     assert isinstance(captured_schema, dict)
     assert (
         "edvise" in str(captured_schema).lower()
@@ -1370,7 +1370,7 @@ def test_edvise_schema_takes_precedence_over_custom(
 
 
 def test_validate_sftp_with_edvise_schema(edvise_client: TestClient) -> None:
-    """Test SFTP file validation uses Edvise schema when edvise_id is set."""
+    """Test SFTP file validation uses Edvise Schema (ES) when edvise_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["COURSE"]
 
     response = edvise_client.post(
@@ -1449,7 +1449,7 @@ def test_validate_edvise_invalid_filename(edvise_client: TestClient) -> None:
 
 
 def test_validate_edvise_course_file(edvise_client: TestClient) -> None:
-    """Test COURSE file validation with Edvise schema."""
+    """Test COURSE file validation with Edvise Schema (ES)."""
     MOCK_STORAGE.validate_file.return_value = ["COURSE"]
 
     response = edvise_client.post(
@@ -1512,7 +1512,7 @@ def test_edvise_cache_none_reloads(edvise_client: TestClient) -> None:
 
 
 def test_edvise_cache_shared_across_institutions(edvise_client: TestClient) -> None:
-    """Test that all Edvise institutions share the same cached schema."""
+    """Test that all Edvise Schema (ES) institutions share the same cached schema."""
     from .data import STATE
 
     STATE._edvise_cache = (0.0, None)

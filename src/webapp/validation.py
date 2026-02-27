@@ -158,7 +158,7 @@ def get_extension_model_columns_only(
 ) -> Dict[str, dict]:
     """
     Return only the extension columns for the given institution and model (no base).
-    Used for PDP and Edvise so we do not pull in base columns that don't match the repo schema.
+    Used for PDP and Edvise Schema (ES) so we do not pull in base columns that don't match the repo schema.
     """
     if not extension_schema:
         return {}

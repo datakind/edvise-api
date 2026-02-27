@@ -719,7 +719,7 @@ def test_format_check_error_not_nullable() -> None:
 
 
 def test_format_check_error_pdp_check_num_institutions() -> None:
-    """PDP/Edvise schema check names get human-readable messages."""
+    """PDP/Edvise Schema (ES) check names get human-readable messages."""
     spec: Dict[str, Any] = {}
     result = _format_check_error("check_num_institutions", spec, None)
     assert "institution" in result.lower()
