@@ -996,6 +996,8 @@ def _validate_pdp_with_edvise_read(
                 failure_cases=[str(e)],
             ) from e
 
+    return {}  # Unreachable: every path above returns or raises
+
 
 # --------------------------------------------------------------------------- #
 # Main validation

@@ -2,6 +2,7 @@
 
 import io
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pandas as pd
@@ -310,7 +311,7 @@ def test_validate_pdp_with_edvise_read_non_callable_cohort_converter_raises_hard
             enc="utf-8",
             model_list=["STUDENT"],
             institution_id="pdp",
-            pdp_cohort_converter_func="not a function",
+            pdp_cohort_converter_func=cast(Any, "not a function"),
         )
 
 
@@ -327,7 +328,7 @@ def test_validate_pdp_with_edvise_read_non_callable_course_converter_raises_hard
             enc="utf-8",
             model_list=["COURSE"],
             institution_id="pdp",
-            pdp_course_converter_func=123,
+            pdp_course_converter_func=cast(Any, 123),
         )
 
 
