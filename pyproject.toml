@@ -60,7 +60,7 @@ allow-direct-references = true
 default-groups = ["dev"]
 
 [tool.uv.sources]
-edvise = { git = "https://github.com/datakind/edvise.git", rev = "develop" }
+edvise = { git = "https://github.com/datakind/edvise.git", rev = "fix/eda_summary" }
 
 [tool.ruff]
 line-length = 88

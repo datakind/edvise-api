@@ -510,15 +510,21 @@ class GpaChartData(BaseModel):
     min_gpa: Optional[float] = None
 
 
-class TermSeries(BaseModel):
-    key: str
-    label: str
-    data: List[int]
+class TermCountPct(BaseModel):
+    count: int
+    percentage: float
+    name: str
+
+
+class YearTermSummary(BaseModel):
+    year: str
+    total: int
+    terms: List[TermCountPct]
 
 
 class StudentsByCohortTerm(BaseModel):
     years: List[str]
-    terms: List[TermSeries]
+    by_year: List[YearTermSummary]
 
 
 class TermChartData(BaseModel):
