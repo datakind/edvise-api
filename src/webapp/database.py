@@ -61,7 +61,6 @@ LOCAL_PASSWORD = "tester_password"
 DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
 
 
-
 @event.listens_for(Mapper, "before_insert")
 @event.listens_for(Mapper, "before_update")
 def validate_string_lengths(mapper, connection, target):
