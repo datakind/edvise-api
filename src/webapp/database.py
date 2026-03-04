@@ -60,12 +60,6 @@ LOCAL_USER_EMAIL = "tester@datakind.org"
 LOCAL_PASSWORD = "tester_password"
 DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
 
-# Test institution - same ID as DEV USC Beaufort for testing
-TEST_INST_UUID = uuid.UUID("942d4b0e-12e7-4d2a-9187-9508ae3cef7c")
-TEST_BATCH_UUID = uuid.UUID("3182f472-e079-4678-a0a1-9ca5ead6c49a")
-# Montana Tech test institution + batch (matches DEV data for local EDA testing)
-MONTANA_TECH_INST_UUID = uuid.UUID("1e2c628cabda4088b900cfd9ced44268")
-MONTANA_TECH_BATCH_UUID = uuid.UUID("1df31913e1fe4c458f5039527c967b13")
 
 
 @event.listens_for(Mapper, "before_insert")
@@ -112,19 +106,6 @@ def init_db(env: str) -> None:
                     name="Foobar University",
                     created_at=DATETIME_TESTING,
                     updated_at=DATETIME_TESTING,
-                )
-            )
-            # USC Beaufort - matches DEV for testing
-            session.merge(
-                InstTable(
-                    id=TEST_INST_UUID,
-                    name="University of South Carolina - Beaufort",
-                    state="SC",
-                    pdp_id="345000",
-                    schemas=["COURSE", "STUDENT"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                    created_by=LOCAL_USER_UUID,
                 )
             )
             session.merge(
@@ -184,100 +165,6 @@ def init_db(env: str) -> None:
                 session.merge(test_file_2)
                 session.merge(test_batch)
 
-                # Create test files for EDA test institution (TEST_INST_UUID)
-                # Real files from DEV batch 3182f472e0794678a0a19ca5ead6c49a
-                test_file_student = FileTable(
-                    id=uuid.UUID("f1d7c0a4-5211-459f-a79a-a1c2752f45c5"),
-                    inst_id=TEST_INST_UUID,
-                    name="1762967705679_AO1600pdp_AO1600_AR_DEIDENTIFIED_STUDYID_20250522120554.csv",
-                    source="MANUAL_UPLOAD",
-                    uploader=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
-                    sst_generated=False,
-                    valid=True,
-                    schemas=["STUDENT"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-                test_file_course = FileTable(
-                    id=uuid.UUID("d19d0129-96de-464c-98e9-694996965c7b"),
-                    inst_id=TEST_INST_UUID,
-                    name="1762967705683_AO1600pdp_AO1600_COURSE_LEVEL_AR_DEIDENTIFIED_STUDYID_20250522120554.csv",
-                    source="MANUAL_UPLOAD",
-                    uploader=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
-                    sst_generated=False,
-                    valid=True,
-                    schemas=["COURSE"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-
-                # Test batch - matches DEV USC Beaufort
-                test_batch = BatchTable(
-                    id=TEST_BATCH_UUID,
-                    inst_id=TEST_INST_UUID,
-                    name="Batch_2025-11-12_1762967767400",
-                    completed=True,
-                    created_by=uuid.UUID("c8b57138-2529-4e1f-9e89-07399d165f85"),
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-                # Associate files with batch
-                test_batch.files.add(test_file_student)
-                test_batch.files.add(test_file_course)
-                session.merge(test_file_student)
-                session.merge(test_file_course)
-                session.merge(test_batch)
-
-            # Montana Tech - matches DEV data for local EDA testing
-            session.merge(
-                InstTable(
-                    id=MONTANA_TECH_INST_UUID,
-                    name="Montana Tech",
-                    state="MT",
-                    schemas=["COURSE", "STUDENT"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                    created_by=LOCAL_USER_UUID,
-                )
-            )
-            montana_student_file = FileTable(
-                id=uuid.UUID("a2b0f7b2-0c57-4aa9-8dd0-8e1a49d1be01"),
-                inst_id=MONTANA_TECH_INST_UUID,
-                name="1764013161378_AO1600pdp_AO1600_AR_DEIDENTIFIED_STUDYID_20251028121051.csv",
-                source="MANUAL_UPLOAD",
-                uploader=LOCAL_USER_UUID,
-                sst_generated=False,
-                valid=True,
-                schemas=["STUDENT"],
-                created_at=DATETIME_TESTING,
-                updated_at=DATETIME_TESTING,
-            )
-            montana_course_file = FileTable(
-                id=uuid.UUID("d8b0f2c3-2d5a-4d7b-8e33-7e4c3b2609d2"),
-                inst_id=MONTANA_TECH_INST_UUID,
-                name="1764013161379_AO1600pdp_AO1600_COURSE_LEVEL_AR_DEIDENTIFIED_STUDYID_20251028121051.csv",
-                source="MANUAL_UPLOAD",
-                uploader=LOCAL_USER_UUID,
-                sst_generated=False,
-                valid=True,
-                schemas=["COURSE"],
-                created_at=DATETIME_TESTING,
-                updated_at=DATETIME_TESTING,
-            )
-            montana_batch = BatchTable(
-                id=MONTANA_TECH_BATCH_UUID,
-                inst_id=MONTANA_TECH_INST_UUID,
-                name="Batch_2025-10-28_1764013161000",
-                completed=True,
-                created_by=LOCAL_USER_UUID,
-                created_at=DATETIME_TESTING,
-                updated_at=DATETIME_TESTING,
-            )
-            montana_batch.files.add(montana_student_file)
-            montana_batch.files.add(montana_course_file)
-            session.merge(montana_student_file)
-            session.merge(montana_course_file)
-            session.merge(montana_batch)
             session.commit()
     except Exception as e:
         session.rollback()
