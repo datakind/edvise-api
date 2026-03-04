@@ -36,15 +36,28 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match directly.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+CUSTOM_INFERENCE_JOB_NAME = "edvise_github_sourced_custom_inference_pipeline"
 
 
-class DatabricksInferenceRunRequest(BaseModel):
-    """Databricks parameters for an inference run."""
+class DatabricksPDPInferenceRunRequest(BaseModel):
+    """Databricks parameters for a PDP inference run."""
 
     inst_name: str
     # Note that the following should be the filepath.
     filepath_to_type: dict[str, list[SchemaType]]
     model_name: str
+    # The email where notifications will get sent.
+    email: str
+    gcp_external_bucket_name: str
+
+
+class DatabricksCustomInferenceRunRequest(BaseModel):
+    """Databricks parameters for a custom schools inference run."""
+
+    inst_name: str
+    model_name: str
+    config_file_name: str
+    features_table_name: str
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
@@ -186,7 +199,7 @@ class DatabricksControl(BaseModel):
     # E.g. there is one PDP inference pipeline, so one PDP inference function here.
 
     def run_pdp_inference(
-        self, req: DatabricksInferenceRunRequest
+        self, req: DatabricksPDPInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
         """Triggers PDP inference Databricks run."""
         LOGGER.info(f"Running PDP inference for institution: {req.inst_name}")
@@ -258,6 +271,73 @@ class DatabricksControl(BaseModel):
 
         if not run_job.response or run_job.response.run_id is None:
             raise ValueError("run_pdp_inference(): Job did not return a valid run_id.")
+
+        run_id = run_job.response.run_id
+        LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
+
+        return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_custom_inference(
+        self, req: DatabricksCustomInferenceRunRequest
+    ) -> DatabricksInferenceRunResponse:
+        """Triggers custom schools inference Databricks run."""
+        LOGGER.info(f"Running custom inference for institution: {req.inst_name}")
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"run_custom_inference(): Workspace client initialization failed: {e}"
+            )
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        pipeline_type = CUSTOM_INFERENCE_JOB_NAME
+
+        try:
+            job = next(w.jobs.list(name=pipeline_type), None)
+            if not job or job.job_id is None:
+                raise ValueError(
+                    f"run_custom_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
+                )
+            job_id = job.job_id
+            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+        except Exception as e:
+            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            raise ValueError(f"run_custom_inference(): Failed to find job: {e}")
+
+        try:
+            run_job: Any = w.jobs.run_now(
+                job_id,
+                job_parameters={
+                    "databricks_institution_name": db_inst_name,
+                    "DB_workspace": databricks_vars[
+                        "DATABRICKS_WORKSPACE"
+                    ],
+                    "model_name": req.model_name,
+                    "config_file_name": req.config_file_name,
+                    "features_table_name": req.features_table_name,
+                    "gcp_bucket_name": req.gcp_external_bucket_name,
+                    "datakind_notification_email": req.email,
+                    "DK_CC_EMAIL": req.email,
+                },
+            )
+            LOGGER.info(
+                f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
+            )
+        except Exception as e:
+            LOGGER.exception("Failed to run the custom inference job.")
+            raise ValueError(f"run_custom_inference(): Job could not be run: {e}")
+
+        if not run_job.response or run_job.response.run_id is None:
+            raise ValueError("run_custom_inference(): Job did not return a valid run_id.")
 
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
