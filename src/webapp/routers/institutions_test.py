@@ -28,7 +28,7 @@ from ..databricks import DatabricksControl
 DATETIME_TESTING = datetime.today()
 UUID_1 = uuid.uuid4()
 UUID_2 = uuid.uuid4()
-UUID_3 = uuid.uuid4()  # For Edvise test institution
+UUID_3 = uuid.uuid4()  # For Edvise Schema (ES) test institution
 USER_UUID = uuid.UUID("5301a352-c03d-4a39-beec-16c5668c4700")
 USER_VALID_INST_UUID = uuid.UUID("1d7c75c3-3eda-4294-9c66-75ea8af97b55")
 INVALID_UUID = uuid.UUID("27316b89-5e04-474a-9ea4-97beaf72c9af")
@@ -169,10 +169,11 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
     response = datakinder_client.get("/institutions")
     assert response.status_code == 200
     data = response.json()
-    # Verify all institutions have edvise_id field
+    # Verify all institutions have edvise_id, pdp_id, and legacy_id fields
     for inst in data:
         assert "edvise_id" in inst
         assert "pdp_id" in inst
+        assert "legacy_id" in inst
     # Verify specific expected values
     assert len(data) == 4  # UUID_1, UUID_2, UUID_3, USER_VALID_INST_UUID
     school_1 = next(i for i in data if i["name"] == "school_1")
@@ -187,6 +188,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "school_1",
             "pdp_id": "456",
             "edvise_id": None,
+            "legacy_id": None,
             "retention_days": None,
             "state": "GA",
         },
@@ -195,6 +197,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "school_2",
             "pdp_id": None,
             "edvise_id": None,
+            "legacy_id": None,
             "retention_days": None,
             "state": None,
         },
@@ -203,6 +206,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "valid_school",
             "pdp_id": "12345",
             "edvise_id": None,
+            "legacy_id": None,
             "retention_days": None,
             "state": "NY",
         },
@@ -211,6 +215,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "name": "edvise_test_school",
             "pdp_id": None,
             "edvise_id": "edvise456",
+            "legacy_id": None,
             "retention_days": None,
             "state": "CA",
         },
@@ -393,12 +398,12 @@ def test_delete_inst(datakinder_client: TestClient) -> None:
 
 
 # ============================================================================
-# CREATE INSTITUTION TESTS - Edvise Functionality
+# CREATE INSTITUTION TESTS - Edvise Schema (ES) functionality
 # ============================================================================
 
 
 def test_create_inst_with_edvise_success(datakinder_client: TestClient) -> None:
-    """Test POST /institutions with Edvise ID - happy path."""
+    """Test POST /institutions with Edvise Schema (ES) (edvise_id) - happy path."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -442,7 +447,7 @@ def test_create_inst_with_edvise_id_only(datakinder_client: TestClient) -> None:
 
 
 def test_create_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> None:
-    """Test POST /institutions with both PDP and Edvise - should fail."""
+    """Test POST /institutions with both PDP and Edvise Schema (ES) - should fail."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -456,7 +461,7 @@ def test_create_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> 
 
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 400
-    assert "cannot be both PDP and Edvise" in response.json()["detail"]
+    assert "Please choose one schema type" in response.json()["detail"]
 
 
 def test_create_inst_empty_string_normalization(datakinder_client: TestClient) -> None:
@@ -520,30 +525,124 @@ def test_create_inst_backward_compatibility_is_pdp_ignored(
     assert data["pdp_id"] is None  # No PDP schema assigned
 
 
-def test_create_inst_backward_compatibility_is_edvise_ignored(
+def test_create_inst_auto_assign_edvise_id(
     datakinder_client: TestClient,
 ) -> None:
-    """Test POST /institutions - is_edvise flag is accepted but ignored."""
+    """Test POST /institutions - is_edvise=True with no edvise_id auto-assigns edvise_id."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # Send is_edvise=True but no edvise_id - should work (is_edvise ignored)
     request_data = {
-        "name": "backward_compat_edvise_test",
-        "is_edvise": True,  # Should be ignored
-        "edvise_id": None,  # No actual Edvise ID
+        "name": "auto_edvise_test",
+        "is_edvise": True,
+        "edvise_id": None,
     }
 
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 200
     data = response.json()
-    assert data["edvise_id"] is None  # No Edvise schema assigned
+    assert data["edvise_id"] is not None and data["edvise_id"].startswith("edvise_")
+    assert data["pdp_id"] is None
+    assert data["legacy_id"] is None
+
+
+def test_create_inst_auto_assign_legacy_id(
+    datakinder_client: TestClient,
+) -> None:
+    """Test POST /institutions - is_legacy=True with no legacy_id auto-assigns legacy_id."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    request_data = {
+        "name": "auto_legacy_test",
+        "is_legacy": True,
+        "legacy_id": None,
+    }
+
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["legacy_id"] == "legacy_1"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+
+
+def test_create_inst_reject_both_edvise_and_legacy(
+    datakinder_client: TestClient,
+) -> None:
+    """Test POST /institutions - is_edvise and is_legacy both True returns 400."""
+    request_data = {
+        "name": "both_types_test",
+        "is_edvise": True,
+        "is_legacy": True,
+    }
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 400
+    assert "cannot be more than one" in response.json()["detail"]
+
+
+def test_create_inst_with_legacy_id_explicit(datakinder_client: TestClient) -> None:
+    """Test POST /institutions with explicit legacy_id (no auto-assign)."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    request_data = {
+        "name": "explicit_legacy_school",
+        "state": "TX",
+        "legacy_id": "custom_legacy_123",
+    }
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["legacy_id"] == "custom_legacy_123"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+
+
+def test_create_inst_storage_bucket_fails(datakinder_client: TestClient) -> None:
+    """Test POST /institutions returns 500 when storage bucket creation raises."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.side_effect = ValueError("Bucket already exists")
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "school_bucket_fail", "state": "NY"},
+    )
+    assert response.status_code == 500
+    assert "Storage bucket creation failed" in response.json()["detail"]
+
+    MOCK_STORAGE.create_bucket.side_effect = None
+
+
+def test_create_inst_databricks_setup_fails(datakinder_client: TestClient) -> None:
+    """Test POST /institutions returns 500 when Databricks setup raises."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.side_effect = Exception(
+        "Databricks connection failed"
+    )
+
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "school_dbc_fail", "state": "CA"},
+    )
+    assert response.status_code == 500
+    assert "Databricks setup failed" in response.json()["detail"]
+
+    MOCK_DATABRICKS.setup_new_inst.side_effect = None
 
 
 # ============================================================================
-# UPDATE INSTITUTION TESTS - Edvise Functionality
+# UPDATE INSTITUTION TESTS - Edvise Schema (ES) functionality
 # ============================================================================
 
 
@@ -553,7 +652,7 @@ def test_update_inst_add_edvise_id(datakinder_client: TestClient) -> None:
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # Update custom school (UUID_2) to Edvise
+    # Update custom school (UUID_2) to Edvise Schema (ES)
     response = datakinder_client.patch(
         "/institutions/" + uuid_to_str(UUID_2),
         json={"edvise_id": "new_edvise_id"},
@@ -564,13 +663,30 @@ def test_update_inst_add_edvise_id(datakinder_client: TestClient) -> None:
     assert data["pdp_id"] is None
 
 
-def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient) -> None:
-    """Test PATCH /institutions - switch from PDP to Edvise."""
+def test_update_inst_add_legacy_id(datakinder_client: TestClient) -> None:
+    """Test PATCH /institutions - add legacy_id to existing custom institution."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # First clear PDP, then add Edvise
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_2),
+        json={"legacy_id": "legacy_abc"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["legacy_id"] == "legacy_abc"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+
+
+def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient) -> None:
+    """Test PATCH /institutions - switch from PDP to Edvise Schema (ES)."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    # First clear PDP, then add Edvise Schema (ES)
     response = datakinder_client.patch(
         "/institutions/" + uuid_to_str(UUID_1),
         json={"pdp_id": None, "edvise_id": "switched_to_edvise"},
@@ -582,12 +698,12 @@ def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient) -> None
 
 
 def test_update_inst_switch_edvise_to_pdp(datakinder_client: TestClient) -> None:
-    """Test PATCH /institutions - switch from Edvise to PDP."""
+    """Test PATCH /institutions - switch from Edvise Schema (ES) to PDP."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # Switch UUID_3 (Edvise) to PDP
+    # Switch UUID_3 (Edvise Schema (ES)) to PDP
     response = datakinder_client.patch(
         "/institutions/" + uuid_to_str(UUID_3),
         json={"edvise_id": None, "pdp_id": "switched_to_pdp"},
@@ -599,7 +715,7 @@ def test_update_inst_switch_edvise_to_pdp(datakinder_client: TestClient) -> None
 
 
 def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> None:
-    """Test PATCH /institutions - cannot set both PDP and Edvise."""
+    """Test PATCH /institutions - cannot set both PDP and Edvise Schema (ES)."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
@@ -610,7 +726,7 @@ def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> 
         json={"pdp_id": "pdp123", "edvise_id": "edvise456"},
     )
     assert response.status_code == 400
-    assert "cannot be both PDP and Edvise" in response.json()["detail"]
+    assert "Please choose one schema type" in response.json()["detail"]
 
 
 def test_update_inst_clear_edvise_id(datakinder_client: TestClient) -> None:
@@ -679,7 +795,7 @@ def test_read_inst_by_id_includes_edvise_id(client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert "edvise_id" in data
-    assert data["edvise_id"] is None  # This institution doesn't have Edvise
+    assert data["edvise_id"] is None  # This institution doesn't have Edvise Schema (ES)
 
 
 def test_read_inst_by_name_includes_edvise_id(client: TestClient) -> None:
@@ -761,10 +877,10 @@ def test_update_inst_final_state_validation(datakinder_client: TestClient) -> No
     # Institution already has pdp_id, try to add edvise_id
     response = datakinder_client.patch(
         "/institutions/" + uuid_to_str(UUID_1),  # Has pdp_id="456"
-        json={"edvise_id": "edvise999"},  # Try to add Edvise
+        json={"edvise_id": "edvise999"},  # Try to add Edvise Schema (ES)
     )
     assert response.status_code == 400
-    assert "cannot be both PDP and Edvise" in response.json()["detail"]
+    assert "Please choose one schema type" in response.json()["detail"]
 
 
 # ============================================================================
@@ -773,7 +889,7 @@ def test_update_inst_final_state_validation(datakinder_client: TestClient) -> No
 
 
 def test_create_inst_edvise_unauthorized(client: TestClient) -> None:
-    """Test POST /institutions with Edvise - unauthorized user."""
+    """Test POST /institutions with Edvise Schema (ES) - unauthorized user."""
     os.environ["ENV"] = "DEV"
     request_data = {
         "name": "unauthorized_test",
@@ -786,7 +902,7 @@ def test_create_inst_edvise_unauthorized(client: TestClient) -> None:
 
 
 def test_update_inst_edvise_unauthorized(client: TestClient) -> None:
-    """Test PATCH /institutions with Edvise - unauthorized user."""
+    """Test PATCH /institutions with Edvise Schema (ES) - unauthorized user."""
     # Try to update institution user doesn't have access to
     response = client.patch(
         "/institutions/" + uuid_to_str(UUID_1),
@@ -802,7 +918,7 @@ def test_update_inst_edvise_unauthorized(client: TestClient) -> None:
 
 
 def test_read_inst_edvise_tenant_isolation(client: TestClient) -> None:
-    """Test GET /institutions/{inst_id} - cannot access other institution's Edvise data."""
+    """Test GET /institutions/{inst_id} - cannot access other institution's Edvise Schema (ES) data."""
     # Try to access institution user doesn't belong to
     response = client.get("/institutions/" + uuid_to_str(UUID_2))
     assert response.status_code == 401
