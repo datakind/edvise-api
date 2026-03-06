@@ -1,4 +1,4 @@
-"""Unit tests for PDP/Edvise Schema (ES) validation (same validation as edvise repo)."""
+"""Unit tests for PDP/Edvise schema validation (same validation as edvise repo)."""
 
 import pandas as pd
 from typing import Any, Dict, cast

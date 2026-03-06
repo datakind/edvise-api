@@ -78,8 +78,6 @@ EMPTY_INSTITUTION_OBJ = {
     "name": "",
     "state": "",
     "pdp_id": None,
-    "edvise_id": None,
-    "legacy_id": None,
     "retention_days": 0,
 }
 
@@ -89,7 +87,6 @@ INSTITUTION_OBJ = {
     "state": "NY",
     "pdp_id": "12345",
     "edvise_id": None,
-    "legacy_id": None,
     "retention_days": None,
 }
 

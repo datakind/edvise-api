@@ -220,7 +220,7 @@ def _convert_schema_errors_to_hard_validation_error(
     if schema_errors is None:
         schema_errors = str(err) if err else None
     logger.error(
-        "PDP/Edvise Schema (ES) validation failed: missing_required=%s, failure_cases_count=%s",
+        "PDP/Edvise schema validation failed: missing_required=%s, failure_cases_count=%s",
         missing_required,
         len(normalized_failure_cases),
     )
@@ -266,7 +266,7 @@ def validate_dataframe_with_edvise_schema(
     HardValidationError = _get_hard_validation_error_class()
     if df is None or df.empty:
         raise HardValidationError(
-            schema_errors="PDP/Edvise Schema (ES) validation failed: empty or missing DataFrame",
+            schema_errors="PDP/Edvise schema validation failed: empty or missing DataFrame",
             raw_to_canon=raw_to_canon,
             canon_to_raw=canon_to_raw,
             merged_specs=merged_specs,

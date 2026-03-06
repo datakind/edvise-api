@@ -190,10 +190,10 @@ def test_sanitize_string_non_string_input() -> None:
 
 
 def test_is_pii_column_student_id() -> None:
-    """student_id is a standard de-identified identifier; not treated as PII."""
-    assert _is_pii_column("student_id") is False
-    assert _is_pii_column("Student_ID") is False
-    assert _is_pii_column("STUDENT_ID") is False
+    """Test PII detection for student_id."""
+    assert _is_pii_column("student_id") is True
+    assert _is_pii_column("Student_ID") is True
+    assert _is_pii_column("STUDENT_ID") is True
 
 
 def test_is_pii_column_email() -> None:
@@ -222,7 +222,6 @@ def test_is_pii_column_ssn() -> None:
 def test_is_pii_column_non_pii() -> None:
     """Test PII detection returns False for non-PII columns."""
     assert _is_pii_column("grade") is False
-    assert _is_pii_column("student_id") is False  # standard de-identified identifier
     assert _is_pii_column("course_name") is False
     assert _is_pii_column("credits") is False
     assert _is_pii_column("term") is False
@@ -242,6 +241,7 @@ def test_is_pii_column_medium_risk_token_matching() -> None:
     assert _is_pii_column("first_name") is True
     assert _is_pii_column("last_name") is True
     assert _is_pii_column("full_name") is True
+    assert _is_pii_column("student_id") is True
     assert _is_pii_column("home_address") is True
 
     # These should NOT match (false positive prevention)
@@ -719,7 +719,7 @@ def test_format_check_error_not_nullable() -> None:
 
 
 def test_format_check_error_pdp_check_num_institutions() -> None:
-    """PDP/Edvise Schema (ES) check names get human-readable messages."""
+    """PDP/Edvise schema check names get human-readable messages."""
     spec: Dict[str, Any] = {}
     result = _format_check_error("check_num_institutions", spec, None)
     assert "institution" in result.lower()
@@ -911,13 +911,13 @@ def test_format_column_validation_errors(
 def test_format_column_validation_errors_pii_masking(
     error_with_pii: HardValidationError,
 ) -> None:
-    """Test PII masking in column validation errors (email is PII and masked; student_id is not)."""
+    """Test PII masking in column validation errors."""
     errors = [
-        {"row": 2, "check": "matches", "value": "john.doe@example.com"},
+        {"row": 1, "check": "str_length", "value": "STU-12345-ABCDEF"},
     ]
-    result = _format_column_validation_errors("email", errors, error_with_pii)
+    result = _format_column_validation_errors("student_id", errors, error_with_pii)
     assert len(result) > 0
-    assert "john.doe@example.com" not in result[0]
+    assert "STU-12345-ABCDEF" not in result[0]
     assert "masked for privacy" in result[0]
     assert "*" in result[0]
 
@@ -1061,12 +1061,11 @@ def test_format_validation_error_failure_cases(
 def test_format_validation_error_pii_masking(
     error_with_pii: HardValidationError,
 ) -> None:
-    """Test PII masking: email is masked; student_id is not PII so its value is shown."""
+    """Test PII masking in formatted error."""
     result = format_validation_error(error_with_pii)
+    assert "STU-12345-ABCDEF" not in result
     assert "john.doe@example.com" not in result
     assert "masked for privacy" in result
-    # student_id is a standard de-identified identifier, so its value is not masked
-    assert "STU-12345-ABCDEF" in result
 
 
 def test_format_validation_error_decode_error() -> None:
