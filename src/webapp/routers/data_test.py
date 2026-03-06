@@ -854,10 +854,16 @@ def test_get_eda_data_success(
     assert "2020" in data["gpa_by_enrollment_type"]["cohort_years"]
     assert "2021" in data["gpa_by_enrollment_type"]["cohort_years"]
 
-    # Check term data structure
+    # Check term data structure (degree_types style: years + by_year with total and terms[{ count, percentage, name }])
     assert "years" in data["students_by_cohort_term"]
-    assert "terms" in data["students_by_cohort_term"]
+    assert "by_year" in data["students_by_cohort_term"]
     assert len(data["students_by_cohort_term"]["years"]) == 2
+    by_year = data["students_by_cohort_term"]["by_year"]
+    assert len(by_year) == 2
+    assert "year" in by_year[0] and "total" in by_year[0] and "terms" in by_year[0]
+    assert all(
+        "count" in t and "percentage" in t and "name" in t for t in by_year[0]["terms"]
+    )
 
     # Check enrollment type by intensity has categories and series
     assert "categories" in data["enrollment_type_by_intensity"]
