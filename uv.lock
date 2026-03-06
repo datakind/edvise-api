@@ -977,7 +977,7 @@ wheels = [
 [[package]]
 name = "edvise"
 version = "0.1.11"
-source = { git = "https://github.com/datakind/edvise.git?rev=fix%2Feda_summary#ff14631a99a29052e25b12a27faaf461db3f69bd" }
+source = { git = "https://github.com/datakind/edvise.git?rev=develop#f58594853a62a8ed189637a3bd8fc3352742859a" }
 dependencies = [
     { name = "databricks-connect", version = "16.1.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "databricks-connect", version = "16.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -4189,7 +4189,7 @@ requires-dist = [
     { name = "cloud-sql-python-connector", extras = ["pymysql"], specifier = "~=1.14.0" },
     { name = "databricks-sdk", specifier = "~=0.38.0" },
     { name = "databricks-sql-connector", specifier = "~=3.5.0" },
-    { name = "edvise", git = "https://github.com/datakind/edvise.git?rev=fix%2Feda_summary" },
+    { name = "edvise", git = "https://github.com/datakind/edvise.git?rev=develop" },
     { name = "fastapi", extras = ["standard"], specifier = "~=0.115.4" },
     { name = "google-cloud-storage", specifier = "==2.19.0" },
     { name = "jsonpickle", specifier = "~=4.0.1" },
