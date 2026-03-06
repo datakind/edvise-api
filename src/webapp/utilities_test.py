@@ -61,25 +61,31 @@ def test_databricksify_inst_name():
     Testing databricksifying institution name
     """
     assert (
-        databricksify_inst_name("Motlow State Community College") == "motlow_state_cc"
+        databricksify_inst_name("The University of Mildly Impressive Achievements")
+        == "the_uni_of_mildly_impressive_achievements"
     )
     assert (
-        databricksify_inst_name("Metro State University Denver")
-        == "metro_state_uni_denver"
-    )
-    assert databricksify_inst_name("Kentucky State University") == "kentucky_state_uni"
-    assert databricksify_inst_name("Central Arizona College") == "central_arizona_col"
-    assert (
-        databricksify_inst_name("Harrisburg University of Science and Technology")
-        == "harrisburg_uni_st"
+        databricksify_inst_name("Dandelion Technical & Tractor College")
+        == "dandelion_technical_tractor_col"
     )
     assert (
-        databricksify_inst_name("Southeast Kentucky community technical college")
-        == "southeast_kentucky_ctc"
+        databricksify_inst_name("Fernwood & Finch Academy") == "fernwood_finch_academy"
     )
     assert (
-        databricksify_inst_name("Northwest State Community College")
-        == "northwest_state_cc"
+        databricksify_inst_name("The Center for Applied Napping")
+        == "the_center_for_applied_napping"
+    )
+    assert (
+        databricksify_inst_name("Harrisville University of Science and Technology")
+        == "harrisville_uni_st"
+    )
+    assert (
+        databricksify_inst_name("University of Questionable Decisions")
+        == "uni_of_questionable_decisions"
+    )
+    assert (
+        databricksify_inst_name("Badger Hollow University of Science & Scones")
+        == "badger_hollow_uni_of_science_scones"
     )
 
     with pytest.raises(ValueError) as err:
