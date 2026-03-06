@@ -66,7 +66,7 @@ PII_MEDIUM_RISK_INDICATORS = {
     "middle_name",
     "full_name",
     "address",
-    # Note: student_id is excluded; it is a standard de-identified identifier for all institution types.
+    "student_id",  # Even if de-identified, treat as sensitive
     # Note: Patterns like "student_name", "employee_name", "guardian_name" will
     # be caught because they contain "name" as a token, but we check
     # false positives first
@@ -75,7 +75,6 @@ PII_MEDIUM_RISK_INDICATORS = {
 # Common non-PII column name patterns that should NOT be flagged
 # These are compound names where a PII indicator appears but isn't actually PII
 PII_FALSE_POSITIVE_PATTERNS = {
-    "student_id",  # Standard de-identified identifier for all institution types
     "course_name",
     "school_name",
     "district_name",
@@ -1297,7 +1296,7 @@ def _format_check_error(check_type: str, spec: dict, value: Any) -> str:
     if base_check_type == "nullable":
         return "Value validation failed"
 
-    # PDP/Edvise Schema (ES) check names (same validation as edvise repo)
+    # PDP/Edvise schema check names (same validation as edvise repo)
     if base_check_type in PDP_EDVISE_CHECK_MESSAGES:
         return PDP_EDVISE_CHECK_MESSAGES[base_check_type]
 

@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Annotated, Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
@@ -19,7 +19,6 @@ from cachetools import TTLCache
 
 from ..utilities import (
     has_access_to_inst_or_err,
-    has_at_most_one_school_type,
     has_full_data_access_or_err,
     BaseUser,
     model_owner_and_higher_or_err,
@@ -1255,23 +1254,32 @@ class _ValidationState:
 
 STATE = _ValidationState()
 
-BASE_TTL = 300  # seconds; base schema cache TTL
-EXT_TTL = 120  # seconds; extension schema cache TTL
 
+def validation_helper(
+    source_str: str,
+    inst_id: str,
+    file_name: str,
+    current_user: BaseUser,
+    storage_control: StorageControl,
+    sql_session: Session,
+) -> Any:
+    """Helper function for file validation (self-contained & optimized)."""
+    import time
 
-def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]:
-    """Infer allowed schema names from file name; legacy may use any name (UNKNOWN).
+    # --- access check & quick input validation
+    has_access_to_inst_or_err(inst_id, current_user)
+    if "/" in file_name:
+        raise HTTPException(status_code=422, detail="File name can't contain '/'.")
 
-    Args:
-        file_name: Name of the file (used for keyword inference).
-        inst: Institution row (must have legacy_id attr for legacy fallback).
+    # --- bind session once
+    local_session.set(sql_session)
+    sess = local_session.get()
 
-    Returns:
-        Sorted list of allowed schema names (e.g. ["COURSE"], ["STUDENT"], ["UNKNOWN"]).
+    AR_RE = STATE._ar_re
+    BASE_TTL = 300  # seconds
+    EXT_TTL = 120  # seconds
 
-    Raises:
-        HTTPException: 422 if name is non-descriptive and institution is not legacy.
-    """
+    # --- filename → allowed_schemas (fast, single pass)
     name = os.path.basename(file_name).lower()
     has_course = "course" in name
     has_semester = "semester" in name
@@ -1280,9 +1288,10 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
         or ("cohort" in name)
         or (
             (not has_course)
-            and (STATE._ar_re.search(name) is not None or "deidentified" in name)
+            and (AR_RE.search(name) is not None or "deidentified" in name)
         )
     )
+
     inferred_from_name: set[str] = set()
     if has_course:
         inferred_from_name.add("COURSE")
@@ -1290,295 +1299,220 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
         inferred_from_name.add("STUDENT")
     if has_semester:
         inferred_from_name.add("SEMESTER")
+
     if not inferred_from_name:
-        if getattr(inst, "legacy_id", None):
-            return ["UNKNOWN"]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 f"Could not infer model(s) from file name: {name}. "
-                "Filenames should be descriptive (e.g., include 'course', 'cohort', "
-                "'student', or 'semester')."
+                "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
             ),
         )
-    return sorted(inferred_from_name)
 
+    allowed_schemas = sorted(inferred_from_name)
 
-def _get_validation_base_schema(sess: Session) -> Tuple[Any, Any, float]:
-    """Return (base_schema_id, base_schema, now) using cache.
-
-    Args:
-        sess: DB session for schema registry query.
-
-    Returns:
-        Tuple of (base_schema_id, base_schema dict, current time.monotonic()).
-
-    Raises:
-        RuntimeError: If no active base schema is registered.
-    """
-    import time
-
+    # --- fetch active base schema (cached)
     now = time.monotonic()
     base_cache = STATE._base_cache
     if now < base_cache["exp"] and base_cache["val"] is not None:
-        cached = base_cache["val"]
-        base_schema_id, base_schema = cached  # pylint: disable=unpacking-non-sequence
-        return (base_schema_id, base_schema, now)
-    row = sess.execute(
-        select(SchemaRegistryTable.schema_id, SchemaRegistryTable.json_doc)
-        .where(
-            SchemaRegistryTable.doc_type == DocType.base,
-            SchemaRegistryTable.is_active.is_(True),
-        )
-        .limit(1)
-    ).first()
-    if row is None:
-        raise RuntimeError("No active base schema found")
-    base_schema_id, base_schema = row
-    base_cache["exp"] = now + BASE_TTL
-    base_cache["val"] = (base_schema_id, base_schema)
-    return (base_schema_id, base_schema, now)
-
-
-def _ext_models_set(doc: Optional[dict], inst: Any, inst_id: str) -> set[str]:
-    """Extract model keys from extension document (root or institutions.* layout).
-
-    Args:
-        doc: Extension schema JSON doc (or None).
-        inst: Institution row (for id in institutions lookup).
-        inst_id: Institution id string (for institutions lookup).
-
-    Returns:
-        Set of lowercase model names (e.g. {"student", "course"}).
-    """
-    if not doc or not isinstance(doc, dict):
-        return set()
-    if isinstance(doc.get("data_models"), dict):
-        return {str(k).lower() for k in doc["data_models"].keys()}
-    inst_key_candidates = {str(getattr(inst, "id", "")), inst_id}
-    insts = doc.get("institutions", {})
-    if isinstance(insts, dict):
-        for key in inst_key_candidates:
-            block = insts.get(key)
-            if isinstance(block, dict) and isinstance(block.get("data_models"), dict):
-                return {str(k).lower() for k in block["data_models"].keys()}
-    return set()
-
-
-def _resolve_edvise_schema(
-    sess: Session, now: float
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for Edvise Schema (ES) institutions."""
-    schema_namespace = "edvise"
-    edvise_exp, edvise_doc = STATE._edvise_cache
-    if now < edvise_exp and edvise_doc is not None:
-        inst_schema: Optional[Dict[str, Any]] = edvise_doc
+        base_schema_id, base_schema = base_cache["val"]  # pylint: disable=unpacking-non-sequence # fmt: skip
     else:
-        inst_schema = sess.execute(
-            select(SchemaRegistryTable.json_doc)
+        row = sess.execute(
+            select(SchemaRegistryTable.schema_id, SchemaRegistryTable.json_doc)
             .where(
-                SchemaRegistryTable.is_edvise.is_(True),
+                SchemaRegistryTable.doc_type == DocType.base,
                 SchemaRegistryTable.is_active.is_(True),
             )
             .limit(1)
-        ).scalar_one_or_none()
-        STATE._edvise_cache = (now + EXT_TTL, inst_schema)
-    if inst_schema is None:
+        ).first()
+        if row is None:
+            raise RuntimeError("No active base schema found")
+        base_schema_id, base_schema = row
+        base_cache["exp"] = now + BASE_TTL
+        base_cache["val"] = (base_schema_id, base_schema)
+
+    # --- fetch institution record
+    inst = sess.execute(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    ).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Institution {inst_id} not found",
+        )
+
+    bucket = get_external_bucket_name(inst_id)
+    # --- choose / prepare extension schema (try to avoid heavy path)
+    updated_inst_schema: Optional[dict] = None
+
+    def _ext_models_set(doc: Optional[dict]) -> set[str]:
+        """Extract model keys from an extension document (root or institutions.* layout)."""
+        if not doc or not isinstance(doc, dict):
+            return set()
+        # root-level
+        if isinstance(doc.get("data_models"), dict):
+            return {str(k).lower() for k in doc["data_models"].keys()}
+        # nested by institution
+        inst_key_candidates = {str(getattr(inst, "id", "")), inst_id}
+        insts = doc.get("institutions", {})
+        if isinstance(insts, dict):
+            for key in inst_key_candidates:
+                block = insts.get(key)
+                if isinstance(block, dict) and isinstance(
+                    block.get("data_models"), dict
+                ):
+                    return {str(k).lower() for k in block["data_models"].keys()}
+        return set()
+
+    # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
+    pdp_id = getattr(inst, "pdp_id", None)
+    edvise_id = getattr(inst, "edvise_id", None)
+    if pdp_id and edvise_id:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Edvise Schema (ES) not found for institution with edvise_id. "
-            "Please ensure an active Edvise Schema (ES) extension is registered.",
+            detail="Institution configuration error: cannot have both pdp_id and edvise_id set",
         )
-    return (schema_namespace, inst_schema)
 
-
-def _resolve_pdp_schema(
-    sess: Session, now: float
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for PDP institutions."""
-    schema_namespace = "pdp"
-    pdp_exp, pdp_doc = STATE._pdp_cache
-    if now < pdp_exp and pdp_doc is not None:
-        inst_schema: Optional[Dict[str, Any]] = pdp_doc
-    else:
-        inst_schema = cast(
-            Optional[Dict[str, Any]],
-            sess.execute(
+    # schema_namespace is the key into extension_schema["institutions"] during
+    # validation so merge_model_columns uses the correct block (edvise / pdp / inst).
+    if edvise_id:
+        # Edvise institutions: use active Edvise extension (cached)
+        schema_namespace = "edvise"
+        edvise_exp, edvise_doc = STATE._edvise_cache
+        if now < edvise_exp and edvise_doc is not None:
+            inst_schema: Optional[Dict[str, Any]] = edvise_doc
+        else:
+            inst_schema = sess.execute(
+                select(SchemaRegistryTable.json_doc)
+                .where(
+                    SchemaRegistryTable.is_edvise.is_(True),
+                    SchemaRegistryTable.is_active.is_(True),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            STATE._edvise_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Edvise schema not found for institution with edvise_id. Please ensure an active Edvise schema extension is registered.",
+            )
+        updated_inst_schema = inst_schema
+    elif pdp_id:
+        # PDP institutions: use active PDP extension (cached)
+        schema_namespace = "pdp"
+        pdp_exp, pdp_doc = STATE._pdp_cache
+        if now < pdp_exp and pdp_doc is not None:
+            inst_schema = pdp_doc
+        else:
+            inst_schema = sess.execute(
                 select(SchemaRegistryTable.json_doc)
                 .where(
                     SchemaRegistryTable.is_pdp.is_(True),
                     SchemaRegistryTable.is_active.is_(True),
                 )
                 .limit(1)
-            ).scalar_one_or_none(),
-        )
-        STATE._pdp_cache = (now + EXT_TTL, inst_schema)
-    if inst_schema is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="PDP schema not found for institution with pdp_id. "
-            "Please ensure an active PDP schema extension is registered.",
-        )
-    return (schema_namespace, inst_schema)
-
-
-def _persist_custom_schema_extension(
-    sess: Session,
-    inst_id: str,
-    schema_extension: Dict[str, Any],
-    base_schema_id: Any,
-    cache_key: str,
-) -> None:
-    """Deactivate existing extension records and insert new one; update cache."""
-    import time
-
-    existing_extensions = (
-        sess.execute(
-            select(SchemaRegistryTable).where(
-                SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
-                SchemaRegistryTable.doc_type == DocType.extension,
-                SchemaRegistryTable.is_active.is_(True),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for existing in existing_extensions:
-        existing.is_active = False
-    new_record = SchemaRegistryTable(
-        doc_type=DocType.extension,
-        inst_id=str_to_uuid(inst_id),
-        is_pdp=False,  # type: ignore
-        version_label="1.0.0",
-        extends_schema_id=base_schema_id,
-        json_doc=schema_extension,
-        is_active=True,
-    )
-    sess.add(new_record)
-    sess.flush()
-    logging.info(
-        "Schema record inserted for '%s' (deactivated %d existing)",
-        inst_id,
-        len(existing_extensions),
-    )
-    STATE._ext_cache[cache_key] = (time.monotonic() + EXT_TTL, schema_extension)
-
-
-def _resolve_custom_schema(
-    sess: Session,
-    inst: Any,
-    inst_id: str,
-    now: float,
-    allowed_schemas: List[str],
-    bucket: str,
-    base_schema: dict,
-    base_schema_id: Any,
-    file_name: str,
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for custom (non-PDP/ES/legacy) institutions."""
-    schema_namespace = str(getattr(inst, "id", ""))
-    ext_cache = STATE._ext_cache
-    key = str(getattr(inst, "id", ""))
-    cached = ext_cache.get(key)
-    if cached and now < cached[0]:
-        inst_schema = cached[1]
-    else:
-        inst_schema = sess.execute(
-            select(SchemaRegistryTable.json_doc)
-            .where(
-                SchemaRegistryTable.inst_id == getattr(inst, "id", None),
-                SchemaRegistryTable.is_active.is_(True),
-                SchemaRegistryTable.doc_type == DocType.extension,
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        ext_cache[key] = (now + EXT_TTL, inst_schema)
-    inferred_lower = {m.lower() for m in allowed_schemas}
-    ext_models = _ext_models_set(inst_schema, inst, inst_id)
-    if inferred_lower.issubset(ext_models):
-        return (schema_namespace, inst_schema)
-    dbc = DatabricksControl()
-    schema_extension: Optional[Dict[str, Any]] = dbc.create_custom_schema_extension(
-        bucket_name=bucket,
-        inst_query=inst,
-        file_name=file_name,
-        base_schema=base_schema,
-        extension_schema=inst_schema,
-    )
-    if schema_extension is not None:
-        try:
-            _persist_custom_schema_extension(
-                sess, inst_id, schema_extension, base_schema_id, key
-            )
-        except IntegrityError as e:
-            sess.rollback()
-            logging.warning("IntegrityError: %s", e)
-        except Exception as e:
-            sess.rollback()
-            logging.error("Unexpected DB error: %s", e)
+            ).scalar_one_or_none()
+            STATE._pdp_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
             raise HTTPException(
-                status_code=500,
-                detail=f"Unexpected database error while inserting file record: {e}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PDP schema not found for institution with pdp_id. Please ensure an active PDP schema extension is registered.",
             )
-        return (schema_namespace, schema_extension)
-    logging.info("No-op: extension already contains this model for inst %s", inst_id)
-    return (schema_namespace, inst_schema)
+        updated_inst_schema = inst_schema
+    else:
+        # custom institutions: try cached extension first
+        schema_namespace = str(getattr(inst, "id", ""))
+        ext_cache = STATE._ext_cache
+        key = str(getattr(inst, "id", ""))
+        cached = ext_cache.get(key)
+        if cached and now < cached[0]:
+            inst_schema = cached[1]
+        else:
+            inst_schema = sess.execute(
+                select(SchemaRegistryTable.json_doc)
+                .where(
+                    SchemaRegistryTable.inst_id == getattr(inst, "id", None),
+                    SchemaRegistryTable.is_active.is_(True),
+                    SchemaRegistryTable.doc_type == DocType.extension,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            ext_cache[key] = (now + EXT_TTL, inst_schema)
 
+        # If extension already includes all inferred models, skip Databricks work.
+        inferred_lower = {m.lower() for m in allowed_schemas}
+        ext_models = _ext_models_set(inst_schema)
+        if inferred_lower.issubset(ext_models):
+            updated_inst_schema = inst_schema
+        else:
+            # heavy path only when needed
+            dbc = DatabricksControl()
+            schema_extension: Optional[Dict[str, Any]] = (
+                dbc.create_custom_schema_extension(
+                    bucket_name=bucket,
+                    inst_query=inst,
+                    file_name=file_name,
+                    base_schema=base_schema,
+                    extension_schema=inst_schema,
+                )
+            )
+            if schema_extension is not None:
+                updated_inst_schema = schema_extension
+                try:
+                    # Deactivate existing extension records for this institution
+                    # to ensure only one active extension per institution
+                    existing_extensions = (
+                        sess.execute(
+                            select(SchemaRegistryTable).where(
+                                SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
+                                SchemaRegistryTable.doc_type == DocType.extension,
+                                SchemaRegistryTable.is_active.is_(True),
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for existing in existing_extensions:
+                        existing.is_active = False
 
-def _resolve_schema_namespace_and_extension(
-    sess: Session,
-    inst: Any,
-    inst_id: str,
-    now: float,
-    allowed_schemas: List[str],
-    bucket: str,
-    base_schema: dict,
-    base_schema_id: Any,
-    file_name: str,
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy/custom)."""
-    pdp_id = getattr(inst, "pdp_id", None)
-    edvise_id = getattr(inst, "edvise_id", None)
-    legacy_id = getattr(inst, "legacy_id", None)
-    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution configuration error: cannot have more than one of "
-            "pdp_id, edvise_id, or legacy_id set",
-        )
-    if edvise_id:
-        return _resolve_edvise_schema(sess, now)
-    if pdp_id:
-        return _resolve_pdp_schema(sess, now)
-    if legacy_id:
-        return ("legacy", None)
-    return _resolve_custom_schema(
-        sess,
-        inst,
-        inst_id,
-        now,
-        allowed_schemas,
-        bucket,
-        base_schema,
-        base_schema_id,
-        file_name,
-    )
+                    new_schema_extension_record = SchemaRegistryTable(
+                        doc_type=DocType.extension,
+                        inst_id=str_to_uuid(inst_id),
+                        is_pdp=False,  # type: ignore
+                        version_label="1.0.0",
+                        extends_schema_id=base_schema_id,
+                        json_doc=schema_extension,
+                        is_active=True,
+                    )
+                    sess.add(new_schema_extension_record)
+                    sess.flush()
+                    logging.info(
+                        "Schema record inserted for '%s' (deactivated %d existing)",
+                        inst_id,
+                        len(existing_extensions),
+                    )
+                    # refresh cache
+                    STATE._ext_cache[key] = (
+                        time.monotonic() + EXT_TTL,
+                        schema_extension,
+                    )
+                except IntegrityError as e:
+                    sess.rollback()
+                    logging.warning("IntegrityError: %s", e)
+                except Exception as e:
+                    sess.rollback()
+                    logging.error("Unexpected DB error: %s", e)
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Unexpected database error while inserting file record: {e}",
+                    )
+            else:
+                logging.info(
+                    "No-op: extension already contains this model for inst %s", inst_id
+                )
+                updated_inst_schema = inst_schema
 
-
-def _run_validation_and_upsert_file_record(
-    bucket: str,
-    file_name: str,
-    allowed_schemas: List[str],
-    base_schema: dict,
-    updated_inst_schema: Optional[Dict[str, Any]],
-    schema_namespace: str,
-    inst_id: str,
-    source_str: str,
-    current_user: BaseUser,
-    storage_control: StorageControl,
-    sess: Session,
-) -> Dict[str, Any]:
-    """Run storage validate_file, then upsert file record and return response dict."""
+    # --- run file validation (I/O + Pandera work happens inside storage layer)
     try:
         inferred_schemas = storage_control.validate_file(
             bucket,
@@ -1589,11 +1523,14 @@ def _run_validation_and_upsert_file_record(
             institution_id=schema_namespace,
             institution_identifier=inst_id if schema_namespace == "edvise" else None,
         )
+        logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:
         logging.debug("Inferred Schemas FAILED (hard) %s", e)
+        # Format error message for user-friendly display
         try:
             formatted_msg = format_validation_error(e)
         except Exception as format_err:
+            # Fallback to technical message if formatting fails
             logging.warning("Error formatting validation message: %s", format_err)
             parts = ["VALIDATION_FAILED"]
             if e.missing_required:
@@ -1612,7 +1549,8 @@ def _run_validation_and_upsert_file_record(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"VALIDATION_ERROR: {type(e).__name__}: {e}",
         )
-    logging.debug("Inferred Schemas success %s", list(inferred_schemas))
+
+    # --- upsert file record (cheap path)
     existing_file = (
         sess.query(FileTable)
         .filter_by(name=file_name, inst_id=str_to_uuid(inst_id))
@@ -1655,6 +1593,7 @@ def _run_validation_and_upsert_file_record(
                 status_code=500,
                 detail=f"Unexpected database error while inserting file record: {e}",
             )
+
     return {
         "name": file_name,
         "inst_id": inst_id,
@@ -1662,92 +1601,6 @@ def _run_validation_and_upsert_file_record(
         "source": source_str,
         "status": db_status,
     }
-
-
-def validation_helper(
-    source_str: str,
-    inst_id: str,
-    file_name: str,
-    current_user: BaseUser,
-    storage_control: StorageControl,
-    sql_session: Session,
-) -> Any:
-    """Run file validation for an institution and upsert the file record.
-
-    Validates file name and institution, infers allowed schemas from filename
-    (or UNKNOWN for legacy when inference fails), resolves extension schema,
-    runs storage validation, then upserts the file record.
-
-    Args:
-        source_str: Source label for the upload (e.g. MANUAL_UPLOAD).
-        inst_id: Institution UUID (hex string).
-        file_name: Name of the file (no path separators).
-        current_user: Authenticated user; must have access to inst_id.
-        storage_control: StorageControl instance for GCS and validate_file.
-        sql_session: DB session for institution, schema, and file record.
-
-    Returns:
-        Dict with name, inst_id, file_types, source, status.
-
-    Raises:
-        HTTPException: 401 if no access, 404 if institution not found or invalid id,
-            422 if file name invalid or non-descriptive (non-legacy), 400 on validation failure.
-    """
-    has_access_to_inst_or_err(inst_id, current_user)
-    if not file_name or not file_name.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="File name is required and must be non-empty.",
-        )
-    if "/" in file_name:
-        raise HTTPException(status_code=422, detail="File name can't contain '/'.")
-
-    local_session.set(sql_session)
-    sess = local_session.get()
-
-    try:
-        inst = sess.execute(
-            select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
-        ).scalar_one_or_none()
-    except (ValueError, TypeError):
-        logging.warning("Invalid institution id for validation: %s", inst_id)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found or invalid identifier.",
-        )
-    if inst is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Institution {inst_id} not found",
-        )
-
-    allowed_schemas = _infer_allowed_schemas_from_filename(file_name, inst)
-    base_schema_id, base_schema, now = _get_validation_base_schema(sess)
-    bucket = get_external_bucket_name(inst_id)
-    schema_namespace, updated_inst_schema = _resolve_schema_namespace_and_extension(
-        sess,
-        inst,
-        inst_id,
-        now,
-        allowed_schemas,
-        bucket,
-        base_schema,
-        base_schema_id,
-        file_name,
-    )
-    return _run_validation_and_upsert_file_record(
-        bucket,
-        file_name,
-        allowed_schemas,
-        base_schema,
-        updated_inst_schema,
-        schema_namespace,
-        inst_id,
-        source_str,
-        current_user,
-        storage_control,
-        sess,
-    )
 
 
 @router.post(

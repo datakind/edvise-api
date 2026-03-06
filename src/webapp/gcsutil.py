@@ -341,8 +341,8 @@ class StorageControl(BaseModel):
             allowed_schemas: List of schema/model names allowed.
             base_schema: Base schema dict.
             inst_schema: Optional extension schema with institutions.* blocks.
-            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
-                "legacy" (any-format uploads), or institution UUID for custom. Default "pdp".
+            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
+                institution UUID for custom. Default "pdp" for backward compatibility.
             institution_identifier: Optional institution ID (e.g. UUID). Reserved for
                 future use; Edvise uses JSON-based validation only (different shape).
 
