@@ -976,8 +976,8 @@ wheels = [
 
 [[package]]
 name = "edvise"
-version = "0.1.11"
-source = { git = "https://github.com/datakind/edvise.git?rev=develop#0d80fee758fc896914ef61cb14e88ad735c8cbcf" }
+version = "0.1.12"
+source = { git = "https://github.com/datakind/edvise.git?rev=develop#5cc39df80c715a674ec8f76ab9271daedf3f9a7f" }
 dependencies = [
     { name = "databricks-connect", version = "16.1.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "databricks-connect", version = "16.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
