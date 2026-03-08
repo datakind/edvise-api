@@ -138,6 +138,8 @@ class InferenceRunRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored.
     # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
+    # Optional term filter (e.g. ["fall 2024-25"]). Used for cohort/graduation models. Omit for pipeline default.
+    term_filter: list[str] | None = None
 
 
 # Model related operations. Or model specific data.
@@ -502,6 +504,8 @@ def trigger_inference_run(
     """Returns top-level info around all executions of a given model.
 
     Only visible to users of that institution or Datakinder access types.
+    Optional request field term_filter: list of labels (e.g. ["fall 2024-25"]); used for cohort/graduation models.
+    When omitted, the pipeline uses its config default.
     """
     model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
@@ -566,7 +570,7 @@ def trigger_inference_run(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unexpected number of batches found: Expected 1, got "
-            + str(len(inst_result)),
+            + str(len(batch_result)),
         )
     # inst_file_schemas = [x.schemas for x in batch_result[0][0].files]
     inst_file_schemas = [list({s for f in batch_result[0][0].files for s in f.schemas})]
@@ -588,6 +592,26 @@ def trigger_inference_run(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
         )
+    if req.term_filter is not None:
+        # When term_filter is provided, require at least one non-empty label.
+        if len(req.term_filter) == 0:
+            logging.warning(
+                "run-inference term_filter validation failed: empty list for inst_id=%s",
+                inst_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one label is required when term_filter is provided for run-inference.",
+            )
+        if any(not label or not str(label).strip() for label in req.term_filter):
+            logging.warning(
+                "run-inference term_filter validation failed: empty or whitespace label for inst_id=%s",
+                inst_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Labels must be non-empty strings for run-inference.",
+            )
     # Note to Datakind: In the long-term, this is where you would have a case block or something that would call different types of pipelines.
     db_req = DatabricksInferenceRunRequest(
         inst_name=inst_result[0][0].name,
@@ -596,9 +620,10 @@ def trigger_inference_run(
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
+        term_filter=req.term_filter,
     )
     try:
-        res = databricks_control.run_pdp_inference(db_req)
+        inference_run_response = databricks_control.run_pdp_inference(db_req)
     except Exception as e:
         tb = traceback.format_exc()
         logging.error(f"Databricks run failure:\n{tb}")
@@ -606,6 +631,12 @@ def trigger_inference_run(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Databricks run_pdp_inference error. Error = {str(e)}",
         ) from e
+    logging.info(
+        "run-inference: user=%s term_filter=%s job_run_id=%s",
+        current_user.email,
+        req.term_filter,
+        inference_run_response.job_run_id,
+    )
     triggered_timestamp = datetime.now()
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
@@ -613,7 +644,7 @@ def trigger_inference_run(
         model_name=model_name,
     )
     job = JobTable(
-        id=res.job_run_id,
+        id=inference_run_response.job_run_id,
         triggered_at=triggered_timestamp,
         created_by=str_to_uuid(current_user.user_id),
         batch_name=req.batch_name,
@@ -626,7 +657,7 @@ def trigger_inference_run(
     return {
         "inst_id": inst_id,
         "m_name": model_name,
-        "run_id": res.job_run_id,
+        "run_id": inference_run_response.job_run_id,
         "created_by": current_user.user_id,
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,

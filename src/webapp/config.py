@@ -43,6 +43,9 @@ gcs_vars = {
     "GCP_SERVICE_ACCOUNT_EMAIL": "",
 }
 
+# ENV -> Databricks volume schema (used for /Volumes/{schema}/... paths).
+ENV_TO_VOLUME_SCHEMA = {"DEV": "dev_sst_02", "STAGING": "staging_sst_01"}
+
 # databricks vars needed for databricks integration
 databricks_vars = {
     # SECRET.

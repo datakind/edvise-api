@@ -23,14 +23,24 @@ from ..database import (
     FileTable,
     BatchTable,
     InstTable,
+    ModelTable,
     SchemaRegistryTable,
     DocType,
     Base,
     get_session,
 )
 from ..utilities import uuid_to_str, get_current_active_user, SchemaType
-from .data import router, DataOverview, DataInfo
+from .data import (
+    router,
+    DataOverview,
+    DataInfo,
+    filter_to_most_recent_cohort,
+    get_ordered_cohort_terms,
+    get_latest_batch_with_student_and_course,
+    apply_student_criteria_count,
+)
 from ..gcsutil import StorageControl
+from ..databricks import DatabricksControl
 
 MOCK_STORAGE = mock.Mock()
 
@@ -127,7 +137,7 @@ def session_fixture():
         updated_at=DATETIME_TESTING,
         sst_generated=False,
         valid=True,
-        schemas=[SchemaType.UNKNOWN],
+        schemas=[SchemaType.STUDENT],
     )
     file_3 = FileTable(
         id=FILE_UUID_3,
@@ -175,6 +185,7 @@ def session_fixture():
                         inst_id=USER_VALID_INST_UUID,
                         name="file_input_two",
                         source="PDP_SFTP",
+                        batches={batch_1},
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                         sst_generated=False,
@@ -183,6 +194,14 @@ def session_fixture():
                     ),
                     file_3,
                     file_4,
+                    ModelTable(
+                        id=uuid.UUID("b2c3d4e5-f6a7-8901-b234-567890123456"),
+                        inst_id=USER_VALID_INST_UUID,
+                        name="test_model",
+                        created_by=CREATOR_UUID,
+                        valid=False,
+                        deleted=False,
+                    ),
                 ]
             )
             session.commit()
@@ -266,7 +285,7 @@ def test_read_inst_all_input_files(client: TestClient) -> Any:
                 {
                     "name": "file_input_two",
                     "data_id": "cb02d06c2a59486a9bddd394a4fcb833",
-                    "batch_ids": [],
+                    "batch_ids": ["5b2420f3103546ab90eb74d5df97de43"],
                     "inst_id": "1d7c75c33eda42949c6675ea8af97b55",
                     "uploader": "",
                     "source": "PDP_SFTP",
@@ -381,6 +400,7 @@ def test_read_batch_info(client: TestClient) -> Any:
                     "inst_id": "1d7c75c33eda42949c6675ea8af97b55",
                     "file_names_to_ids": [
                         {"file_input_one": "f0bb3a206d924254afed6a72f43c562a"},
+                        {"file_input_two": "cb02d06c2a59486a9bddd394a4fcb833"},
                         {"file_output_three": "fbe67a2e50e040c7b7b807043cb813a5"},
                     ],
                     "name": "batch_foo",
@@ -418,6 +438,20 @@ def test_read_batch_info(client: TestClient) -> Any:
                     "retention_days": None,
                     "sst_generated": False,
                     "valid": True,
+                    "uploaded_date": "2024-12-24T20:22:20.132022",
+                },
+                {
+                    "name": "file_input_two",
+                    "data_id": "cb02d06c2a59486a9bddd394a4fcb833",
+                    "batch_ids": ["5b2420f3103546ab90eb74d5df97de43"],
+                    "inst_id": "1d7c75c33eda42949c6675ea8af97b55",
+                    "uploader": "",
+                    "source": "PDP_SFTP",
+                    "deleted": False,
+                    "deletion_request_time": None,
+                    "retention_days": None,
+                    "sst_generated": False,
+                    "valid": False,
                     "uploaded_date": "2024-12-24T20:22:20.132022",
                 },
             ],
@@ -1439,3 +1473,969 @@ def test_validate_edvise_inst_not_found(edvise_client: TestClient) -> None:
     )
     # Should fail - either 401 (unauthorized) or 404 (not found)
     assert response.status_code in [401, 404]
+
+
+# ---- Latest inference cohort (Task 1) ----
+
+
+def test_apply_student_criteria_count_empty_df() -> None:
+    """apply_student_criteria_count returns (0, None) for empty DataFrame."""
+    import pandas as pd
+
+    df = pd.DataFrame(columns=["student_id", "enrollment_type"])
+    count, err = apply_student_criteria_count(df, {})
+    assert count == 0
+    assert err is None
+
+
+def test_apply_student_criteria_count_no_criteria() -> None:
+    """apply_student_criteria_count returns nunique when no student_criteria."""
+    import pandas as pd
+
+    df = pd.DataFrame({"student_id": ["a", "b", "a"], "x": [1, 2, 3]})
+    count, err = apply_student_criteria_count(df, {})
+    assert count == 2
+    assert err is None
+
+
+def test_apply_student_criteria_count_with_criteria() -> None:
+    """apply_student_criteria_count filters by student_criteria and returns count."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "student_id": ["a", "b", "c", "d"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME", "Transfer", "FIRST-TIME"],
+        }
+    )
+    config = {"student_criteria": {"enrollment_type": "FIRST-TIME"}}
+    count, err = apply_student_criteria_count(df, config)
+    assert count == 3
+    assert err is None
+
+
+def test_apply_student_criteria_count_list_value() -> None:
+    """apply_student_criteria_count supports list values (isin)."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "student_id": ["a", "b", "c"],
+            "cohort_term": ["FALL", "SPRING", "SUMMER"],
+        }
+    )
+    config = {"student_criteria": {"cohort_term": ["FALL", "SPRING"]}}
+    count, err = apply_student_criteria_count(df, config)
+    assert count == 2
+    assert err is None
+
+
+def test_apply_student_criteria_count_missing_column_fails() -> None:
+    """apply_student_criteria_count returns error when criterion column is missing."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"student_id": ["a", "b"], "enrollment_type": ["FIRST-TIME", "Transfer"]}
+    )
+    config = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "credential_type_sought_year_1": "BACHELOR'S DEGREE",
+        }
+    }
+    count, err = apply_student_criteria_count(df, config)
+    assert count == 0
+    assert err is not None
+    assert "Missing columns for selection criteria" in err
+    assert "credential_type_sought_year_1" in err
+
+
+def test_apply_student_criteria_count_restricts_to_students_with_course_data() -> None:
+    """apply_student_criteria_count only counts students that appear in course data."""
+    import pandas as pd
+
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["a", "b", "c"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame(
+        {"study_id": ["a", "c"], "course_id": [1, 2]}
+    )  # b has no course rows
+    config = {"student_criteria": {"enrollment_type": "FIRST-TIME"}}
+    count, err = apply_student_criteria_count(df_student, config, df_course=df_course)
+    assert err is None
+    assert count == 2  # a and c only; b excluded for having no course data
+
+
+def test_apply_student_criteria_count_empty_course_returns_zero() -> None:
+    """When df_course is provided but empty (no course data for cohort), count is 0."""
+    import pandas as pd
+
+    df_student = pd.DataFrame(
+        {"study_id": ["a", "b"], "enrollment_type": ["FIRST-TIME", "FIRST-TIME"]}
+    )
+    df_course = pd.DataFrame(columns=["study_id", "course_id"])  # empty
+    config = {"student_criteria": {"enrollment_type": "FIRST-TIME"}}
+    count, err = apply_student_criteria_count(df_student, config, df_course=df_course)
+    assert err is None
+    assert count == 0
+
+
+def test_filter_to_most_recent_cohort_uses_cohort_term() -> None:
+    """filter_to_most_recent_cohort selects most recent cohort term (e.g. Spring 2025 > Fall 2024)."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "study_id": ["a", "b", "c", "d"],
+            "cohort": ["2024-25", "2024-25", "2024-25", "2023-24"],
+            "cohort_term": ["FALL", "FALL", "SPRING", "SPRING"],
+        }
+    )
+    filtered, label, err = filter_to_most_recent_cohort(df)
+    assert err is None
+    assert label == "Spring 2025"
+    assert len(filtered) == 1
+    assert filtered["study_id"].iloc[0] == "c"
+
+
+def test_filter_to_most_recent_cohort_respects_allowed_cohort_terms() -> None:
+    """filter_to_most_recent_cohort only considers terms in preprocessing.selection cohort_term."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "study_id": ["a", "b", "c"],
+            "cohort": ["2024-25", "2024-25", "2024-25"],
+            "cohort_term": ["FALL", "SPRING", "SUMMER"],
+        }
+    )
+    # Allowed FALL, SPRING -> most recent among those is Spring 2025 (c excluded as SUMMER)
+    filtered, label, err = filter_to_most_recent_cohort(
+        df, allowed_cohort_terms=["FALL", "SPRING"]
+    )
+    assert err is None
+    assert label == "Spring 2025"
+    assert len(filtered) == 1
+    assert filtered["study_id"].iloc[0] == "b"
+
+
+def test_filter_to_most_recent_cohort_allowed_terms_no_match() -> None:
+    """filter_to_most_recent_cohort returns error when no data matches allowed cohort_term."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "study_id": ["a", "b"],
+            "cohort": ["2024-25", "2024-25"],
+            "cohort_term": ["SUMMER", "SUMMER"],
+        }
+    )
+    filtered, label, err = filter_to_most_recent_cohort(
+        df, allowed_cohort_terms=["FALL", "SPRING"]
+    )
+    assert err is not None
+    assert "preprocessing.selection" in err or "cohort_term" in err
+    assert filtered.empty
+
+
+def test_filter_to_most_recent_cohort_requires_cohort_term() -> None:
+    """filter_to_most_recent_cohort returns error when cohort_term column is missing."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"study_id": ["a", "b", "c"], "cohort": ["2023-24", "2024-25", "2024-25"]}
+    )
+    filtered, label, err = filter_to_most_recent_cohort(df)
+    assert err is not None
+    assert "cohort_term" in err.lower()
+    assert filtered.empty
+
+
+def test_filter_to_most_recent_cohort_requires_cohort_term_with_entry_year() -> None:
+    """filter_to_most_recent_cohort returns error when only entry_year (no cohort_term)."""
+    import pandas as pd
+
+    df = pd.DataFrame({"study_id": ["a", "b", "c"], "entry_year": [2022, 2024, 2024]})
+    filtered, label, err = filter_to_most_recent_cohort(df)
+    assert err is not None
+    assert "cohort_term" in err.lower()
+    assert filtered.empty
+
+
+def test_filter_to_most_recent_cohort_missing_column() -> None:
+    """filter_to_most_recent_cohort returns error when no cohort/entry_year column."""
+    import pandas as pd
+
+    df = pd.DataFrame({"study_id": ["a", "b"], "enrollment_type": ["FT", "PT"]})
+    filtered, label, err = filter_to_most_recent_cohort(df)
+    assert err is not None
+    assert "cohort" in err.lower() or "entry_year" in err.lower()
+    assert filtered.empty
+
+
+def test_get_ordered_cohort_terms_cohort_and_cohort_term() -> None:
+    """get_ordered_cohort_terms returns terms most recent first when using cohort+cohort_term."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "study_id": ["a", "b", "c", "d"],
+            "cohort": ["2024-25", "2024-25", "2023-24", "2023-24"],
+            "cohort_term": ["SPRING", "FALL", "SPRING", "FALL"],
+        }
+    )
+    ordered, err = get_ordered_cohort_terms(df)
+    assert err is None
+    assert ordered is not None
+    assert len(ordered) == 4  # Spring 2025, Fall 2024, Spring 2024, Fall 2023
+    assert (
+        ordered[0]["term_upper"] == "SPRING" and ordered[0]["cohort_str"] == "2024-25"
+    )
+    assert ordered[1]["term_upper"] == "FALL" and ordered[1]["cohort_str"] == "2024-25"
+
+
+def test_get_ordered_cohort_terms_entry_year_and_cohort_term() -> None:
+    """get_ordered_cohort_terms returns terms most recent first when using entry_year+cohort_term."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "study_id": ["a", "b", "c"],
+            "entry_year": [2024, 2024, 2023],
+            "cohort_term": ["SPRING", "FALL", "FALL"],
+        }
+    )
+    ordered, err = get_ordered_cohort_terms(df)
+    assert err is None
+    assert ordered is not None
+    assert len(ordered) == 3  # Spring 2024, Fall 2024, Fall 2023
+    assert ordered[0]["term_upper"] == "SPRING" and ordered[0]["entry_year"] == 2024
+
+
+def test_get_ordered_cohort_terms_empty_dataframe() -> None:
+    """get_ordered_cohort_terms returns error when DataFrame is empty."""
+    import pandas as pd
+
+    df = pd.DataFrame(columns=["study_id", "cohort", "cohort_term"])
+    ordered, err = get_ordered_cohort_terms(df)
+    assert err is not None
+    assert "no student data" in err.lower()
+    assert ordered is None
+
+
+def test_get_ordered_cohort_terms_requires_cohort_term_column() -> None:
+    """get_ordered_cohort_terms returns error when cohort_term column is missing."""
+    import pandas as pd
+
+    df = pd.DataFrame({"study_id": ["a"], "cohort": ["2024-25"]})
+    ordered, err = get_ordered_cohort_terms(df)
+    assert err is not None
+    assert "cohort_term" in err.lower()
+    assert ordered is None
+
+
+def test_get_ordered_cohort_terms_respects_allowed_terms() -> None:
+    """get_ordered_cohort_terms only includes terms in allowed_cohort_terms."""
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "study_id": ["a", "b", "c"],
+            "cohort": ["2024-25", "2024-25", "2024-25"],
+            "cohort_term": ["FALL", "SPRING", "SUMMER"],
+        }
+    )
+    ordered, err = get_ordered_cohort_terms(df, allowed_cohort_terms=["FALL", "SPRING"])
+    assert err is None
+    assert ordered is not None
+    assert len(ordered) == 2  # Spring 2025, Fall 2024 (SUMMER excluded)
+    terms = [c["term_upper"] for c in ordered]
+    assert "SUMMER" not in terms
+
+
+def test_get_ordered_cohort_terms_no_cohort_or_entry_year() -> None:
+    """get_ordered_cohort_terms returns error when neither cohort nor entry_year present."""
+    import pandas as pd
+
+    df = pd.DataFrame({"study_id": ["a", "b"], "cohort_term": ["FALL", "FALL"]})
+    ordered, err = get_ordered_cohort_terms(df)
+    assert err is not None
+    assert (
+        "cohort" in err.lower() and "entry_year" in err.lower()
+    ) or "cohort_term" in err.lower()
+    assert ordered is None
+
+
+def test_get_latest_batch_with_student_and_course_returns_batch(
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """get_latest_batch_with_student_and_course returns batch when it has STUDENT and COURSE."""
+    batch = get_latest_batch_with_student_and_course(
+        session, uuid_to_str(USER_VALID_INST_UUID)
+    )
+    # Session fixture: batch_1 has file_1 (STUDENT), file_2 (COURSE), file_3 (STUDENT, sst_generated)
+    assert batch is not None
+    assert batch.name == "batch_foo"
+
+
+def test_get_latest_batch_with_student_and_course_no_batch(
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """get_latest_batch_with_student_and_course returns None for inst with no such batch."""
+    batch = get_latest_batch_with_student_and_course(session, uuid_to_str(UUID_INVALID))
+    assert batch is None
+
+
+def test_get_latest_batch_with_student_and_course_returns_none_when_no_batch_has_both_student_and_course(
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """get_latest_batch_with_student_and_course returns None when inst has batches but none have both STUDENT and COURSE."""
+    inst_only_student_uuid = uuid.UUID("a1b2c3d4-e5f6-4789-a012-345678901234")
+    batch_student_only = BatchTable(
+        inst_id=inst_only_student_uuid,
+        name="batch_student_only",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    file_student_only = FileTable(
+        inst_id=inst_only_student_uuid,
+        name="file_student_only",
+        source="MANUAL_UPLOAD",
+        batches={batch_student_only},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    session.add_all(
+        [
+            InstTable(
+                id=inst_only_student_uuid,
+                name="inst_student_only",
+                created_at=DATETIME_TESTING,
+                updated_at=DATETIME_TESTING,
+            ),
+            batch_student_only,
+            file_student_only,
+        ]
+    )
+    session.commit()
+    batch = get_latest_batch_with_student_and_course(
+        session, uuid_to_str(inst_only_student_uuid)
+    )
+    assert batch is None
+
+
+def test_get_latest_inference_cohort_unauthorized(client: TestClient) -> None:
+    """GET latest-inference-cohort returns 401 for wrong institution."""
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(UUID_INVALID)
+        + "/latest-inference-cohort?model_name=test_model"
+    )
+    assert response.status_code == 401
+
+
+def test_get_latest_inference_cohort_invalid_when_no_model_name_and_no_models(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when model_name omitted and institution has no registered models."""
+    # Session fixture has no ModelTable rows for USER_VALID_INST_UUID
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/latest-inference-cohort"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "registered" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_invalid_when_models_exist_but_none_registered(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when model_name omitted and all models are invalid (not registered)."""
+    model_uuid = uuid.UUID("a0b1c2d3-e4f5-6789-a012-345678901235")
+    session.add(
+        ModelTable(
+            id=model_uuid,
+            inst_id=USER_VALID_INST_UUID,
+            name="unapproved_model",
+            created_by=CREATOR_UUID,
+            valid=False,
+            deleted=False,
+        )
+    )
+    session.commit()
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/latest-inference-cohort"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "registered" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_missing_cohort_column(client: TestClient) -> None:
+    """GET latest-inference-cohort returns 200 invalid when student file has no cohort column."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+    }
+    # Student file without cohort or entry_year
+    df_student = pd.DataFrame({"study_id": ["s1"], "enrollment_type": ["FIRST-TIME"]})
+    df_course = pd.DataFrame({"study_id": ["s1"], "x": [1]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "cohort_term" in (data["reason"] or "").lower()
+    assert data.get("batch_name") == "batch_foo"
+
+
+def test_get_latest_inference_cohort_missing_cohort_term(client: TestClient) -> None:
+    """GET latest-inference-cohort returns 200 invalid when student file has cohort but no cohort_term."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+    }
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2"],
+            "cohort": ["2024-25", "2024-25"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s1", "s2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "cohort_term" in (data["reason"] or "").lower()
+    assert data.get("batch_name") == "batch_foo"
+
+
+def test_get_latest_inference_cohort_model_version_lookup_fails(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when fetch_model_version raises (e.g. no versions)."""
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.side_effect = ValueError(
+        "No versions found for model"
+    )
+
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "model version" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_missing_config(client: TestClient) -> None:
+    """GET latest-inference-cohort returns 200 invalid when Databricks config is missing."""
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = None
+
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "Missing config" in (data["reason"] or "")
+    assert data.get("batch_name") == "batch_foo"
+
+
+def test_get_latest_inference_cohort_valid(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 valid when batch has STUDENT and config."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2", "s3"],
+            "cohort": ["2024-25", "2024-25", "2023-24"],
+            "cohort_term": ["FALL", "FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME", "Transfer"],
+        }
+    )
+    # Course data for s1 and s2 in most recent cohort term (Fall 2024)
+    df_course = pd.DataFrame({"study_id": ["s1", "s2", "s3"], "x": [1, 2, 3]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "valid"
+    assert "batch_name" in data and data["batch_name"] == "batch_foo"
+    assert "cohort_label" in data and data["cohort_label"] == "Fall 2024"
+    assert (
+        "valid_student_count" in data and data["valid_student_count"] == 2
+    )  # s1, s2 in Fall 2024 cohort term matching FIRST-TIME
+    assert data.get("reason") is None
+
+
+def test_get_latest_inference_cohort_valid_with_batch_name(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort with batch_name uses that batch for cohort selection."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2"],
+            "cohort": ["2024-25", "2024-25"],
+            "cohort_term": ["FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s1", "s2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model&batch_name=batch_foo"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "valid"
+    assert data["batch_name"] == "batch_foo"
+    assert data["cohort_label"] == "Fall 2024"
+    assert data["valid_student_count"] == 2
+
+
+def test_get_latest_inference_cohort_invalid_when_model_name_not_found(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns invalid when user provides a model name that does not exist for the institution."""
+    response = client.get(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/latest-inference-cohort?model_name=nonexistent_model"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "model" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_invalid_when_batch_name_not_found(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort with batch_name returns invalid when batch not found."""
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model&batch_name=nonexistent_batch"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "batch" in (data["reason"] or "").lower()
+
+
+def test_get_latest_inference_cohort_loops_back_when_no_course_data_for_most_recent(
+    client: TestClient,
+) -> None:
+    """When most recent cohort term has no course data, try next cohort term until one has course data."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+    # Fall 2025: s1, s2. Fall 2024: s3, s4. Course data only for s3, s4 (Fall 2024).
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2", "s3", "s4"],
+            "cohort": ["2025-26", "2025-26", "2024-25", "2024-25"],
+            "cohort_term": ["FALL", "FALL", "FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME", "FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s3", "s4"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "valid"
+    assert (
+        data["cohort_label"] == "Fall 2024"
+    )  # Fall 2025 had no course data; used Fall 2024
+    assert data["valid_student_count"] == 2  # s3, s4
+
+
+def test_get_latest_inference_cohort_invalid_when_no_cohort_has_course_data(
+    client: TestClient,
+) -> None:
+    """When no cohort term in the batch has course data, return invalid."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {"enrollment_type": "FIRST-TIME", "cohort_term": ["FALL"]},
+    }
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2"],
+            "cohort": ["2025-26", "2025-26"],
+            "cohort_term": ["FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    # Course data for different IDs (no overlap with s1, s2)
+    df_course = pd.DataFrame({"study_id": ["other1", "other2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "course data" in (data["reason"] or "").lower()
+    assert data.get("batch_name") == "batch_foo"
+
+
+def test_get_latest_inference_cohort_missing_student_id_column(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when student file has no student id column (study_id/student_id)."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+    df_student = pd.DataFrame(
+        {
+            "cohort": ["2024-25", "2024-25"],
+            "cohort_term": ["FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s1", "s2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "student id column" in (data["reason"] or "").lower()
+    assert data.get("batch_name") == "batch_foo"
+
+
+def test_get_latest_inference_cohort_valid_student_count_zero_when_no_students_meet_criteria(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 valid with valid_student_count=0 when cohort has course data but no students meet criteria."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+    # All students in Fall 2024 are Transfer; config requires FIRST-TIME
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2"],
+            "cohort": ["2024-25", "2024-25"],
+            "cohort_term": ["FALL", "FALL"],
+            "enrollment_type": ["Transfer", "Transfer"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s1", "s2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "valid"
+    assert data["cohort_label"] == "Fall 2024"
+    assert data["valid_student_count"] == 0
+    assert data.get("batch_name") == "batch_foo"
+
+
+def test_get_latest_inference_cohort_invalid_when_student_criteria_references_missing_column(
+    client: TestClient,
+) -> None:
+    """GET latest-inference-cohort returns 200 invalid when student_criteria references a column not in student file."""
+    import pandas as pd
+
+    MOCK_DATABRICKS = mock.Mock(spec=DatabricksControl)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        run_id="0b2e206732ce48f6b644149090c9614a"
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {
+            "enrollment_type": "FIRST-TIME",
+            "nonexistent_col": "X",
+            "cohort_term": ["FALL", "SPRING"],
+        },
+    }
+    df_student = pd.DataFrame(
+        {
+            "study_id": ["s1", "s2"],
+            "cohort": ["2024-25", "2024-25"],
+            "cohort_term": ["FALL", "FALL"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME"],
+        }
+    )
+    df_course = pd.DataFrame({"study_id": ["s1", "s2"], "x": [1, 2]})
+
+    def storage_read(bucket: str, path: str) -> Any:
+        if "input_one" in path:
+            return df_student
+        if "input_two" in path:
+            return df_course
+        return df_student
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = storage_read
+    app.dependency_overrides[DatabricksControl] = lambda: MOCK_DATABRICKS
+    try:
+        response = client.get(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/latest-inference-cohort?model_name=test_model"
+        )
+    finally:
+        app.dependency_overrides.pop(DatabricksControl, None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "invalid"
+    assert "reason" in data and data["reason"]
+    assert "Missing columns" in (data["reason"] or "") or "nonexistent_col" in (
+        data["reason"] or ""
+    )
+    assert data.get("batch_name") == "batch_foo"
