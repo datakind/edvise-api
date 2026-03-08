@@ -115,8 +115,6 @@ def session_fixture():
     """Unit test database setup."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
-        echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -800,17 +798,16 @@ def test_get_eda_data_success(
     session.add_all([eda_batch, student_file, course_file])
     session.commit()
 
-    # Create mock DataFrames
-    df_student = pd.DataFrame(
+    df_cohort = pd.DataFrame(
         {
-            "study_id": ["S001", "S002", "S003", "S001"],  # S001 appears twice
+            "student_id": ["S001", "S002", "S003", "S001"],
             "cohort": ["2020", "2020", "2021", "2021"],
             "cohort_term": ["FALL", "FALL", "SPRING", "SPRING"],
             "enrollment_type": [
-                "First-Time",
-                "Transfer-In",
-                "First-Time",
-                "Transfer-In",
+                "FIRST-TIME",
+                "TRANSFER-IN",
+                "FIRST-TIME",
+                "TRANSFER-IN",
             ],
             "enrollment_intensity_first_term": [
                 "Full-Time",
@@ -832,7 +829,6 @@ def test_get_eda_data_success(
             "student_age": ["20 - 24", "20 or younger", "Older than 24", "20 - 24"],
         }
     )
-
     df_course = pd.DataFrame(
         {
             "study_id": ["S001", "S002", "S003"],
@@ -844,7 +840,7 @@ def test_get_eda_data_success(
     # Mock storage to return our test DataFrames
     def mock_read_csv(bucket_name: str, blob_path: str) -> pd.DataFrame:
         if "student" in blob_path.lower():
-            return df_student
+            return df_cohort
         elif "course" in blob_path.lower():
             return df_course
         else:
@@ -864,38 +860,51 @@ def test_get_eda_data_success(
     data = response.json()
 
     # Check response structure
-    assert "summary_stats" in data
+    assert "total_students" in data
+    assert "transfer_students" in data
+    assert "avg_year1_gpa_all_students" in data
     assert "gpa_by_enrollment_type" in data
     assert "gpa_by_enrollment_intensity" in data
     assert "students_by_cohort_term" in data
     assert "course_enrollments" in data
     assert "degree_types" in data
+    assert "total" in data["degree_types"]
+    assert "degrees" in data["degree_types"]
     assert "enrollment_type_by_intensity" in data
+    assert "pell_recipient_status" in data
     assert "pell_recipient_by_first_gen" in data
     assert "student_age_by_gender" in data
     assert "race_by_pell_status" in data
 
-    # Check summary stats
-    assert data["summary_stats"]["total_students"] == "3"  # 3 unique study_ids
-    assert data["summary_stats"]["transfer_students"] == "2"  # 2 Transfer-In
+    # Check summary stats (each is { name, value })
+    assert data["total_students"]["name"] == "Total Students"
+    assert data["total_students"]["value"] == 3  # unique student_id (S001, S002, S003)
+    assert data["transfer_students"]["name"] == "Transfer Students"
+    assert data["transfer_students"]["value"] == 2  # 2 TRANSFER-IN
 
-    # Check GPA charts have cohort years
+    # Check GPAs have cohort years
     assert "cohort_years" in data["gpa_by_enrollment_type"]
     assert len(data["gpa_by_enrollment_type"]["cohort_years"]) == 2  # 2020, 2021
     assert "2020" in data["gpa_by_enrollment_type"]["cohort_years"]
     assert "2021" in data["gpa_by_enrollment_type"]["cohort_years"]
 
-    # Check term data structure
-    assert "fall" in data["students_by_cohort_term"]
-    assert "spring" in data["students_by_cohort_term"]
-    assert len(data["students_by_cohort_term"]["fall"]) == 2  # One per cohort year
+    # Check term data structure (degree_types style: years + by_year with total and terms[{ count, percentage, name }])
+    assert "years" in data["students_by_cohort_term"]
+    assert "by_year" in data["students_by_cohort_term"]
+    assert len(data["students_by_cohort_term"]["years"]) == 2
+    by_year = data["students_by_cohort_term"]["by_year"]
+    assert len(by_year) == 2
+    assert "year" in by_year[0] and "total" in by_year[0] and "terms" in by_year[0]
+    assert all(
+        "count" in t and "percentage" in t and "name" in t for t in by_year[0]["terms"]
+    )
 
     # Check enrollment type by intensity has categories and series
     assert "categories" in data["enrollment_type_by_intensity"]
     assert "series" in data["enrollment_type_by_intensity"]
     assert len(data["enrollment_type_by_intensity"]["series"]) > 0
 
-    # Check pell recipient chart structure
+    # Check pell recipients
     assert "categories" in data["pell_recipient_by_first_gen"]
     assert "series" in data["pell_recipient_by_first_gen"]
 
@@ -920,7 +929,6 @@ def edvise_session_fixture():
     """Unit test database setup for Edvise tests."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=False,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -1056,8 +1064,10 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(EDVISE_INST_UUID)
     assert response.json()["source"] == "MANUAL_UPLOAD"
 
-    # Verify that validate_file was called (Edvise schema was used)
+    # Verify that validate_file was called with institution_identifier for Edvise
     assert MOCK_STORAGE.validate_file.called
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
 
 def test_validation_helper_edvise_schema_not_found(
@@ -1225,18 +1235,22 @@ def test_edvise_schema_takes_precedence_over_custom(
 
     STATE._edvise_cache = (0.0, None)
 
-    # Capture schema and institution_id passed to validate_file
+    # Capture schema, institution_id, and institution_identifier passed to validate_file
     captured_schema = None
     captured_institution_id = None
+    captured_institution_identifier = None
 
     def capture_schema(*args, **kwargs):
-        nonlocal captured_schema, captured_institution_id
-        # validate_file(bucket, file_name, allowed_schemas, base_schema, inst_schema, institution_id=...)
+        # fmt: off
+        nonlocal captured_schema, captured_institution_id, captured_institution_identifier
+        # fmt: on
+        # validate_file(bucket, file_name, allowed_schemas, base_schema, inst_schema, institution_id=..., institution_identifier=...)
         if len(args) >= 5:
             captured_schema = args[4]
         elif "inst_schema" in kwargs:
             captured_schema = kwargs["inst_schema"]
         captured_institution_id = kwargs.get("institution_id")
+        captured_institution_identifier = kwargs.get("institution_identifier")
         return ["STUDENT"]
 
     MOCK_STORAGE.validate_file.side_effect = capture_schema
@@ -1265,6 +1279,8 @@ def test_edvise_schema_takes_precedence_over_custom(
     )
     # Verify correct institution_id so merge_model_columns uses institutions["edvise"]
     assert captured_institution_id == "edvise"
+    # Router must pass institution_identifier (institution UUID) for Edvise normalization
+    assert captured_institution_identifier == uuid_to_str(EDVISE_INST_UUID)
 
     # Reset mock
     MOCK_STORAGE.validate_file.side_effect = None

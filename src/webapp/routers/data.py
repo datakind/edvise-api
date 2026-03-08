@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, Literal
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
@@ -48,6 +48,7 @@ from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
 from ..config import env_vars
+from edvise.data_audit.eda import EdaSummary
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
@@ -983,21 +984,26 @@ def read_batch_info(
 
 
 ## EDA (Exploratory Data Analysis) Endpoints
-
-
 class SummaryStats(BaseModel):
     """Summary statistics for the EDA dashboard."""
 
-    total_students: str
-    transfer_students: str
-    avg_year1_gpa_all_students: str
+    total_students: int
+    transfer_students: int
+    avg_year1_gpa_all_students: float
+
+
+class SummaryMetric(BaseModel):
+    """A named metric with a single value (e.g. for EDA summary stats)."""
+
+    name: str
+    value: Union[int, float]
 
 
 class GpaSeriesData(BaseModel):
     """GPA data series for a chart."""
 
     name: str
-    data: List[float]
+    data: List[Optional[float]]
 
 
 class GpaChartData(BaseModel):
@@ -1005,47 +1011,69 @@ class GpaChartData(BaseModel):
 
     cohort_years: List[str]
     series: List[GpaSeriesData]
+    min_gpa: Optional[float] = None
 
 
-class TermData(BaseModel):
-    """Term-based data (fall, winter, spring, summer)."""
-
-    fall: List[int]
-    winter: List[int]
-    spring: List[int]
-    summer: List[int]
-
-
-class DegreeTypeData(BaseModel):
-    """Degree type data for donut chart."""
-
-    count: int  # Number of students with this degree type
-    percentage: float  # Percentage of total students
+class TermCountPct(BaseModel):
+    count: int
+    percentage: float
     name: str
 
 
-class StackedBarSeries(BaseModel):
-    """Series data for stacked bar charts."""
+class YearTermSummary(BaseModel):
+    year: str
+    total: int
+    terms: List[TermCountPct]
 
-    name: str
-    type: str = "bar"
-    stack: str
-    data: List[int]
+
+class StudentsByCohortTerm(BaseModel):
+    years: List[str]
+    by_year: List[YearTermSummary]
+
+
+class TermChartData(BaseModel):
+    """Chart-ready term data: cohort_years, terms."""
+
+    cohort_years: List[str]
+    terms: List[Dict[str, Any]]
 
 
 class EdaDataResponse(BaseModel):
-    """Complete EDA data response matching frontend expectations."""
+    """EDA API response: summary metrics, GPA/time-series data, and category+series blobs."""
 
-    summary_stats: Optional[SummaryStats] = None
+    total_students: Optional[SummaryMetric] = None
+    transfer_students: Optional[SummaryMetric] = None
+    avg_year1_gpa_all_students: Optional[SummaryMetric] = None
     gpa_by_enrollment_type: Optional[GpaChartData] = None
     gpa_by_enrollment_intensity: Optional[GpaChartData] = None
-    students_by_cohort_term: Optional[TermData] = None
-    course_enrollments: Optional[TermData] = None
-    degree_types: Optional[List[DegreeTypeData]] = None
-    enrollment_type_by_intensity: Dict[str, Any]  # Categories and series
-    pell_recipient_by_first_gen: Dict[str, Any]  # Categories and series
-    student_age_by_gender: Dict[str, Any]  # Categories and series
-    race_by_pell_status: Dict[str, Any]  # Categories and series
+    students_by_cohort_term: Optional[StudentsByCohortTerm] = None
+    course_enrollments: Optional[StudentsByCohortTerm] = None
+    degree_types: Optional[Dict[str, Any]] = (
+        None  # { "total": int, "degrees": [{ "count", "percentage", "name" }, ...] }
+    )
+    enrollment_type_by_intensity: Optional[Dict[str, Any]] = None
+    pell_recipient_status: Optional[Dict[str, Any]] = None
+    pell_recipient_by_first_gen: Optional[Dict[str, Any]] = None
+    student_age_by_gender: Optional[Dict[str, Any]] = None
+    race_by_pell_status: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_eda_summary(cls, eda: Any) -> "EdaDataResponse":
+        return cls(
+            total_students=eda.total_students,
+            transfer_students=eda.transfer_students,
+            avg_year1_gpa_all_students=eda.avg_year1_gpa_all_students,
+            gpa_by_enrollment_type=eda.gpa_by_enrollment_type,
+            gpa_by_enrollment_intensity=eda.gpa_by_enrollment_intensity,
+            students_by_cohort_term=eda.students_by_cohort_term,
+            course_enrollments=eda.course_enrollments,
+            degree_types=eda.degree_types,
+            enrollment_type_by_intensity=eda.enrollment_type_by_intensity,
+            pell_recipient_status=eda.pell_recipient_status,
+            pell_recipient_by_first_gen=eda.pell_recipient_by_first_gen,
+            student_age_by_gender=eda.student_age_by_gender,
+            race_by_pell_status=eda.race_by_pell_status,
+        )
 
 
 def read_batch_files_as_dataframes(
@@ -1581,7 +1609,6 @@ def get_eda_data(
     has_full_data_access_or_err(current_user, "EDA data")
     local_session.set(sql_session)
 
-    # Verify batch exists and belongs to institution
     batch_result = (
         local_session.get()
         .execute(
@@ -1592,305 +1619,37 @@ def get_eda_data(
                 )
             )
         )
-        .all()
+        .scalar_one_or_none()
     )
-
-    if not batch_result or len(batch_result) == 0:
+    if batch_result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Batch not found.",
         )
 
-    if len(batch_result) > 1:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Batch duplicates found.",
-        )
-
-    batch_record = batch_result[0][0]
-    batch_files = batch_record.files
-
-    # Check cache first
     cache_key = f"{inst_id}:{batch_id}"
     cached_result = EDA_CACHE.get(cache_key)
     if cached_result is not None:
         logger.debug(f"EDA cache hit for {cache_key}")
         return cached_result
-
     logger.debug(f"EDA cache miss for {cache_key}, computing...")
 
-    # Read files from batch using helper function
     file_dataframes = read_batch_files_as_dataframes(
-        inst_id, batch_files, storage_control
+        inst_id, batch_result.files, storage_control
     )
     df_cohort = file_dataframes.get("STUDENT")
-    df_course = file_dataframes.get("COURSE")
-
     if df_cohort is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No STUDENT schema files found in batch for EDA.",
         )
 
-    cohort_years = sorted(df_cohort["cohort"].unique().tolist())
-
-    result = EdaDataResponse(
-        summary_stats=SummaryStats(
-            total_students=f"{df_cohort['study_id'].nunique():,}",
-            transfer_students=f"{(df_cohort['enrollment_type'] == 'Transfer-In').sum():,}",
-            avg_year1_gpa_all_students=f"{pd.to_numeric(df_cohort['gpa_group_year_1'], errors='coerce').mean():.2f}",
-        ),
-        gpa_by_enrollment_type=GpaChartData(
-            cohort_years=cohort_years,
-            series=[
-                GpaSeriesData(
-                    name="First Time Student",
-                    data=calculate_gpa_series(
-                        df_cohort, cohort_years, "enrollment_type", "First-Time"
-                    ),
-                ),
-                GpaSeriesData(
-                    name="Transfer Student",
-                    data=calculate_gpa_series(
-                        df_cohort, cohort_years, "enrollment_type", "Transfer-In"
-                    ),
-                ),
-            ],
-        ),
-        gpa_by_enrollment_intensity=GpaChartData(
-            cohort_years=cohort_years,
-            series=[
-                GpaSeriesData(
-                    name="Full Time Student",
-                    data=calculate_gpa_series(
-                        df_cohort,
-                        cohort_years,
-                        "enrollment_intensity_first_term",
-                        "Full-Time",
-                    ),
-                ),
-                GpaSeriesData(
-                    name="Part Time Student",
-                    data=calculate_gpa_series(
-                        df_cohort,
-                        cohort_years,
-                        "enrollment_intensity_first_term",
-                        "Part-Time",
-                    ),
-                ),
-            ],
-        ),
-        students_by_cohort_term=TermData(
-            fall=get_term_counts(df_cohort, cohort_years, "FALL"),
-            winter=get_term_counts(df_cohort, cohort_years, "WINTER"),
-            spring=get_term_counts(df_cohort, cohort_years, "SPRING"),
-            summer=get_term_counts(df_cohort, cohort_years, "SUMMER"),
-        ),
-        course_enrollments=TermData(
-            fall=get_term_counts(df_course, cohort_years, "FALL"),
-            winter=get_term_counts(df_course, cohort_years, "WINTER"),
-            spring=get_term_counts(df_course, cohort_years, "SPRING"),
-            summer=get_term_counts(df_course, cohort_years, "SUMMER"),
-        ),
-        degree_types=[
-            DegreeTypeData(
-                count=int(count),
-                percentage=round(count / df_cohort["study_id"].nunique() * 100, 2),
-                name=str(degree_type),
-            )
-            for i, (degree_type, count) in enumerate(
-                df_cohort["credential_type_sought_year_1"].value_counts().items()
-            )
-        ],
-        enrollment_type_by_intensity={
-            "categories": (
-                categories := sorted(df_cohort["enrollment_type"].unique().tolist())
-            ),
-            "series": [
-                {
-                    "name": "Full Time",
-                    "type": "bar",
-                    "stack": "intensity",
-                    "data": (
-                        df_cohort[
-                            df_cohort["enrollment_intensity_first_term"] == "Full-Time"
-                        ]
-                        .groupby("enrollment_type")
-                        .size()
-                        .reindex(categories, fill_value=0)
-                        .tolist()
-                    ),
-                },
-                {
-                    "name": "Part Time",
-                    "type": "bar",
-                    "stack": "intensity",
-                    "data": (
-                        df_cohort[
-                            df_cohort["enrollment_intensity_first_term"] == "Part-Time"
-                        ]
-                        .groupby("enrollment_type")
-                        .size()
-                        .reindex(categories, fill_value=0)
-                        .tolist()
-                    ),
-                },
-            ],
-        },
-        pell_recipient_by_first_gen={
-            "categories": (
-                pell_categories := sorted(
-                    df_cohort["pell_status_first_year"]
-                    .dropna()
-                    .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"})
-                    .loc[lambda x: x.isin(["Yes", "No"])]
-                    .unique()
-                    .tolist()
-                )
-            ),
-            "series": [
-                {
-                    "name": first_gen_normalized,
-                    "type": "bar",
-                    "stack": "firstGen",
-                    "data": (
-                        df_cohort.assign(
-                            _pell=df_cohort["pell_status_first_year"].replace(
-                                {"Y": "Yes", "N": "No", "y": "Yes", "n": "No"}
-                            ),
-                            _first_gen=df_cohort["first_gen"]
-                            .fillna("Nan")
-                            .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"}),
-                        )
-                        .query(
-                            f"_first_gen == '{first_gen_normalized}' and _pell in ['Yes', 'No']"
-                        )
-                        .groupby("_pell")
-                        .size()
-                        .reindex(pell_categories, fill_value=0)
-                        .tolist()
-                    ),
-                }
-                for i, first_gen_normalized in enumerate(
-                    sorted(
-                        df_cohort["first_gen"]
-                        .fillna("Nan")
-                        .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"})
-                        .unique()
-                        .tolist()
-                    )
-                )
-            ],
-        },
-        student_age_by_gender={
-            "categories": (
-                gender_categories := sorted(
-                    df_cohort["gender"].dropna().unique().tolist()
-                )
-            ),
-            "series": [
-                {
-                    "name": age_group,
-                    "type": "bar",
-                    "stack": "age",
-                    "data": (
-                        df_cohort.assign(
-                            _age_group=(
-                                (
-                                    df_cohort["student_age"]
-                                    if "student_age" in df_cohort.columns
-                                    else (
-                                        df_cohort["age"]
-                                        if "age" in df_cohort.columns
-                                        else pd.Series([None] * len(df_cohort))
-                                    )
-                                ).apply(
-                                    lambda x: (
-                                        "20 or younger"
-                                        if pd.isna(x)
-                                        or any(
-                                            term in str(x).lower()
-                                            for term in [
-                                                "20 or younger",
-                                                "20 or under",
-                                                "under 20",
-                                                "<=20",
-                                            ]
-                                        )
-                                        or (isinstance(x, (int, float)) and x <= 20)
-                                        else (
-                                            "20 - 24"
-                                            if any(
-                                                term in str(x).lower()
-                                                for term in [
-                                                    "20-24",
-                                                    "20 to 24",
-                                                    "20 - 24",
-                                                ]
-                                            )
-                                            or (
-                                                isinstance(x, (int, float))
-                                                and 20 < x <= 24
-                                            )
-                                            else "Older than 24"
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                        .query(f"_age_group == '{age_group}'")
-                        .groupby("gender")
-                        .size()
-                        .reindex(gender_categories, fill_value=0)
-                        .tolist()
-                    ),
-                }
-                for i, age_group in enumerate(
-                    ["20 or younger", "20 - 24", "Older than 24"]
-                )
-            ],
-        },
-        race_by_pell_status={
-            "categories": (
-                race_categories := sorted(df_cohort["race"].dropna().unique().tolist())
-            ),
-            "series": [
-                {
-                    "name": pell_status_normalized,
-                    "type": "bar",
-                    "stack": "pell",
-                    "data": (
-                        df_cohort.assign(
-                            _pell=df_cohort["pell_status_first_year"].replace(
-                                {"Y": "Yes", "N": "No", "y": "Yes", "n": "No"}
-                            )
-                        )
-                        .query(
-                            f"_pell == '{pell_status_normalized}' and _pell in ['Yes', 'No']"
-                        )
-                        .groupby("race")
-                        .size()
-                        .reindex(race_categories, fill_value=0)
-                        .tolist()
-                    ),
-                }
-                for i, pell_status_normalized in enumerate(
-                    sorted(
-                        df_cohort["pell_status_first_year"]
-                        .dropna()
-                        .replace({"Y": "Yes", "N": "No", "y": "Yes", "n": "No"})
-                        .loc[lambda x: x.isin(["Yes", "No"])]
-                        .unique()
-                        .tolist()
-                    )
-                )
-            ],
-        },
+    eda = EdaSummary(
+        df_cohort=df_cohort,
+        df_course=file_dataframes.get("COURSE"),
     )
-
-    # Cache the result before returning
+    result = EdaDataResponse.from_eda_summary(eda)
     EDA_CACHE[cache_key] = result
-    logger.debug(f"EDA result cached for {cache_key}")
 
     return result
 
@@ -2697,6 +2456,7 @@ def validation_helper(
             base_schema,
             updated_inst_schema,
             institution_id=schema_namespace,
+            institution_identifier=inst_id if schema_namespace == "edvise" else None,
         )
         logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:
