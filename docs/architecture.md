@@ -13,31 +13,31 @@ flowchart TB
   end
 
   subgraph traffic [Traffic]
-    LB["Load balancer\n(HTTPS, IAP)"]
+    LB["Load balancer<br>(HTTPS, IAP)"]
   end
 
   subgraph run [Cloud Run]
-    Frontend["frontend\n(Laravel + Inertia/React)"]
-    Webapp["webapp\n(FastAPI)"]
-    Worker["worker\n(SFTP pipeline)"]
+    Frontend["frontend<br>(Laravel + Inertia/React)"]
+    Webapp["webapp<br>(FastAPI)"]
+    Worker["worker<br>(SFTP pipeline)"]
   end
 
   subgraph storage [GCP Storage]
-    Static["Static assets bucket\n/build/*"]
+    Static["Static assets bucket<br>/build/*"]
   end
 
   subgraph data [Data and config]
-    CloudSQL["Cloud SQL\n(MySQL)"]
-    GCS["GCS buckets\n(uploads, SFTP ingestion)"]
-    Secrets["Secret Manager\n(env per service)"]
+    CloudSQL["Cloud SQL<br>(MySQL)"]
+    GCS["GCS buckets<br>(uploads, SFTP ingestion)"]
+    Secrets["Secret Manager<br>(env per service)"]
   end
 
   subgraph databricks_platform [Databricks]
-    DBX["Workspace\nJobs, Unity Catalog\nMLflow model registry"]
+    DBX["Workspace<br>Jobs, Unity Catalog<br>MLflow model registry"]
   end
 
   subgraph lib [Application code]
-    Edvise["edvise\n(Python library)"]
+    Edvise["edvise<br>(Python library)"]
   end
 
   Browser --> LB
@@ -46,7 +46,7 @@ flowchart TB
   LB -->|"/worker/*"| Worker
   LB -->|"/build/*"| Static
 
-  Frontend -->|"BACKEND_URL\nAPI key"| Webapp
+  Frontend -->|"BACKEND_URL<br>API key"| Webapp
   Webapp --> Edvise
   Webapp --> CloudSQL
   Webapp --> GCS
@@ -56,7 +56,7 @@ flowchart TB
   Worker --> GCS
   Worker --> Secrets
   Worker -.->|"calls"| Webapp
-  Webapp -->|"SDK: trigger jobs\nfetch models/tables"| DBX
+  Webapp -->|"SDK: trigger jobs<br>fetch models/tables"| DBX
 ```
 
 
