@@ -1,0 +1,58 @@
+[
+  {
+    "inst_id": "942d4b0e12e74d2a91879508ae3cef7c",
+    "name": "University of South Carolina - Beaufort",
+    "state": "SC",
+    "retention_days": null,
+    "pdp_id": "345000",
+    "edvise_id": null,
+    "batches": [
+      {
+        "batch_id": "3182f472e0794678a0a19ca5ead6c49a",
+        "inst_id": "942d4b0e12e74d2a91879508ae3cef7c",
+        "file_names_to_ids": {
+          "1762967705683_AO1600pdp_AO1600_COURSE_LEVEL_AR_DEIDENTIFIED_STUDYID_20250522120554.csv": "d19d012996de464c98e9694996965c7b",
+          "1762967705679_AO1600pdp_AO1600_AR_DEIDENTIFIED_STUDYID_20250522120554.csv": "f1d7c0a45211459fa79aa1c2752f45c5"
+        },
+        "name": "Batch_2025-11-12_1762967767400",
+        "created_by": "c8b5713825294e1f9e8907399d165f85",
+        "deleted": false,
+        "completed": false,
+        "deletion_request_time": null,
+        "created_at": "2025-11-12T17:16:08",
+        "updated_at": "2025-11-12T17:16:08",
+        "updated_by": ""
+      }
+    ],
+    "files": [
+      {
+        "name": "1762967705683_AO1600pdp_AO1600_COURSE_LEVEL_AR_DEIDENTIFIED_STUDYID_20250522120554.csv",
+        "data_id": "d19d012996de464c98e9694996965c7b",
+        "batch_ids": ["3182f472e0794678a0a19ca5ead6c49a"],
+        "inst_id": "942d4b0e12e74d2a91879508ae3cef7c",
+        "uploader": "c8b5713825294e1f9e8907399d165f85",
+        "source": "MANUAL_UPLOAD",
+        "deleted": false,
+        "deletion_request_time": null,
+        "retention_days": null,
+        "sst_generated": false,
+        "valid": true,
+        "uploaded_date": "2025-11-12T17:15:35"
+      },
+      {
+        "name": "1762967705679_AO1600pdp_AO1600_AR_DEIDENTIFIED_STUDYID_20250522120554.csv",
+        "data_id": "f1d7c0a45211459fa79aa1c2752f45c5",
+        "batch_ids": ["3182f472e0794678a0a19ca5ead6c49a"],
+        "inst_id": "942d4b0e12e74d2a91879508ae3cef7c",
+        "uploader": "c8b5713825294e1f9e8907399d165f85",
+        "source": "MANUAL_UPLOAD",
+        "deleted": false,
+        "deletion_request_time": null,
+        "retention_days": null,
+        "sst_generated": false,
+        "valid": true,
+        "uploaded_date": "2025-11-12T17:15:13"
+      }
+    ]
+  }
+]

@@ -102,3 +102,7 @@ Databricks is external to GCP; auth from Cloud Run to Databricks uses a GCP serv
 
 
 Each environment has its own Cloud SQL instance, GCS buckets, and secrets. Terraform: `terraform/environments/{dev,staging,prod}/`.
+
+## Local development and environment parity
+
+For runtime versions (PHP, Node, Python) and recommendations on aligning local, CI, and deployed environments, see [Environment parity recommendations](environment-parity-recommendations.md).

@@ -1,0 +1,16 @@
+# Same image as dev (Python 3.10). Local config via src/webapp/.env.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: src/webapp/Dockerfile
+      target: builder
+    command: ["uv", "run", "fastapi", "dev", "src/webapp/main.py", "--port", "8001", "--host", "0.0.0.0"]
+    volumes:
+      - ./src:/app/src
+    env_file:
+      - src/webapp/.env
+    environment:
+      ENV_FILE_PATH: /app/src/webapp/.env
+    ports:
+      - "8001:8001"
