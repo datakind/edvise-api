@@ -79,7 +79,7 @@ Enter into the root directory of the repo.
 
 You're now in your virtual env with all your dependencies added.
 
-For all of the following, the steps above are pre-requisites and you should be in the root folder of `sst-app-api/`.
+For all of the following, the steps above are pre-requisites and you should be in the root folder of `edvise-api/`.
 
 ### Spin up the app locally:
 

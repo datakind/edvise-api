@@ -54,9 +54,15 @@ def sftp_files(client: TestClient) -> Any:
     assert response.json() == {"sftp_files": {}}
 
 
+@patch("src.worker.main.split_csv_and_generate_signed_urls", return_value={})
+@patch("src.worker.utilities.get_token", return_value="fake_token")
 @patch("google.auth.default")
 def test_execute_pdp_pull(
-    mock_auth_default: Any, client: TestClient, monkeypatch: Any
+    mock_auth_default: Any,
+    mock_get_token: Any,
+    mock_split_csv: Any,
+    client: TestClient,
+    monkeypatch: Any,
 ) -> None:
     """Test POST /execute-pdp-pull with mocked authentication."""
     # Set up dummy credentials with the correct universe_domain.
@@ -68,9 +74,7 @@ def test_execute_pdp_pull(
     dummy_credentials.universe_domain = "googleapis.com"  # Set the expected domain
     mock_auth_default.return_value = (dummy_credentials, "dummy-project")
 
-    MOCK_STORAGE.copy_from_sftp_to_gcs.side_effect = (
-        lambda filename: f"processed_{filename}"
-    )
+    MOCK_STORAGE.copy_from_sftp_to_gcs.side_effect = lambda *args, **kwargs: None
     MOCK_STORAGE.create_bucket_if_not_exists.return_value = None
 
     # Optionally, if there's a process_file or similar function, you can mock it too.

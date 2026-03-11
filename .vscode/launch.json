@@ -29,6 +29,21 @@
       "env": {
         "ENV_FILE_PATH": "${workspaceFolder}/src/worker/.env"
       }
+    },
+    {
+      "name": "pytest (current file)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "${file}",
+        "-v",
+        "-s"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "ENV_FILE_PATH": "${workspaceFolder}/src/webapp/.env"
+      }
     }
   ],
 }

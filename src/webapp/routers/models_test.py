@@ -86,8 +86,6 @@ def session_fixture():
     """Unit test database setup."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
-        echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -170,6 +168,8 @@ def session_fixture():
                     InstTable(
                         id=USER_VALID_INST_UUID,
                         name="school_1",
+                        pdp_id="12345",
+                        edvise_id=None,
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                     ),

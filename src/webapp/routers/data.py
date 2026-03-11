@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, Optional, Tuple
+from typing import Annotated, Any, Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
@@ -13,6 +13,9 @@ import logging
 from sqlalchemy.exc import IntegrityError
 import re
 from ..validation import HardValidationError
+from ..validation_error_formatter import format_validation_error
+import pandas as pd
+from cachetools import TTLCache
 
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -44,11 +47,17 @@ from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
 from ..config import env_vars
+from edvise.data_audit.eda import EdaSummary
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
+# Cache for EDA data - TTL of 10 minutes (600 seconds)
+# Cache key format: f"{inst_id}:{batch_id}"
+EDA_CACHE_TTL = int(os.getenv("EDA_CACHE_TTL", "600"))  # Default 10 minutes
+EDA_CACHE: Any = TTLCache(maxsize=64, ttl=EDA_CACHE_TTL)
 
 router = APIRouter(
     prefix="/institutions",
@@ -468,6 +477,246 @@ def read_batch_info(
             }
         )
     return {"batches": [batch_info], "files": data_infos}
+
+
+## EDA (Exploratory Data Analysis) Endpoints
+class SummaryStats(BaseModel):
+    """Summary statistics for the EDA dashboard."""
+
+    total_students: int
+    transfer_students: int
+    avg_year1_gpa_all_students: float
+
+
+class SummaryMetric(BaseModel):
+    """A named metric with a single value (e.g. for EDA summary stats)."""
+
+    name: str
+    value: Union[int, float]
+
+
+class GpaSeriesData(BaseModel):
+    """GPA data series for a chart."""
+
+    name: str
+    data: List[Optional[float]]
+
+
+class GpaChartData(BaseModel):
+    """GPA chart data with cohort years and series."""
+
+    cohort_years: List[str]
+    series: List[GpaSeriesData]
+    min_gpa: Optional[float] = None
+
+
+class TermCountPct(BaseModel):
+    count: int
+    percentage: float
+    name: str
+
+
+class YearTermSummary(BaseModel):
+    year: str
+    total: int
+    terms: List[TermCountPct]
+
+
+class StudentsByCohortTerm(BaseModel):
+    years: List[str]
+    by_year: List[YearTermSummary]
+
+
+class TermChartData(BaseModel):
+    """Chart-ready term data: cohort_years, terms."""
+
+    cohort_years: List[str]
+    terms: List[Dict[str, Any]]
+
+
+class EdaDataResponse(BaseModel):
+    """EDA API response: summary metrics, GPA/time-series data, and category+series blobs."""
+
+    total_students: Optional[SummaryMetric] = None
+    transfer_students: Optional[SummaryMetric] = None
+    avg_year1_gpa_all_students: Optional[SummaryMetric] = None
+    gpa_by_enrollment_type: Optional[GpaChartData] = None
+    gpa_by_enrollment_intensity: Optional[GpaChartData] = None
+    students_by_cohort_term: Optional[StudentsByCohortTerm] = None
+    course_enrollments: Optional[StudentsByCohortTerm] = None
+    degree_types: Optional[Dict[str, Any]] = (
+        None  # { "total": int, "degrees": [{ "count", "percentage", "name" }, ...] }
+    )
+    enrollment_type_by_intensity: Optional[Dict[str, Any]] = None
+    pell_recipient_status: Optional[Dict[str, Any]] = None
+    pell_recipient_by_first_gen: Optional[Dict[str, Any]] = None
+    student_age_by_gender: Optional[Dict[str, Any]] = None
+    race_by_pell_status: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_eda_summary(cls, eda: Any) -> "EdaDataResponse":
+        return cls(
+            total_students=eda.total_students,
+            transfer_students=eda.transfer_students,
+            avg_year1_gpa_all_students=eda.avg_year1_gpa_all_students,
+            gpa_by_enrollment_type=eda.gpa_by_enrollment_type,
+            gpa_by_enrollment_intensity=eda.gpa_by_enrollment_intensity,
+            students_by_cohort_term=eda.students_by_cohort_term,
+            course_enrollments=eda.course_enrollments,
+            degree_types=eda.degree_types,
+            enrollment_type_by_intensity=eda.enrollment_type_by_intensity,
+            pell_recipient_status=eda.pell_recipient_status,
+            pell_recipient_by_first_gen=eda.pell_recipient_by_first_gen,
+            student_age_by_gender=eda.student_age_by_gender,
+            race_by_pell_status=eda.race_by_pell_status,
+        )
+
+
+def read_batch_files_as_dataframes(
+    inst_id: str,
+    batch_files: Any,  # Set[FileTable]
+    storage_control: StorageControl,
+) -> Dict[str, pd.DataFrame]:
+    """Read CSV files from a batch and return as DataFrames.
+
+    Args:
+        inst_id: Institution ID
+        batch_files: Set of FileTable objects from the batch
+        storage_control: StorageControl instance for GCS access
+
+    Returns:
+        Dictionary mapping schema_type -> pandas.DataFrame
+
+    Raises:
+        HTTPException: If no valid files found
+    """
+    bucket_name = get_external_bucket_name(inst_id)
+
+    # Temporary storage: file_record -> DataFrame
+    loaded_files: Dict[Any, pd.DataFrame] = {}
+    missing_files: List[str] = []
+
+    for file_record in batch_files:
+        file_name = file_record.name
+
+        # Skip SST-generated output files (only process input files)
+        if file_record.sst_generated:
+            logger.debug(f"Skipping SST-generated file: {file_name}")
+            continue
+
+        df = None
+
+        # Read from GCS
+        try:
+            blob_path = f"validated/{file_name}"
+            df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
+            logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
+        except ValueError as e:
+            logger.warning(f"File not found in GCS: {e}")
+            missing_files.append(file_name)
+        except Exception as e:
+            logger.error(f"Failed to read from GCS: {e}")
+            missing_files.append(file_name)
+
+        if df is not None:
+            loaded_files[file_record] = df
+
+    if not loaded_files:
+        error_msg = f"No valid input files found in batch (checked GCS: {bucket_name}/validated/)"
+        if missing_files:
+            error_msg += f". Expected files not found: {', '.join(missing_files[:5])}"
+            if len(missing_files) > 5:
+                error_msg += f" (and {len(missing_files) - 5} more)"
+        error_msg += (
+            ". Files must be uploaded and validated before they can be used for EDA."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_msg,
+        )
+
+    # Group by schema type and combine DataFrames
+    schema_dataframes: Dict[str, List[pd.DataFrame]] = {}
+    for file_record, df in loaded_files.items():
+        for schema in file_record.schemas:
+            if schema not in schema_dataframes:
+                schema_dataframes[schema] = []
+            schema_dataframes[schema].append(df)
+
+    result = {}
+    for schema, dfs in schema_dataframes.items():
+        if len(dfs) == 1:
+            result[schema] = dfs[0]
+        else:
+            result[schema] = pd.concat(dfs, ignore_index=True)
+            logger.info(
+                f"Combined {len(dfs)} files for schema {schema} ({len(result[schema])} total rows)"
+            )
+
+    return result
+
+
+@router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
+def get_eda_data(
+    inst_id: str,
+    batch_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+) -> Any:
+    """Returns EDA (Exploratory Data Analysis) data for a specific batch.
+
+    This endpoint provides all the data needed to populate the EDA dashboard,
+    including summary statistics, GPA charts, enrollment data, and demographic breakdowns.
+    Analyzes all files in the batch together to provide comprehensive insights.
+    """
+    has_access_to_inst_or_err(inst_id, current_user)
+    has_full_data_access_or_err(current_user, "EDA data")
+    local_session.set(sql_session)
+
+    batch_result = (
+        local_session.get()
+        .execute(
+            select(BatchTable).where(
+                and_(
+                    BatchTable.id == str_to_uuid(batch_id),
+                    BatchTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .scalar_one_or_none()
+    )
+    if batch_result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found.",
+        )
+
+    cache_key = f"{inst_id}:{batch_id}"
+    cached_result = EDA_CACHE.get(cache_key)
+    if cached_result is not None:
+        logger.debug(f"EDA cache hit for {cache_key}")
+        return cached_result
+    logger.debug(f"EDA cache miss for {cache_key}, computing...")
+
+    file_dataframes = read_batch_files_as_dataframes(
+        inst_id, batch_result.files, storage_control
+    )
+    df_cohort = file_dataframes.get("STUDENT")
+    if df_cohort is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No STUDENT schema files found in batch for EDA.",
+        )
+
+    eda = EdaSummary(
+        df_cohort=df_cohort,
+        df_course=file_dataframes.get("COURSE"),
+    )
+    result = EdaDataResponse.from_eda_summary(eda)
+    EDA_CACHE[cache_key] = result
+
+    return result
 
 
 @router.post("/{inst_id}/batch", response_model=BatchInfo)
@@ -1000,6 +1249,7 @@ class _ValidationState:
     _base_cache: Dict[str, Any] = {"exp": 0.0, "val": None}
     _ext_cache: Dict[str, Tuple[float, Any]] = {}
     _pdp_cache: Tuple[float, Optional[dict]] = (0.0, None)
+    _edvise_cache: Tuple[float, Optional[dict]] = (0.0, None)
 
 
 STATE = _ValidationState()
@@ -1051,9 +1301,12 @@ def validation_helper(
         inferred_from_name.add("SEMESTER")
 
     if not inferred_from_name:
-        raise ValueError(
-            f"Could not infer model(s) from file name: {name}. "
-            "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Could not infer model(s) from file name: {name}. "
+                "Filenames should be descriptive (e.g., include 'course', 'cohort', 'student', or 'semester')."
+            ),
         )
 
     allowed_schemas = sorted(inferred_from_name)
@@ -1083,7 +1336,10 @@ def validation_helper(
         select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
     ).scalar_one_or_none()
     if inst is None:
-        raise ValueError(f"Institution {inst_id} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Institution {inst_id} not found",
+        )
 
     bucket = get_external_bucket_name(inst_id)
     # --- choose / prepare extension schema (try to avoid heavy path)
@@ -1108,11 +1364,45 @@ def validation_helper(
                     return {str(k).lower() for k in block["data_models"].keys()}
         return set()
 
-    if getattr(inst, "pdp_id", None):
+    # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
+    pdp_id = getattr(inst, "pdp_id", None)
+    edvise_id = getattr(inst, "edvise_id", None)
+    if pdp_id and edvise_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution configuration error: cannot have both pdp_id and edvise_id set",
+        )
+
+    # schema_namespace is the key into extension_schema["institutions"] during
+    # validation so merge_model_columns uses the correct block (edvise / pdp / inst).
+    if edvise_id:
+        # Edvise institutions: use active Edvise extension (cached)
+        schema_namespace = "edvise"
+        edvise_exp, edvise_doc = STATE._edvise_cache
+        if now < edvise_exp and edvise_doc is not None:
+            inst_schema: Optional[Dict[str, Any]] = edvise_doc
+        else:
+            inst_schema = sess.execute(
+                select(SchemaRegistryTable.json_doc)
+                .where(
+                    SchemaRegistryTable.is_edvise.is_(True),
+                    SchemaRegistryTable.is_active.is_(True),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            STATE._edvise_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Edvise schema not found for institution with edvise_id. Please ensure an active Edvise schema extension is registered.",
+            )
+        updated_inst_schema = inst_schema
+    elif pdp_id:
         # PDP institutions: use active PDP extension (cached)
+        schema_namespace = "pdp"
         pdp_exp, pdp_doc = STATE._pdp_cache
         if now < pdp_exp and pdp_doc is not None:
-            inst_schema: Optional[Dict[str, Any]] = pdp_doc
+            inst_schema = pdp_doc
         else:
             inst_schema = sess.execute(
                 select(SchemaRegistryTable.json_doc)
@@ -1123,9 +1413,15 @@ def validation_helper(
                 .limit(1)
             ).scalar_one_or_none()
             STATE._pdp_cache = (now + EXT_TTL, inst_schema)
+        if inst_schema is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="PDP schema not found for institution with pdp_id. Please ensure an active PDP schema extension is registered.",
+            )
         updated_inst_schema = inst_schema
     else:
         # custom institutions: try cached extension first
+        schema_namespace = str(getattr(inst, "id", ""))
         ext_cache = STATE._ext_cache
         key = str(getattr(inst, "id", ""))
         cached = ext_cache.get(key)
@@ -1163,6 +1459,22 @@ def validation_helper(
             if schema_extension is not None:
                 updated_inst_schema = schema_extension
                 try:
+                    # Deactivate existing extension records for this institution
+                    # to ensure only one active extension per institution
+                    existing_extensions = (
+                        sess.execute(
+                            select(SchemaRegistryTable).where(
+                                SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
+                                SchemaRegistryTable.doc_type == DocType.extension,
+                                SchemaRegistryTable.is_active.is_(True),
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for existing in existing_extensions:
+                        existing.is_active = False
+
                     new_schema_extension_record = SchemaRegistryTable(
                         doc_type=DocType.extension,
                         inst_id=str_to_uuid(inst_id),
@@ -1174,7 +1486,11 @@ def validation_helper(
                     )
                     sess.add(new_schema_extension_record)
                     sess.flush()
-                    logging.info("Schema record inserted for '%s'", inst_id)
+                    logging.info(
+                        "Schema record inserted for '%s' (deactivated %d existing)",
+                        inst_id,
+                        len(existing_extensions),
+                    )
                     # refresh cache
                     STATE._ext_cache[key] = (
                         time.monotonic() + EXT_TTL,
@@ -1204,29 +1520,28 @@ def validation_helper(
             allowed_schemas,
             base_schema,
             updated_inst_schema,
+            institution_id=schema_namespace,
+            institution_identifier=inst_id if schema_namespace == "edvise" else None,
         )
         logging.debug("Inferred Schemas success %s", list(inferred_schemas))
     except HardValidationError as e:
         logging.debug("Inferred Schemas FAILED (hard) %s", e)
-        parts = ["VALIDATION_FAILED"]
-        if e.missing_required:
-            parts.append(f"missing_required={e.missing_required}")
-        if e.extra_columns:
-            parts.append(f"extra_columns={e.extra_columns}")
-        if e.schema_errors is not None:
-            parts.append(f"schema_errors={e.schema_errors}")
-        if e.failure_cases is not None:
-            try:
-                sample = (
-                    e.failure_cases[:5]
-                    if isinstance(e.failure_cases, list)
-                    else str(e.failure_cases)[:500]
-                )
-            except Exception:
-                sample = "see server logs"
-            parts.append(f"failure_cases_sample={sample}")
+        # Format error message for user-friendly display
+        try:
+            formatted_msg = format_validation_error(e)
+        except Exception as format_err:
+            # Fallback to technical message if formatting fails
+            logging.warning("Error formatting validation message: %s", format_err)
+            parts = ["VALIDATION_FAILED"]
+            if e.missing_required:
+                parts.append(f"missing_required={e.missing_required}")
+            if e.extra_columns:
+                parts.append(f"extra_columns={e.extra_columns}")
+            if e.schema_errors is not None:
+                parts.append(f"schema_errors={e.schema_errors}")
+            formatted_msg = "; ".join(parts)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="; ".join(parts)
+            status_code=status.HTTP_400_BAD_REQUEST, detail=formatted_msg
         )
     except Exception as e:
         logging.debug("Inferred Schemas FAILED (other) %s", e)
@@ -1412,7 +1727,7 @@ def add_custom_school_job(
             batch_name=f"{model_name}_{triggered_timestamp}",  # update later when we figure out how to add batches to custom jobs
             output_filename=f"{job_run_id}/inference_output.csv",
             model_id=query_result[0][0].id,
-            output_valid=False,
+            output_valid=True,
             completed=True,
             model_version=latest_model_version.version,
             model_run_id=latest_model_version.run_id,

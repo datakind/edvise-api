@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     BigInteger,
     Index,
+    CheckConstraint,
     event,
 )
 from sqlalchemy.orm import (
@@ -118,6 +119,51 @@ def init_db(env: str) -> None:
                     valid=True,
                 )
             )
+            # Create test files and batches for LOCAL environment
+            if env == "LOCAL":
+                # Create test files
+                test_file_1 = FileTable(
+                    id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a"),
+                    inst_id=LOCAL_INST_UUID,
+                    name="test_course_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=["COURSE"],  # Using string literal to avoid circular import
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                test_file_2 = FileTable(
+                    id=uuid.UUID("cb02d06c-2a59-486a-9bdd-d394a4fcb833"),
+                    inst_id=LOCAL_INST_UUID,
+                    name="test_cohort_file.csv",
+                    source="MANUAL_UPLOAD",
+                    uploader=LOCAL_USER_UUID,
+                    sst_generated=False,
+                    valid=True,
+                    schemas=[
+                        "STUDENT"
+                    ],  # Using string literal to avoid circular import
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                # Create test batch for LOCAL_INST_UUID (using a different ID)
+                test_batch = BatchTable(
+                    id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562b"),
+                    inst_id=LOCAL_INST_UUID,
+                    name="test_batch_1",
+                    created_by=LOCAL_USER_UUID,
+                    created_at=DATETIME_TESTING,
+                    updated_at=DATETIME_TESTING,
+                )
+                # Associate files with batch
+                test_batch.files.add(test_file_1)
+                test_batch.files.add(test_file_2)
+                session.merge(test_file_1)
+                session.merge(test_file_2)
+                session.merge(test_batch)
+
             session.commit()
     except Exception as e:
         session.rollback()
@@ -168,6 +214,10 @@ class InstTable(Base):
     state: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
     # Only populated for PDP schools.
     pdp_id: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
+    # Only populated for Edvise schools.
+    edvise_id: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_LENGTH), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -567,9 +617,10 @@ class DocType(enum.Enum):
 class SchemaRegistryTable(Base):
     """
     Stores versioned schema documents:
-      - Base schema (doc_type=base, is_pdp=False, inst_id NULL)
-      - PDP shared extension (doc_type=extension, is_pdp=True, inst_id NULL)
-      - Custom institution extension (doc_type=extension, is_pdp=False, inst_id=<UUID>)
+      - Base schema (doc_type=base, is_pdp=False, is_edvise=False, inst_id NULL)
+      - PDP shared extension (doc_type=extension, is_pdp=True, is_edvise=False, inst_id NULL)
+      - Edvise shared extension (doc_type=extension, is_pdp=False, is_edvise=True, inst_id NULL)
+      - Custom institution extension (doc_type=extension, is_pdp=False, is_edvise=False, inst_id=<UUID>)
     Layers can reference a parent (extends_schema_id) that they extend.
     """
 
@@ -580,11 +631,12 @@ class SchemaRegistryTable(Base):
     doc_type: Mapped[DocType] = mapped_column(
         Enum(DocType, native_enum=False), nullable=False
     )
-    # Nullable: NULL for base and PDP shared extension
+    # Nullable: NULL for base, PDP shared extension, and Edvise shared extension
     inst_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("inst.id", ondelete="RESTRICT", onupdate="CASCADE"), nullable=True
     )
     is_pdp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_edvise: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     version_label: Mapped[str] = mapped_column(
         String(VAR_CHAR_STANDARD_LENGTH), nullable=False
     )
@@ -629,8 +681,12 @@ class SchemaRegistryTable(Base):
         UniqueConstraint("doc_type", "version_label", name="uq_base_version"),
         UniqueConstraint("is_pdp", "version_label", name="uq_pdp_version"),
         UniqueConstraint("inst_id", "version_label", name="uq_inst_version"),
+        CheckConstraint(
+            "NOT (is_pdp = 1 AND is_edvise = 1)", name="ck_no_pdp_and_edvise"
+        ),
         Index("idx_schema_active_base", "doc_type", "is_active"),
         Index("idx_schema_active_pdp", "is_pdp", "is_active"),
+        Index("idx_schema_active_edvise", "is_edvise", "is_active"),
         Index("idx_schema_active_inst", "inst_id", "is_active"),
     )
 
@@ -641,6 +697,8 @@ class SchemaRegistryTable(Base):
             return "base"
         if self.is_pdp:
             return "pdp"
+        if self.is_edvise:
+            return "edvise"
         if self.inst_id:
             return f"inst:{self.inst_id}"
         return "unknown"
@@ -663,7 +721,6 @@ def init_connection_pool_local() -> sqlalchemy.engine.base.Engine:
     """Creates a local sqlite db for local env testing."""
     return sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
         echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
