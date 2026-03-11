@@ -168,3 +168,24 @@ The process to upload a file involves three API calls:
 ## Local VSCode Debugging
 
 From the Run & Debug panel (⇧⌘D on 🍎) you can run the [debug launch config](../../.vscode/launch.json) for the webapp or worker modules. This will allow you to set breakpoints within the source code while the applications are running.
+
+## Local edvise development override
+
+Production uses a pinned Git reference for `edvise`. For local development, use an
+editable install after syncing the environment.
+
+1. Clone `edvise` alongside `edvise-api` (so `../edvise` exists).
+2. Run `uv sync`.
+3. Override locally: `uv pip install -e ../edvise`
+
+To revert back to the pinned Git dependency, run `uv sync --reinstall-package edvise`.
+
+## Local institutions (optional)
+
+Use real institution names and batch/file metadata locally without committing them. See **[config/README_LOCAL_INST_DATA.md](../../config/README_LOCAL_INST_DATA.md)** for:
+
+- What the file does and how it’s formatted
+- How to get data (from dev API or a backup)
+- Canonical vs accepted shapes (so exports keep working)
+
+**Quick start:** Copy `config/local_inst_data.example.json` to `config/local_inst_data.json` (gitignored). Add one entry per institution, keyed by institution UUID; each entry needs at least `name`. Optional: `state`, `pdp_id`, `files`, `batches`. EDA still reads CSV from GCS (`dev_<inst_hex>`); use dev GCP credentials if you need EDA locally.
