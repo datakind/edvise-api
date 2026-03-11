@@ -87,8 +87,7 @@ def _setup_test_institutions(session: Session) -> None:
                 )
             )
             schemas_by_file_id = {
-                f["data_id"]: f.get("schemas", [])
-                for f in inst.get("files", [])
+                f["data_id"]: f.get("schemas", []) for f in inst.get("files", [])
             }
             for batch in inst.get("batches", []):
                 batch_table = BatchTable(
