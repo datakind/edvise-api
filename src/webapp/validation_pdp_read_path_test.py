@@ -366,7 +366,7 @@ def test_read_pdp_course_edvise_all_attempts_fail_raises_hard_validation_error()
     )
 
 
-def test_read_pdp_course_edvise_custom_converter_exhausted_then_default_succeeds() -> None:
+def test_read_pdp_course_edvise_falls_back_after_custom_converter_fails() -> None:
     """When custom converter fails all datetime formats, default PDP converter is used."""
     expected = pd.DataFrame({"course_id": ["c1"]})
     with patch(
