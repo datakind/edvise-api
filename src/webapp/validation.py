@@ -19,7 +19,7 @@ import re
 import logging
 import tempfile
 from contextlib import contextmanager
-from functools import lru_cache, partial
+from functools import lru_cache
 from typing import (
     Any,
     BinaryIO,
@@ -45,6 +45,19 @@ from . import validation_pdp_edvise as pdp_edvise
 
 # Type for PDP converter functions (DataFrame -> DataFrame); used for cohort/course.
 PDPConverterFunc = Optional[Callable[[pd.DataFrame], pd.DataFrame]]
+
+
+def _default_pdp_course_duplicate_converter(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    PDP course duplicate cleanup for read_raw_pdp_course_data.
+
+    Passes the schema selector as the second *positional* argument so this works
+    with current edvise (``schema_type``) and older builds that used the same slot
+    for ``school_type``. Do not pass bare ``handling_duplicates`` as a converter:
+    read_raw_pdp_course_data calls ``converter_func(df)`` with a single argument.
+    """
+    return handling_duplicates(df, "pdp")
+
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -867,9 +880,8 @@ def _read_pdp_course_edvise(
 
     Tries each datetime format with each converter. If a custom
     course_converter_func is provided (e.g. from a school), it is tried first;
-    then the default handling_duplicates(..., school_type="pdp"), then
-    handling_duplicates for older edvise. Raises HardValidationError if all
-    attempts fail.
+    then :func:`_default_pdp_course_duplicate_converter` (``handling_duplicates``
+    with PDP settings). Raises HardValidationError if all attempts fail.
 
     Args:
         path: Path to course CSV.
@@ -882,10 +894,7 @@ def _read_pdp_course_edvise(
     Raises:
         HardValidationError: If no (converter, format) pair succeeded.
     """
-    default_converters = (
-        partial(handling_duplicates, school_type="pdp"),
-        handling_duplicates,
-    )
+    default_converters = (_default_pdp_course_duplicate_converter,)
     converters = (
         (course_converter_func,) if course_converter_func is not None else ()
     ) + default_converters
@@ -903,7 +912,7 @@ def _read_pdp_course_edvise(
             except ValueError as e:
                 last_error = e
             except TypeError as e:
-                if "school_type" in str(e):
+                if "school_type" in str(e) or "schema_type" in str(e):
                     last_error = None
                     break
                 raise
