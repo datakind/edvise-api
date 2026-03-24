@@ -23,6 +23,41 @@ logger.setLevel(logging.DEBUG)
 SIGNED_URL_EXPIRY_MIN = 30
 
 
+def _unlink_if_exists(path: Optional[str]) -> None:
+    """Remove a file if path is set; ignore missing file or permission errors."""
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _download_blob_to_temp_csv_path(blob: Any, file_name: str) -> str:
+    """
+    Stream GCS blob to a private temp CSV path for validation.
+
+    Raises:
+        OSError: If download fails (after logging errno/context). Temp file is removed.
+    """
+    fd, csv_path = tempfile.mkstemp(suffix=".csv", prefix="validate_upload_")
+    os.close(fd)
+    try:
+        blob.download_to_filename(csv_path)
+    except OSError as e:
+        logger.error(
+            "GCS download_to_filename failed for %r temp_path=%r errno=%s strerror=%s",
+            file_name,
+            csv_path,
+            e.errno,
+            e.strerror,
+            exc_info=True,
+        )
+        _unlink_if_exists(csv_path)
+        raise
+    return csv_path
+
+
 def rename_file(
     bucket_name: str,
     file_name: str,
@@ -424,24 +459,11 @@ class StorageControl(BaseModel):
         institution_identifier: Optional[str],
     ) -> tuple[List[str], Any]:
         """Run validation on blob content; return inferred schema names and normalized DataFrame."""
-        tmp_path: Optional[str] = None
+        local_csv_path: Optional[str] = None
         try:
-            fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="validate_upload_")
-            os.close(fd)
-            try:
-                blob.download_to_filename(tmp_path)
-            except OSError as e:
-                logger.error(
-                    "GCS download_to_filename failed for %r temp_path=%r errno=%s strerror=%s",
-                    file_name,
-                    tmp_path,
-                    e.errno,
-                    e.strerror,
-                    exc_info=True,
-                )
-                raise
+            local_csv_path = _download_blob_to_temp_csv_path(blob, file_name)
             result = validate_file_reader(
-                tmp_path,
+                local_csv_path,
                 allowed_schemas,
                 base_schema,
                 inst_schema,
@@ -463,22 +485,18 @@ class StorageControl(BaseModel):
             logging.exception("Validation failed for %s: %s", file_name, e)
             raise
         finally:
-            if tmp_path is not None:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+            _unlink_if_exists(local_csv_path)
 
     def _write_dataframe_to_gcs_as_csv(
         self, bucket: Any, blob_name: str, normalized_df: pd.DataFrame
     ) -> None:
         """Write a DataFrame to GCS as UTF-8 CSV. Used for validated/ output."""
-        fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="validated_out_")
+        fd, local_csv_path = tempfile.mkstemp(suffix=".csv", prefix="validated_out_")
         os.close(fd)
         try:
             try:
                 normalized_df.to_csv(
-                    tmp_path,
+                    local_csv_path,
                     index=False,
                     encoding="utf-8",
                     lineterminator="\n",
@@ -487,7 +505,7 @@ class StorageControl(BaseModel):
                 logger.error(
                     "to_csv failed for validated blob %r temp_path=%r errno=%s strerror=%s",
                     blob_name,
-                    tmp_path,
+                    local_csv_path,
                     e.errno,
                     e.strerror,
                     exc_info=True,
@@ -495,14 +513,11 @@ class StorageControl(BaseModel):
                 raise
             blob = bucket.blob(blob_name)
             blob.upload_from_filename(
-                tmp_path,
+                local_csv_path,
                 content_type="text/csv; charset=utf-8",
             )
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            _unlink_if_exists(local_csv_path)
 
     def get_file_contents(self, bucket_name: str, file_name: str) -> Any:
         """Returns a file as a bytes object."""
