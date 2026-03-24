@@ -1,8 +1,9 @@
 """Cloud storage related helper functions."""
 
 import datetime
-import io
 import logging
+import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -423,16 +424,19 @@ class StorageControl(BaseModel):
         institution_identifier: Optional[str],
     ) -> tuple[List[str], Any]:
         """Run validation on blob content; return inferred schema names and normalized DataFrame."""
+        tmp_path: Optional[str] = None
         try:
-            with blob.open("r") as file:
-                result = validate_file_reader(
-                    file,
-                    allowed_schemas,
-                    base_schema,
-                    inst_schema,
-                    institution_id=institution_id,
-                    institution_identifier=institution_identifier,
-                )
+            fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="validate_upload_")
+            os.close(fd)
+            blob.download_to_filename(tmp_path)
+            result = validate_file_reader(
+                tmp_path,
+                allowed_schemas,
+                base_schema,
+                inst_schema,
+                institution_id=institution_id,
+                institution_identifier=institution_identifier,
+            )
             inferred_schema_names = [str(s) for s in result.get("schemas", [])]
             logging.debug(
                 "Validation successful for %s: %s", file_name, inferred_schema_names
@@ -447,20 +451,36 @@ class StorageControl(BaseModel):
             # Log any other error with context before re-raising (no silent failures).
             logging.exception("Validation failed for %s: %s", file_name, e)
             raise
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _write_dataframe_to_gcs_as_csv(
         self, bucket: Any, blob_name: str, normalized_df: pd.DataFrame
     ) -> None:
         """Write a DataFrame to GCS as UTF-8 CSV. Used for validated/ output."""
-        csv_buffer = io.StringIO()
-        normalized_df.to_csv(
-            csv_buffer, index=False, encoding="utf-8", lineterminator="\n"
-        )
-        blob = bucket.blob(blob_name)
-        blob.upload_from_string(
-            csv_buffer.getvalue().encode("utf-8"),
-            content_type="text/csv; charset=utf-8",
-        )
+        fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="validated_out_")
+        os.close(fd)
+        try:
+            normalized_df.to_csv(
+                tmp_path,
+                index=False,
+                encoding="utf-8",
+                lineterminator="\n",
+            )
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(
+                tmp_path,
+                content_type="text/csv; charset=utf-8",
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def get_file_contents(self, bucket_name: str, file_name: str) -> Any:
         """Returns a file as a bytes object."""

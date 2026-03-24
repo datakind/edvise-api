@@ -1,6 +1,5 @@
 """Tests for gcsutil.StorageControl validation and normalized/raw archive flow."""
 
-import io
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -182,6 +181,14 @@ def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated
     mock_client.bucket.return_value = mock_bucket
 
     small_df = pd.DataFrame({"col_a": [1, 2], "col_b": ["x", "y"]})
+    uploaded_chunks: list[bytes] = []
+
+    def capture_validated_upload(path: str, **kwargs: Any) -> None:
+        with open(path, "rb") as f:
+            uploaded_chunks.append(f.read())
+
+    mock_validated_blob.upload_from_filename.side_effect = capture_validated_upload
+
     control = StorageControl()
     with patch("src.webapp.gcsutil.storage.Client", return_value=mock_client):
         with patch.object(
@@ -201,13 +208,14 @@ def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated
         mock_unvalidated_blob, mock_bucket, "raw/cohort.csv"
     )
     mock_unvalidated_blob.delete.assert_called_once()
-    # _write_dataframe_to_gcs_as_csv is called; it does bucket.blob(validated_blob_name).upload_from_string
+    # _write_dataframe_to_gcs_as_csv uploads from a temp file via upload_from_filename
     assert mock_bucket.blob.call_count >= 2
-    mock_validated_blob.upload_from_string.assert_called_once()
-    call_args = mock_validated_blob.upload_from_string.call_args
-    assert call_args.kwargs["content_type"] == "text/csv; charset=utf-8"
-    uploaded = call_args.args[0]
-    assert isinstance(uploaded, bytes)
+    mock_validated_blob.upload_from_filename.assert_called_once()
+    assert mock_validated_blob.upload_from_filename.call_args.kwargs["content_type"] == (
+        "text/csv; charset=utf-8"
+    )
+    assert len(uploaded_chunks) == 1
+    uploaded = uploaded_chunks[0]
     assert b"col_a,col_b" in uploaded
     assert b"1,x" in uploaded
 
@@ -251,9 +259,12 @@ def test_validate_file_propagates_hard_validation_error() -> None:
 def test_run_validation_and_get_normalized_df_returns_names_and_df() -> None:
     """Returns (inferred_schema_names, normalized_df) when validation succeeds."""
     mock_blob = MagicMock()
-    mock_file = io.StringIO("foo_col,bar_col\n1,a\n2,b\n")
-    mock_blob.open.return_value.__enter__ = lambda self: mock_file
-    mock_blob.open.return_value.__exit__ = lambda self, *args: None
+
+    def download_to_path(path: str) -> None:
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write("foo_col,bar_col\n1,a\n2,b\n")
+
+    mock_blob.download_to_filename.side_effect = download_to_path
 
     control = StorageControl()
     with patch("src.webapp.gcsutil.validate_file_reader") as mock_validate:
@@ -281,9 +292,7 @@ def test_run_validation_and_get_normalized_df_propagates_hard_validation_error()
 ):
     """HardValidationError is re-raised without wrapping."""
     mock_blob = MagicMock()
-    mock_file = io.StringIO("bad")
-    mock_blob.open.return_value.__enter__ = lambda self: mock_file
-    mock_blob.open.return_value.__exit__ = lambda self, *args: None
+    mock_blob.download_to_filename.side_effect = lambda p: open(p, "w").close()
 
     control = StorageControl()
     with patch(
@@ -298,9 +307,7 @@ def test_run_validation_and_get_normalized_df_propagates_hard_validation_error()
 def test_run_validation_and_get_normalized_df_propagates_value_error() -> None:
     """ValueError from validate_file_reader (e.g. encoding) is re-raised."""
     mock_blob = MagicMock()
-    mock_file = io.StringIO("data")
-    mock_blob.open.return_value.__enter__ = lambda self: mock_file
-    mock_blob.open.return_value.__exit__ = lambda self, *args: None
+    mock_blob.download_to_filename.side_effect = lambda p: open(p, "w").close()
 
     control = StorageControl()
     with patch(
@@ -316,9 +323,7 @@ def test_run_validation_and_get_normalized_df_propagates_value_error() -> None:
 def test_run_validation_and_get_normalized_df_propagates_unicode_error() -> None:
     """UnicodeError from validate_file_reader (e.g. decode) is re-raised."""
     mock_blob = MagicMock()
-    mock_file = io.StringIO("data")
-    mock_blob.open.return_value.__enter__ = lambda self: mock_file
-    mock_blob.open.return_value.__exit__ = lambda self, *args: None
+    mock_blob.download_to_filename.side_effect = lambda p: open(p, "w").close()
 
     control = StorageControl()
     with patch(
@@ -343,13 +348,18 @@ def test_write_dataframe_to_gcs_as_csv_uploads_utf8_csv() -> None:
     mock_bucket.blob.return_value = mock_blob
 
     df = pd.DataFrame({"A": [1, 2], "B": ["a", "b"]})
+
+    def assert_csv_at_path(path: str, **kwargs: Any) -> None:
+        with open(path, "r", encoding="utf-8") as f:
+            assert f.read().strip() == "A,B\n1,a\n2,b"
+
+    mock_blob.upload_from_filename.side_effect = assert_csv_at_path
+
     control = StorageControl()
     control._write_dataframe_to_gcs_as_csv(mock_bucket, "validated/out.csv", df)
 
     mock_bucket.blob.assert_called_once_with("validated/out.csv")
-    mock_blob.upload_from_string.assert_called_once()
-    call_args = mock_blob.upload_from_string.call_args
-    assert call_args.kwargs["content_type"] == "text/csv; charset=utf-8"
-    payload = call_args.args[0]
-    assert isinstance(payload, bytes)
-    assert payload.decode("utf-8").strip() == "A,B\n1,a\n2,b"
+    mock_blob.upload_from_filename.assert_called_once()
+    assert mock_blob.upload_from_filename.call_args.kwargs["content_type"] == (
+        "text/csv; charset=utf-8"
+    )
