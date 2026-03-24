@@ -214,9 +214,9 @@ def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated
     # _write_dataframe_to_gcs_as_csv uploads from a temp file via upload_from_filename
     assert mock_bucket.blob.call_count >= 2
     mock_validated_blob.upload_from_filename.assert_called_once()
-    assert mock_validated_blob.upload_from_filename.call_args.kwargs["content_type"] == (
-        "text/csv; charset=utf-8"
-    )
+    assert mock_validated_blob.upload_from_filename.call_args.kwargs[
+        "content_type"
+    ] == ("text/csv; charset=utf-8")
     assert len(uploaded_chunks) == 1
     uploaded = uploaded_chunks[0]
     assert b"col_a,col_b" in uploaded
