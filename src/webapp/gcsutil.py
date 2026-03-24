@@ -428,7 +428,18 @@ class StorageControl(BaseModel):
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="validate_upload_")
             os.close(fd)
-            blob.download_to_filename(tmp_path)
+            try:
+                blob.download_to_filename(tmp_path)
+            except OSError as e:
+                logger.error(
+                    "GCS download_to_filename failed for %r temp_path=%r errno=%s strerror=%s",
+                    file_name,
+                    tmp_path,
+                    e.errno,
+                    e.strerror,
+                    exc_info=True,
+                )
+                raise
             result = validate_file_reader(
                 tmp_path,
                 allowed_schemas,
@@ -465,12 +476,23 @@ class StorageControl(BaseModel):
         fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="validated_out_")
         os.close(fd)
         try:
-            normalized_df.to_csv(
-                tmp_path,
-                index=False,
-                encoding="utf-8",
-                lineterminator="\n",
-            )
+            try:
+                normalized_df.to_csv(
+                    tmp_path,
+                    index=False,
+                    encoding="utf-8",
+                    lineterminator="\n",
+                )
+            except OSError as e:
+                logger.error(
+                    "to_csv failed for validated blob %r temp_path=%r errno=%s strerror=%s",
+                    blob_name,
+                    tmp_path,
+                    e.errno,
+                    e.strerror,
+                    exc_info=True,
+                )
+                raise
             blob = bucket.blob(blob_name)
             blob.upload_from_filename(
                 tmp_path,
