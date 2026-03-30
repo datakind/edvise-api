@@ -2,11 +2,14 @@
 
 import io
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from pandera.errors import SchemaErrors
+
+from edvise.dataio.pdp_cohort_converters import converter_func_cohort
 
 from src.webapp.validation import (
     HardValidationError,
@@ -198,6 +201,7 @@ def test_validate_pdp_with_edvise_read_schema_errors_converted_to_hard_validatio
     bad_df = pd.DataFrame(
         {"institution_id": [1], "cohort": ["x"], "student_guid": ["y"]}
     )
+    schema_err_to_raise: SchemaErrors | None = None
     try:
         RawPDPCohortDataSchema.validate(bad_df, lazy=True)  # type: ignore[attr-defined]
     except SchemaErrors as real_err:
@@ -206,6 +210,7 @@ def test_validate_pdp_with_edvise_read_schema_errors_converted_to_hard_validatio
         pytest.skip(
             "RawPDPCohortDataSchema did not raise SchemaErrors for minimal bad df"
         )
+    assert schema_err_to_raise is not None
 
     with patch(
         "src.webapp.validation.read_raw_pdp_cohort_data",
@@ -267,6 +272,66 @@ def test_validate_pdp_with_edvise_read_accepts_file_like() -> None:
     # Edvise read was given a path (temp file when file-like); keyword is file_path
     assert "file_path" in mock_read.call_args[1]
     assert isinstance(mock_read.call_args[1]["file_path"], str)
+    # Cohort validation uses converter_func_cohort by default (filters DE/DS/SE)
+    assert mock_read.call_args[1]["converter_func"] is converter_func_cohort
+
+
+def test_validate_pdp_with_edvise_read_student_uses_custom_cohort_converter_when_provided(
+    tmp_path: Path,
+) -> None:
+    """When pdp_cohort_converter_func is provided, it is passed to read_raw_pdp_cohort_data."""
+    csv_path = tmp_path / "cohort.csv"
+    csv_path.write_text("student_id,cohort\ns1,2016")
+    expected_df = pd.DataFrame({"student_id": ["s1"], "cohort": ["2016"]})
+    custom_converter = lambda df: df  # noqa: E731
+
+    with patch(
+        "src.webapp.validation.read_raw_pdp_cohort_data",
+        return_value=expected_df,
+    ) as mock_read:
+        _validate_pdp_with_edvise_read(
+            str(csv_path),
+            enc="utf-8",
+            model_list=["STUDENT"],
+            institution_id="pdp",
+            pdp_cohort_converter_func=custom_converter,
+        )
+    mock_read.assert_called_once()
+    assert mock_read.call_args[1]["converter_func"] is custom_converter
+
+
+def test_validate_pdp_with_edvise_read_non_callable_cohort_converter_raises_hard_validation_error(
+    tmp_path: Path,
+) -> None:
+    """When pdp_cohort_converter_func is not callable, HardValidationError is raised (API returns 400)."""
+    csv_path = tmp_path / "cohort.csv"
+    csv_path.write_text("student_id,cohort\ns1,2016")
+
+    with pytest.raises(HardValidationError, match="callable"):
+        _validate_pdp_with_edvise_read(
+            str(csv_path),
+            enc="utf-8",
+            model_list=["STUDENT"],
+            institution_id="pdp",
+            pdp_cohort_converter_func=cast(Any, "not a function"),
+        )
+
+
+def test_validate_pdp_with_edvise_read_non_callable_course_converter_raises_hard_validation_error(
+    tmp_path: Path,
+) -> None:
+    """When pdp_course_converter_func is not callable, HardValidationError is raised (API returns 400)."""
+    csv_path = tmp_path / "course.csv"
+    csv_path.write_text("student_id,academic_year\ns1,2020")
+
+    with pytest.raises(HardValidationError, match="callable"):
+        _validate_pdp_with_edvise_read(
+            str(csv_path),
+            enc="utf-8",
+            model_list=["COURSE"],
+            institution_id="pdp",
+            pdp_course_converter_func=cast(Any, 123),
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -301,17 +366,38 @@ def test_read_pdp_course_edvise_all_attempts_fail_raises_hard_validation_error()
     )
 
 
-def test_read_pdp_course_edvise_typeerror_school_type_tries_next_converter() -> None:
-    """When first converter raises TypeError with school_type, second converter is tried."""
+def test_read_pdp_course_edvise_falls_back_after_custom_converter_fails() -> None:
+    """When custom converter fails all datetime formats, default PDP converter is used."""
     expected = pd.DataFrame({"course_id": ["c1"]})
     with patch(
         "src.webapp.validation.read_raw_pdp_course_data",
         side_effect=[
-            TypeError(
-                "handling_duplicates() got an unexpected keyword argument 'school_type'"
-            ),
+            ValueError("bad datetime"),
+            ValueError("bad datetime"),
+            ValueError("bad datetime"),
             expected,
         ],
-    ):
-        result = _read_pdp_course_edvise("/path.csv")
+    ) as mock_read:
+        result = _read_pdp_course_edvise(
+            "/path.csv",
+            course_converter_func=lambda df: df,  # noqa: ARG005
+        )
     pd.testing.assert_frame_equal(result, expected)
+    assert mock_read.call_count == 4
+
+
+def test_read_pdp_course_edvise_custom_converter_tried_first() -> None:
+    """When course_converter_func is provided, it is tried before default converters."""
+    expected = pd.DataFrame({"course_id": ["c1"]})
+    custom_converter = lambda df: df  # noqa: E731
+    with patch(
+        "src.webapp.validation.read_raw_pdp_course_data",
+        return_value=expected,
+    ) as mock_read:
+        result = _read_pdp_course_edvise(
+            "/path.csv", course_converter_func=custom_converter
+        )
+    pd.testing.assert_frame_equal(result, expected)
+    # Custom converter should have been used (first call succeeds)
+    assert mock_read.call_count == 1
+    assert mock_read.call_args[1]["converter_func"] is custom_converter

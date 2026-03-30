@@ -29,13 +29,15 @@ from ..database import (
     Base,
     get_session,
 )
-from ..utilities import (
-    uuid_to_str,
-    get_current_active_user,
-    SchemaType,
-    get_external_bucket_name,
+from ..utilities import uuid_to_str, get_current_active_user, SchemaType
+from .data import (
+    router,
+    DataOverview,
+    DataInfo,
+    _infer_allowed_schemas_from_filename,
+    _ext_models_set,
 )
-from .data import router, DataOverview, DataInfo
+from fastapi import HTTPException
 from ..gcsutil import StorageControl
 from ..databricks import DatabricksControl
 
@@ -929,10 +931,16 @@ def test_get_eda_data_success(
     assert "2020" in data["gpa_by_enrollment_type"]["cohort_years"]
     assert "2021" in data["gpa_by_enrollment_type"]["cohort_years"]
 
-    # Check term data structure
+    # Check term data structure (degree_types style: years + by_year with total and terms[{ count, percentage, name }])
     assert "years" in data["students_by_cohort_term"]
-    assert "terms" in data["students_by_cohort_term"]
+    assert "by_year" in data["students_by_cohort_term"]
     assert len(data["students_by_cohort_term"]["years"]) == 2
+    by_year = data["students_by_cohort_term"]["by_year"]
+    assert len(by_year) == 2
+    assert "year" in by_year[0] and "total" in by_year[0] and "terms" in by_year[0]
+    assert all(
+        "count" in t and "percentage" in t and "name" in t for t in by_year[0]["terms"]
+    )
 
     # Check enrollment type by intensity has categories and series
     assert "categories" in data["enrollment_type_by_intensity"]
@@ -957,11 +965,85 @@ def test_get_eda_data_success(
 EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EDVISE_INST_2_UUID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 EDVISE_SCHEMA_UUID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+LEGACY_INST_UUID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+
+
+@pytest.fixture(name="legacy_session")
+def legacy_session_fixture():
+    """Database setup for Legacy (any-format) tests: one institution with legacy_id."""
+    engine = sqlalchemy.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    try:
+        with sqlalchemy.orm.Session(engine) as session:
+            session.add_all(
+                [
+                    InstTable(
+                        id=LEGACY_INST_UUID,
+                        name="legacy_school",
+                        legacy_id="legacy123",
+                        pdp_id=None,
+                        edvise_id=None,
+                        schemas=["STUDENT", "COURSE"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.base,
+                        is_pdp=False,
+                        is_edvise=False,
+                        version_label="1.0.0",
+                        json_doc={"version": "1.0.0", "base": {"data_models": {}}},
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                ]
+            )
+            session.commit()
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(name="legacy_client")
+def legacy_client_fixture(
+    legacy_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> Any:
+    """Test client for Legacy institution tests."""
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    def get_session_override():
+        return legacy_session
+
+    def get_current_active_user_override():
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            None,
+            AccessType.DATAKINDER,
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(name="edvise_session")
 def edvise_session_fixture():
-    """Unit test database setup for Edvise tests."""
+    """Unit test database setup for Edvise Schema (ES) tests."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -969,7 +1051,7 @@ def edvise_session_fixture():
     )
     Base.metadata.create_all(engine)
 
-    # Mock Edvise schema extension
+    # Mock Edvise Schema (ES) extension (schema type, not product)
     edvise_schema_doc = {
         "version": "1.0.0",
         "institutions": {
@@ -1048,7 +1130,7 @@ def edvise_session_fixture():
 def edvise_client_fixture(
     edvise_session: sqlalchemy.orm.Session, monkeypatch: Any
 ) -> Any:
-    """Unit test mocks setup for Edvise tests."""
+    """Unit test mocks setup for Edvise Schema (ES) tests."""
     monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
 
     def get_session_override():
@@ -1056,7 +1138,7 @@ def edvise_client_fixture(
 
     def get_current_active_user_override():
         # Create DATAKINDER user with access to all institutions (needed for tests
-        # that access multiple Edvise institutions)
+        # that access multiple Edvise Schema (ES) institutions)
         from ..utilities import AccessType, BaseUser
 
         return BaseUser(
@@ -1084,7 +1166,7 @@ def edvise_client_fixture(
 
 
 def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
-    """Test file upload validation uses Edvise schema when edvise_id is set."""
+    """Test file upload validation uses Edvise Schema (ES) when edvise_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
 
     response = edvise_client.post(
@@ -1099,17 +1181,245 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(EDVISE_INST_UUID)
     assert response.json()["source"] == "MANUAL_UPLOAD"
 
-    # Verify that validate_file was called with institution_identifier for Edvise
+    # Verify that validate_file was called with institution_identifier for Edvise Schema (ES)
     assert MOCK_STORAGE.validate_file.called
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
 
+def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
+    """Test file upload validation uses legacy (any-format) path when legacy_id is set."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+    response = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/legacy_student_data.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "legacy_student_data.csv"
+    assert response.json()["file_types"] == ["STUDENT"]
+    assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "legacy"
+
+
+def test_validate_upload_rejects_empty_file_name(legacy_client: TestClient) -> None:
+    """Empty or whitespace-only file name returns 422."""
+    # Trailing space in path decodes to " "
+    response = legacy_client.post(
+        "/institutions/" + uuid_to_str(LEGACY_INST_UUID) + "/input/validate-upload/%20",
+    )
+    assert response.status_code == 422
+    assert (
+        "required" in response.json()["detail"].lower()
+        or "non-empty" in response.json()["detail"].lower()
+    )
+
+
+def test_validate_upload_invalid_inst_id_returns_404(legacy_client: TestClient) -> None:
+    """Invalid institution id (non-UUID) returns 404, not 500."""
+    response = legacy_client.post(
+        "/institutions/not-a-valid-uuid/input/validate-upload/foo.csv",
+    )
+    assert response.status_code == 404
+    assert (
+        "institution" in response.json()["detail"].lower()
+        or "invalid" in response.json()["detail"].lower()
+    )
+
+
+def test_validate_file_legacy_accepts_arbitrary_filename(
+    legacy_client: TestClient,
+) -> None:
+    """Legacy schools may use any filename; when inference fails, allowed_schemas is UNKNOWN."""
+    MOCK_STORAGE.validate_file.return_value = ["UNKNOWN"]
+
+    response = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/export_2024.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "export_2024.csv"
+    assert response.json()["file_types"] == ["UNKNOWN"]
+    assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    # allowed_schemas is passed positionally (args[2])
+    assert MOCK_STORAGE.validate_file.call_args.args[2] == ["UNKNOWN"]
+    assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "legacy"
+
+
+def test_validate_file_legacy_pii_rejection_returns_400(
+    legacy_client: TestClient,
+) -> None:
+    """When legacy validation raises HardValidationError (e.g. PII columns), API returns 400."""
+    from ..validation import HardValidationError
+
+    MOCK_STORAGE.validate_file.side_effect = HardValidationError(
+        schema_errors="Legacy upload: file contains columns that may contain personally identifiable information (PII).",
+        failure_cases=["email", "first_name"],
+    )
+
+    response = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/legacy_student_data.csv",
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "PII" in detail or "personally" in detail.lower()
+
+    MOCK_STORAGE.validate_file.side_effect = None
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+
+# --- Unit tests for validation helpers ---
+
+
+def _make_inst(legacy_id: Any = None) -> Any:
+    """Minimal institution-like object for _infer_allowed_schemas_from_filename."""
+
+    class Inst:
+        legacy_id: Any = None
+
+    inst = Inst()
+    inst.legacy_id = legacy_id
+    return inst
+
+
+def test_infer_allowed_schemas_course_only() -> None:
+    """Filename with 'course' infers [COURSE]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("course_export.csv", inst) == ["COURSE"]
+
+
+def test_infer_allowed_schemas_student_only() -> None:
+    """Filename with 'student' infers [STUDENT]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("student_data.csv", inst) == ["STUDENT"]
+
+
+def test_infer_allowed_schemas_semester_only() -> None:
+    """Filename with 'semester' infers [SEMESTER]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("semester.csv", inst) == ["SEMESTER"]
+
+
+def test_infer_allowed_schemas_cohort_infers_student() -> None:
+    """Filename with 'cohort' (no course) infers [STUDENT]."""
+    inst = _make_inst(legacy_id=None)
+    assert _infer_allowed_schemas_from_filename("cohort_2024.csv", inst) == ["STUDENT"]
+
+
+def test_infer_allowed_schemas_multiple_keywords() -> None:
+    """Filename with student and course infers both, sorted."""
+    inst = _make_inst(legacy_id=None)
+    result = _infer_allowed_schemas_from_filename("student_course_combined.csv", inst)
+    assert sorted(result) == ["COURSE", "STUDENT"]
+
+
+def test_infer_allowed_schemas_legacy_arbitrary_returns_unknown() -> None:
+    """Legacy institution with non-descriptive filename gets [UNKNOWN]."""
+    inst = _make_inst(legacy_id="legacy_1")
+    assert _infer_allowed_schemas_from_filename("report_2024.csv", inst) == ["UNKNOWN"]
+
+
+def test_infer_allowed_schemas_non_legacy_arbitrary_raises_422() -> None:
+    """Non-legacy institution with non-descriptive filename raises 422."""
+    inst = _make_inst(legacy_id=None)
+    with pytest.raises(HTTPException) as exc_info:
+        _infer_allowed_schemas_from_filename("random.csv", inst)
+    assert exc_info.value.status_code == 422
+    assert "Could not infer model(s)" in exc_info.value.detail
+    assert "random" in exc_info.value.detail
+
+
+def test_ext_models_set_none_returns_empty() -> None:
+    """None doc returns empty set."""
+    inst = _make_inst()
+    assert _ext_models_set(None, inst, "inst-id") == set()
+
+
+def test_ext_models_set_root_data_models() -> None:
+    """Doc with root data_models returns lowercase keys."""
+    inst = _make_inst()
+    doc: dict[str, Any] = {"data_models": {"STUDENT": {}, "COURSE": {}}}
+    assert _ext_models_set(doc, inst, "x") == {"course", "student"}
+
+
+def test_ext_models_set_institutions_block() -> None:
+    """Doc with institutions[inst_id].data_models returns keys."""
+    inst = _make_inst()
+    inst.id = uuid.UUID("12345678-1234-1234-1234-123456789abc")  # type: ignore
+    doc: dict[str, Any] = {
+        "institutions": {
+            "12345678123412341234123456789abc": {
+                "data_models": {"student": {}, "course": {}},
+            }
+        }
+    }
+    assert _ext_models_set(doc, inst, "12345678123412341234123456789abc") == {
+        "course",
+        "student",
+    }
+
+
+def test_validate_edvise_non_descriptive_filename_returns_422(
+    edvise_client: TestClient,
+) -> None:
+    """Edvise institution with non-descriptive filename (no student/course/semester) returns 422."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/report_2024.csv",
+    )
+
+    assert response.status_code == 422
+    assert "Could not infer model(s)" in response.json()["detail"]
+    assert "report" in response.json()["detail"]
+
+
+def test_validate_upload_second_call_succeeds_and_idempotent(
+    legacy_client: TestClient,
+) -> None:
+    """Validating the same file twice returns 200 both times; no duplicate insert failure."""
+    MOCK_STORAGE.validate_file.return_value = ["UNKNOWN"]
+
+    response1 = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/duplicate_test.csv",
+    )
+    assert response1.status_code == 200
+    assert response1.json()["name"] == "duplicate_test.csv"
+    assert response1.json()["file_types"] == ["UNKNOWN"]
+
+    response2 = legacy_client.post(
+        "/institutions/"
+        + uuid_to_str(LEGACY_INST_UUID)
+        + "/input/validate-upload/duplicate_test.csv",
+    )
+    assert response2.status_code == 200
+    # Second call hits existing-file path; response payload is unchanged (ValidationResult omits status)
+    assert response2.json()["name"] == response1.json()["name"]
+    assert response2.json()["file_types"] == response1.json()["file_types"]
+    assert response2.json()["inst_id"] == response1.json()["inst_id"]
+
+
 def test_validation_helper_edvise_schema_not_found(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test error when edvise_id is set but no active Edvise schema exists."""
-    # Deactivate the Edvise schema
+    """Test error when edvise_id is set but no active Edvise Schema (ES) exists."""
+    # Deactivate the Edvise Schema (ES)
     edvise_schema = edvise_session.execute(
         select(SchemaRegistryTable).where(
             SchemaRegistryTable.is_edvise.is_(True),
@@ -1134,7 +1444,7 @@ def test_validation_helper_edvise_schema_not_found(
     )
 
     assert response.status_code == 500
-    assert "Edvise schema not found" in response.json()["detail"]
+    assert "Edvise Schema (ES) not found" in response.json()["detail"]
     assert "edvise_id" in response.json()["detail"]
 
 
@@ -1163,7 +1473,10 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
     )
 
     assert response.status_code == 500
-    assert "cannot have both pdp_id and edvise_id set" in response.json()["detail"]
+    assert (
+        "cannot have more than one of pdp_id, edvise_id, or legacy_id set"
+        in response.json()["detail"]
+    )
 
     # Restore for other tests
     corrupted_inst.pdp_id = None  # type: ignore
@@ -1173,7 +1486,7 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 def test_edvise_schema_cache(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test that Edvise schema is cached and reused."""
+    """Test that Edvise Schema (ES) is cached and reused."""
     from .data import STATE
 
     # Clear cache
@@ -1207,7 +1520,7 @@ def test_edvise_schema_cache(
     assert cache_doc2 is not None
     assert cache_exp2 == cache_exp  # Same expiration means cache was reused
 
-    # Both institutions should use the same cached Edvise schema
+    # Both institutions should use the same cached Edvise Schema (ES)
     assert STATE._edvise_cache[1] is not None
     assert STATE._edvise_cache[1] is cache_doc
 
@@ -1215,7 +1528,7 @@ def test_edvise_schema_cache(
 def test_validate_file_edvise_schema_validation_errors(
     edvise_client: TestClient,
 ) -> None:
-    """Test that validation errors are returned correctly for Edvise schema."""
+    """Test that validation errors are returned correctly for Edvise Schema (ES)."""
     from ..validation import HardValidationError
 
     # Mock validation to raise an error
@@ -1250,7 +1563,7 @@ def test_validate_file_edvise_schema_validation_errors(
 def test_edvise_schema_takes_precedence_over_custom(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test that Edvise schema is used instead of custom when edvise_id is set."""
+    """Test that Edvise Schema (ES) is used instead of custom when edvise_id is set."""
     # Add a custom extension for this institution with unique version_label
     custom_schema = SchemaRegistryTable(
         doc_type=DocType.extension,
@@ -1296,12 +1609,12 @@ def test_edvise_schema_takes_precedence_over_custom(
         + "/input/validate-upload/test_student_file.csv",
     )
 
-    # Should succeed using Edvise schema, not custom
+    # Should succeed using Edvise Schema (ES), not custom
     assert response.status_code == 200
 
-    # Verify Edvise schema was passed to validation (not custom)
+    # Verify Edvise Schema (ES) was passed to validation (not custom)
     assert captured_schema is not None
-    # Edvise schema should have "edvise" or "institutions" structure
+    # Edvise Schema (ES) should have "edvise" or "institutions" structure
     assert isinstance(captured_schema, dict)
     assert (
         "edvise" in str(captured_schema).lower()
@@ -1323,7 +1636,7 @@ def test_edvise_schema_takes_precedence_over_custom(
 
 
 def test_validate_sftp_with_edvise_schema(edvise_client: TestClient) -> None:
-    """Test SFTP file validation uses Edvise schema when edvise_id is set."""
+    """Test SFTP file validation uses Edvise Schema (ES) when edvise_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["COURSE"]
 
     response = edvise_client.post(
@@ -1402,7 +1715,7 @@ def test_validate_edvise_invalid_filename(edvise_client: TestClient) -> None:
 
 
 def test_validate_edvise_course_file(edvise_client: TestClient) -> None:
-    """Test COURSE file validation with Edvise schema."""
+    """Test COURSE file validation with Edvise Schema (ES)."""
     MOCK_STORAGE.validate_file.return_value = ["COURSE"]
 
     response = edvise_client.post(
@@ -1465,7 +1778,7 @@ def test_edvise_cache_none_reloads(edvise_client: TestClient) -> None:
 
 
 def test_edvise_cache_shared_across_institutions(edvise_client: TestClient) -> None:
-    """Test that all Edvise institutions share the same cached schema."""
+    """Test that all Edvise Schema (ES) institutions share the same cached schema."""
     from .data import STATE
 
     STATE._edvise_cache = (0.0, None)

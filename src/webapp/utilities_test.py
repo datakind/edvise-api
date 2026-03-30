@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from .utilities import (
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
+    has_at_most_one_school_type,
     uuid_to_str,
     databricksify_inst_name,
 )
@@ -25,6 +26,18 @@ def test_base_user_class_functions():
     assert DATAKINDER.has_full_data_access()
     assert USR.has_full_data_access()
     assert not VIEWER.has_full_data_access()
+
+
+def test_has_at_most_one_school_type() -> None:
+    """Test mutual exclusivity helper: at most one of pdp_id, edvise_id, legacy_id may be set."""
+    assert has_at_most_one_school_type(None, None, None) is True
+    assert has_at_most_one_school_type("pdp1", None, None) is True
+    assert has_at_most_one_school_type(None, "edvise1", None) is True
+    assert has_at_most_one_school_type(None, None, "legacy1") is True
+    assert has_at_most_one_school_type("pdp1", "edvise1", None) is False
+    assert has_at_most_one_school_type("pdp1", None, "legacy1") is False
+    assert has_at_most_one_school_type(None, "edvise1", "legacy1") is False
+    assert has_at_most_one_school_type("pdp1", "edvise1", "legacy1") is False
 
 
 def test_has_access_to_inst_or_err():
@@ -48,25 +61,31 @@ def test_databricksify_inst_name():
     Testing databricksifying institution name
     """
     assert (
-        databricksify_inst_name("Motlow State Community College") == "motlow_state_cc"
+        databricksify_inst_name("The University of Mildly Impressive Achievements")
+        == "the_uni_of_mildly_impressive_achievements"
     )
     assert (
-        databricksify_inst_name("Metro State University Denver")
-        == "metro_state_uni_denver"
-    )
-    assert databricksify_inst_name("Kentucky State University") == "kentucky_state_uni"
-    assert databricksify_inst_name("Central Arizona College") == "central_arizona_col"
-    assert (
-        databricksify_inst_name("Harrisburg University of Science and Technology")
-        == "harrisburg_uni_st"
+        databricksify_inst_name("Dandelion Technical & Tractor College")
+        == "dandelion_technical_tractor_col"
     )
     assert (
-        databricksify_inst_name("Southeast Kentucky community technical college")
-        == "southeast_kentucky_ctc"
+        databricksify_inst_name("Fernwood & Finch Academy") == "fernwood_finch_academy"
     )
     assert (
-        databricksify_inst_name("Northwest State Community College")
-        == "northwest_state_cc"
+        databricksify_inst_name("The Center for Applied Napping")
+        == "the_center_for_applied_napping"
+    )
+    assert (
+        databricksify_inst_name("Harrisville University of Science and Technology")
+        == "harrisville_uni_st"
+    )
+    assert (
+        databricksify_inst_name("University of Questionable Decisions")
+        == "uni_of_questionable_decisions"
+    )
+    assert (
+        databricksify_inst_name("Badger Hollow University of Science & Scones")
+        == "badger_hollow_uni_of_science_scones"
     )
 
     with pytest.raises(ValueError) as err:
