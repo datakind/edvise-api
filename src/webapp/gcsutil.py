@@ -4,7 +4,7 @@ import datetime
 import logging
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, IO
 
 import pandas as pd
 from pydantic import BaseModel
