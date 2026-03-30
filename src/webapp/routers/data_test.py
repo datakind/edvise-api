@@ -29,7 +29,7 @@ from ..database import (
     Base,
     get_session,
 )
-from ..utilities import uuid_to_str, get_current_active_user, SchemaType
+from ..utilities import uuid_to_str, get_current_active_user, SchemaType, get_external_bucket_name
 from .data import (
     router,
     DataOverview,
