@@ -339,7 +339,8 @@ def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
     MOCK_STORAGE.generate_upload_signed_url.return_value = "https://signed.example"
 
     with mock.patch("src.webapp.routers.data.requests.put") as mock_put:
-        mock_put.return_value.raise_for_status.return_value = None
+        mock_put.return_value.status_code = 200
+        mock_put.return_value.text = ""
         response = client.post(
             "/institutions/"
             + uuid_to_str(USER_VALID_INST_UUID)
@@ -358,7 +359,7 @@ def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
     )
     mock_put.assert_called_with(
         "https://signed.example",
-        data=mock.ANY,
+        data=b"col1,col2\n1,2\n",
         headers={"Content-Type": "text/csv"},
         timeout=600,
     )

@@ -193,6 +193,20 @@ class BronzeImportResponse(BaseModel):
     file_name: str
 
 
+def _upload_file_bytes_to_signed_url(file_bytes: bytes, upload_signed_url: str) -> None:
+    """Upload file bytes to a signed GCS URL using the same request shape as the worker path."""
+    upload_response = requests.put(
+        upload_signed_url,
+        data=file_bytes,
+        headers={"Content-Type": "text/csv"},
+        timeout=600,
+    )
+    if upload_response.status_code != 200:
+        raise requests.RequestException(
+            f"{upload_response.status_code} {upload_response.text}"
+        )
+
+
 class DataOverview(BaseModel):
     """All data for a given institution (batches and files)."""
 
@@ -1919,16 +1933,11 @@ def upload_from_volume_to_gcs_bucket(
     stream = None
     try:
         stream = databricks_control.download_bronze_volume_file(inst.name, file_name)
+        file_bytes = stream.read()
         upload_url = storage_control.generate_upload_signed_url(
             get_external_bucket_name(inst_id), file_name
         )
-        resp = requests.put(
-            upload_url,
-            data=stream,
-            headers={"Content-Type": "text/csv"},
-            timeout=600,
-        )
-        resp.raise_for_status()
+        _upload_file_bytes_to_signed_url(file_bytes, upload_url)
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except requests.RequestException as rexc:
