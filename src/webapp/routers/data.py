@@ -191,6 +191,7 @@ class BronzeImportResponse(BaseModel):
     """Response for bronze import request."""
 
     file_name: str
+    message: str
 
 
 def _upload_file_bytes_to_signed_url(file_bytes: bytes, upload_signed_url: str) -> None:
@@ -1957,7 +1958,7 @@ def upload_from_volume_to_gcs_bucket(
             except Exception:
                 pass
 
-    return {"file_name": file_name}
+    return {"file_name": file_name, "message": "Upload successful."}
 
 
 @router.post("/{inst_id}/add-custom-school-job/{job_run_id}")

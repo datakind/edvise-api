@@ -348,7 +348,10 @@ def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
             json={"name": "file.csv"},
         )
         assert response.status_code == 200
-        assert response.json() == {"file_name": "file.csv"}
+        assert response.json() == {
+            "file_name": "file.csv",
+            "message": "Upload successful.",
+        }
 
     MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
     MOCK_DATABRICKS.download_bronze_volume_file.assert_called_with(
