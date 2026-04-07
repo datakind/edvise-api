@@ -36,7 +36,7 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match directly.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
-CUSTOM_INFERENCE_JOB_NAME = "edvise_github_sourced_custom_inference_pipeline"
+LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
 
 
 class DatabricksPDPInferenceRunRequest(BaseModel):
@@ -51,8 +51,8 @@ class DatabricksPDPInferenceRunRequest(BaseModel):
     gcp_external_bucket_name: str
 
 
-class DatabricksCustomInferenceRunRequest(BaseModel):
-    """Databricks parameters for a custom schools inference run."""
+class DatabricksLegacyInferenceRunRequest(BaseModel):
+    """Databricks parameters for a legacy schools inference run."""
 
     inst_name: str
     model_name: str
@@ -277,11 +277,11 @@ class DatabricksControl(BaseModel):
 
         return DatabricksInferenceRunResponse(job_run_id=run_id)
 
-    def run_custom_inference(
-        self, req: DatabricksCustomInferenceRunRequest
+    def run_legacy_inference(
+        self, req: DatabricksLegacyInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
-        """Triggers custom schools inference Databricks run."""
-        LOGGER.info(f"Running custom inference for institution: {req.inst_name}")
+        """Triggers legacy schools inference Databricks run."""
+        LOGGER.info(f"Running legacy inference for institution: {req.inst_name}")
         try:
             w = WorkspaceClient(
                 host=databricks_vars["DATABRICKS_HOST_URL"],
@@ -295,23 +295,23 @@ class DatabricksControl(BaseModel):
                 gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
             )
             raise ValueError(
-                f"run_custom_inference(): Workspace client initialization failed: {e}"
+                f"run_legacy_inference(): Workspace client initialization failed: {e}"
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-        pipeline_type = CUSTOM_INFERENCE_JOB_NAME
+        pipeline_type = LEGACY_INFERENCE_JOB_NAME
 
         try:
             job = next(w.jobs.list(name=pipeline_type), None)
             if not job or job.job_id is None:
                 raise ValueError(
-                    f"run_custom_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
+                    f"run_legacy_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
                 )
             job_id = job.job_id
             LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
         except Exception as e:
             LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
-            raise ValueError(f"run_custom_inference(): Failed to find job: {e}")
+            raise ValueError(f"run_legacy_inference(): Failed to find job: {e}")
 
         try:
             run_job: Any = w.jobs.run_now(
@@ -333,11 +333,11 @@ class DatabricksControl(BaseModel):
                 f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
             )
         except Exception as e:
-            LOGGER.exception("Failed to run the custom inference job.")
-            raise ValueError(f"run_custom_inference(): Job could not be run: {e}")
+            LOGGER.exception("Failed to run the legacy inference job.")
+            raise ValueError(f"run_legacy_inference(): Job could not be run: {e}")
 
         if not run_job.response or run_job.response.run_id is None:
-            raise ValueError("run_custom_inference(): Job did not return a valid run_id.")
+            raise ValueError("run_legacy_inference(): Job did not return a valid run_id.")
 
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")

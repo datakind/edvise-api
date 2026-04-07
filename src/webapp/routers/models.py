@@ -11,7 +11,7 @@ from sqlalchemy.future import select
 from ..databricks import (
     DatabricksControl,
     DatabricksPDPInferenceRunRequest,
-    DatabricksCustomInferenceRunRequest,
+    DatabricksLegacyInferenceRunRequest,
 )
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -142,7 +142,7 @@ class InferenceRunRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored.
     # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
-    # Custom schools inference parameters (required for custom schools, ignored for PDP)
+    # Legacy schools inference parameters (required for legacy schools, ignored for PDP)
     config_file_name: str | None = None
     features_table_name: str | None = None
 
@@ -531,8 +531,8 @@ def trigger_inference_run(
             + str(len(inst_result)),
         )
     inst = inst_result[0][0]
-    # Determine institution type: PDP, Edvise, or Legacy/Custom
-    # There are only three options: PDP (pdp_id), Edvise (edvise_id), or Legacy/Custom (legacy_id or none)
+    # Determine institution type: PDP, Edvise, or Legacy
+    # There are only three options: PDP (pdp_id), Edvise (edvise_id), or Legacy (legacy_id or none)
     # Follows the same pattern as validation_helper in data.py
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
@@ -545,18 +545,35 @@ def trigger_inference_run(
         )
     is_pdp = bool(pdp_id)
     is_edvise = bool(edvise_id)
-    # Legacy and custom are the same thing - both use custom inference pipeline
-    is_legacy_or_custom = not is_pdp and not is_edvise
+    is_legacy = not is_pdp and not is_edvise
 
-    # Legacy/Custom schools inference
-    if is_legacy_or_custom:
+    # Legacy schools inference
+    if is_legacy:
         if not req.config_file_name or not req.features_table_name:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Legacy/Custom schools inference requires config_file_name and features_table_name.",
+                detail="Legacy schools inference requires config_file_name and features_table_name.",
             )
-        # For legacy/custom schools, we don't need batch validation (config and features table are used instead)
-        db_req = DatabricksCustomInferenceRunRequest(
+        legacy_model_result = (
+            local_session.get()
+            .execute(
+                select(ModelTable).where(
+                    and_(
+                        ModelTable.name == model_name,
+                        ModelTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
+            .all()
+        )
+        if len(legacy_model_result) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unexpected number of models found: Expected 1, got "
+                + str(len(legacy_model_result)),
+            )
+        # For legacy schools, we don't need batch validation (config and features table are used instead)
+        db_req = DatabricksLegacyInferenceRunRequest(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
             config_file_name=req.config_file_name,
@@ -565,13 +582,13 @@ def trigger_inference_run(
             email=cast(str, current_user.email),
         )
         try:
-            res = databricks_control.run_custom_inference(db_req)
+            res = databricks_control.run_legacy_inference(db_req)
         except Exception as e:
             tb = traceback.format_exc()
             logging.error(f"Databricks run failure:\n{tb}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Databricks run_custom_inference error. Error = {str(e)}",
+                detail=f"Databricks run_legacy_inference error. Error = {str(e)}",
             ) from e
         triggered_timestamp = datetime.now()
         latest_model_version = databricks_control.fetch_model_version(
@@ -583,8 +600,8 @@ def trigger_inference_run(
             id=res.job_run_id,
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
-            batch_name=f"{model_name}_{triggered_timestamp}",  # Custom schools don't use batches
-            model_id=query_result[0][0].id,
+            batch_name=f"{model_name}_{triggered_timestamp}",  # Legacy schools don't use batches
+            model_id=legacy_model_result[0][0].id,
             output_valid=False,
             model_version=latest_model_version.version,
             model_run_id=latest_model_version.run_id,
@@ -606,7 +623,7 @@ def trigger_inference_run(
     if not is_pdp:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP and Legacy/Custom schools inference are supported.",
+            detail="Currently, only PDP and Legacy schools inference are supported.",
         )
     query_result = (
         local_session.get()
