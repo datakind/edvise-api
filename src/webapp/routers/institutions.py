@@ -161,16 +161,18 @@ def _build_requested_schemas_for_create(
     edvise_id: Optional[str],
     legacy_id: Optional[str],
 ) -> list:
-    """Build the requested_schemas list from req and school-type IDs. Defaults to [UNKNOWN] if none set."""
+    """Build the requested_schemas list from req and school-type IDs.
+
+    Callers must ensure exactly one of pdp_id, edvise_id, or legacy_id is set;
+    the merged groups are always non-empty.
+    """
     requested_schemas = list(req.allowed_schemas) if req.allowed_schemas else []
     if pdp_id:
-        requested_schemas += PDP_SCHEMA_GROUP
+        requested_schemas += list(PDP_SCHEMA_GROUP)
     if edvise_id:
-        requested_schemas += EDVISE_SCHEMA_GROUP
+        requested_schemas += list(EDVISE_SCHEMA_GROUP)
     if legacy_id:
-        requested_schemas += LEGACY_SCHEMA_GROUP
-    if not requested_schemas:
-        requested_schemas = [SchemaType.UNKNOWN]
+        requested_schemas += list(LEGACY_SCHEMA_GROUP)
     return list(set(requested_schemas))
 
 
@@ -193,6 +195,11 @@ def _validate_and_prepare_create_institution(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please set the institution name.",
         )
+    if not re.match(r"^[A-Za-z0-9&_ -]*$", req.name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only alphanumeric characters, -, _, &, and a space are allowed in institution names.",
+        )
     pdp_id = (req.pdp_id or "").strip() or None
     edvise_id = (req.edvise_id or "").strip() or None
     legacy_id = (req.legacy_id or "").strip() or None
@@ -212,10 +219,15 @@ def _validate_and_prepare_create_institution(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
         )
-    if not re.match(r"^[A-Za-z0-9&_ -]*$", req.name):
+    school_type_count = sum(bool(x) for x in (pdp_id, edvise_id, legacy_id))
+    if school_type_count != 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only alphanumeric characters, -, _, &, and a space are allowed in institution names.",
+            detail=(
+                "Institution must be exactly one of PDP (set pdp_id), "
+                "Edvise Schema (ES) (set edvise_id or is_edvise), or Legacy "
+                "(set legacy_id or is_legacy)."
+            ),
         )
     return (sess, pdp_id, edvise_id, legacy_id)
 
@@ -407,7 +419,7 @@ def update_inst(
     if "state" in update_data:
         existing_inst.state = update_data["state"]
     if "allowed_schemas" in update_data:
-        existing_inst.allowed_schemas = update_data["allowed_schemas"]
+        existing_inst.schemas = update_data["allowed_schemas"]
     if "allowed_emails" in update_data:
         existing_inst.allowed_emails = update_data["allowed_emails"]
     # Note: is_pdp is ignored - PDP status is derived from pdp_id presence

@@ -342,7 +342,8 @@ def test_create_inst(datakinder_client: TestClient) -> None:
     assert response.json()["name"] == "testing school"
 
     response = datakinder_client.post(
-        "/institutions", json={"name": "Testing A & M - Main Campus _ hello"}
+        "/institutions",
+        json={"name": "Testing A & M - Main Campus _ hello", "is_legacy": True},
     )
     assert response.status_code == 200
 
@@ -354,6 +355,17 @@ def test_create_inst(datakinder_client: TestClient) -> None:
         '{"detail":"Only alphanumeric characters, -, _, &, '
         'and a space are allowed in institution names."}'
     )
+
+
+def test_create_inst_rejects_no_school_type(datakinder_client: TestClient) -> None:
+    """POST /institutions requires exactly one of PDP, Edvise Schema (ES), or Legacy."""
+    os.environ["ENV"] = "DEV"
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "no_type_school"},
+    )
+    assert response.status_code == 400
+    assert "exactly one" in response.json()["detail"]
 
 
 def test_edit_inst(datakinder_client: TestClient) -> None:
@@ -471,11 +483,12 @@ def test_create_inst_empty_string_normalization(datakinder_client: TestClient) -
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # Empty string should be normalized to None
+    # Empty strings normalize to None; institution stays Legacy-only
     request_data = {
         "name": "normalization_test",
         "pdp_id": "",  # Empty string
         "edvise_id": "   ",  # Whitespace only
+        "is_legacy": True,
     }
 
     response = datakinder_client.post("/institutions", json=request_data)
@@ -483,6 +496,7 @@ def test_create_inst_empty_string_normalization(datakinder_client: TestClient) -
     data = response.json()
     assert data["pdp_id"] is None
     assert data["edvise_id"] is None
+    assert data["legacy_id"] is not None
 
 
 def test_create_inst_whitespace_stripping(datakinder_client: TestClient) -> None:
@@ -506,23 +520,22 @@ def test_create_inst_whitespace_stripping(datakinder_client: TestClient) -> None
 def test_create_inst_backward_compatibility_is_pdp_ignored(
     datakinder_client: TestClient,
 ) -> None:
-    """Test POST /institutions - is_pdp flag is accepted but ignored."""
+    """Test POST /institutions - is_pdp flag is accepted but ignored when pdp_id is set."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    # Send is_pdp=True but no pdp_id - should work (is_pdp ignored)
     request_data = {
         "name": "backward_compat_test",
-        "is_pdp": True,  # Should be ignored
-        "pdp_id": None,  # No actual PDP ID
+        "is_pdp": True,
+        "pdp_id": "pdp_backward",
     }
 
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 200
     data = response.json()
-    assert data["pdp_id"] is None  # No PDP schema assigned
+    assert data["pdp_id"] == "pdp_backward"
 
 
 def test_create_inst_auto_assign_edvise_id(
@@ -612,14 +625,15 @@ def test_create_inst_storage_bucket_fails(datakinder_client: TestClient) -> None
     MOCK_STORAGE.create_folders.return_value = None
     MOCK_DATABRICKS.setup_new_inst.return_value = None
 
-    response = datakinder_client.post(
-        "/institutions",
-        json={"name": "school_bucket_fail", "state": "NY"},
-    )
-    assert response.status_code == 500
-    assert "Storage bucket creation failed" in response.json()["detail"]
-
-    MOCK_STORAGE.create_bucket.side_effect = None
+    try:
+        response = datakinder_client.post(
+            "/institutions",
+            json={"name": "school_bucket_fail", "state": "NY", "is_legacy": True},
+        )
+        assert response.status_code == 500
+        assert "Storage bucket creation failed" in response.json()["detail"]
+    finally:
+        MOCK_STORAGE.create_bucket.side_effect = None
 
 
 def test_create_inst_databricks_setup_fails(datakinder_client: TestClient) -> None:
@@ -631,14 +645,15 @@ def test_create_inst_databricks_setup_fails(datakinder_client: TestClient) -> No
         "Databricks connection failed"
     )
 
-    response = datakinder_client.post(
-        "/institutions",
-        json={"name": "school_dbc_fail", "state": "CA"},
-    )
-    assert response.status_code == 500
-    assert "Databricks setup failed" in response.json()["detail"]
-
-    MOCK_DATABRICKS.setup_new_inst.side_effect = None
+    try:
+        response = datakinder_client.post(
+            "/institutions",
+            json={"name": "school_dbc_fail", "state": "CA", "is_legacy": True},
+        )
+        assert response.status_code == 500
+        assert "Databricks setup failed" in response.json()["detail"]
+    finally:
+        MOCK_DATABRICKS.setup_new_inst.side_effect = None
 
 
 # ============================================================================
@@ -823,7 +838,7 @@ def test_read_inst_by_pdp_id_includes_edvise_id(client: TestClient) -> None:
 
 
 def test_create_inst_none_values(datakinder_client: TestClient) -> None:
-    """Test POST /institutions - explicit None values handled correctly."""
+    """Test POST /institutions - explicit None values handled correctly with Legacy type."""
     os.environ["ENV"] = "DEV"
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
@@ -833,6 +848,7 @@ def test_create_inst_none_values(datakinder_client: TestClient) -> None:
         "name": "none_values_test",
         "pdp_id": None,
         "edvise_id": None,
+        "is_legacy": True,
     }
 
     response = datakinder_client.post("/institutions", json=request_data)
@@ -840,6 +856,7 @@ def test_create_inst_none_values(datakinder_client: TestClient) -> None:
     data = response.json()
     assert data["pdp_id"] is None
     assert data["edvise_id"] is None
+    assert data["legacy_id"] is not None
 
 
 def test_update_inst_partial_update_preserves_existing(
