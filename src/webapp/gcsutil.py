@@ -1,8 +1,9 @@
 """Cloud storage related helper functions."""
 
 import datetime
-import io
 import logging
+import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -20,6 +21,41 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 SIGNED_URL_EXPIRY_MIN = 30
+
+
+def _unlink_if_exists(path: Optional[str]) -> None:
+    """Remove a file if path is set; ignore missing file or permission errors."""
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _download_blob_to_temp_csv_path(blob: Any, file_name: str) -> str:
+    """
+    Stream GCS blob to a private temp CSV path for validation.
+
+    Raises:
+        OSError: If download fails (after logging errno/context). Temp file is removed.
+    """
+    fd, csv_path = tempfile.mkstemp(suffix=".csv", prefix="validate_upload_")
+    os.close(fd)
+    try:
+        blob.download_to_filename(csv_path)
+    except OSError as e:
+        logger.error(
+            "GCS download_to_filename failed for %r temp_path=%r errno=%s strerror=%s",
+            file_name,
+            csv_path,
+            e.errno,
+            e.strerror,
+            exc_info=True,
+        )
+        _unlink_if_exists(csv_path)
+        raise
+    return csv_path
 
 
 def rename_file(
@@ -341,8 +377,8 @@ class StorageControl(BaseModel):
             allowed_schemas: List of schema/model names allowed.
             base_schema: Base schema dict.
             inst_schema: Optional extension schema with institutions.* blocks.
-            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
-                institution UUID for custom. Default "pdp" for backward compatibility.
+            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
+                "legacy" (any-format uploads), or institution UUID for custom. Default "pdp".
             institution_identifier: Optional institution ID (e.g. UUID). Reserved for
                 future use; Edvise uses JSON-based validation only (different shape).
 
@@ -423,16 +459,17 @@ class StorageControl(BaseModel):
         institution_identifier: Optional[str],
     ) -> tuple[List[str], Any]:
         """Run validation on blob content; return inferred schema names and normalized DataFrame."""
+        local_csv_path: Optional[str] = None
         try:
-            with blob.open("r") as file:
-                result = validate_file_reader(
-                    file,
-                    allowed_schemas,
-                    base_schema,
-                    inst_schema,
-                    institution_id=institution_id,
-                    institution_identifier=institution_identifier,
-                )
+            local_csv_path = _download_blob_to_temp_csv_path(blob, file_name)
+            result = validate_file_reader(
+                local_csv_path,
+                allowed_schemas,
+                base_schema,
+                inst_schema,
+                institution_id=institution_id,
+                institution_identifier=institution_identifier,
+            )
             inferred_schema_names = [str(s) for s in result.get("schemas", [])]
             logging.debug(
                 "Validation successful for %s: %s", file_name, inferred_schema_names
@@ -447,20 +484,40 @@ class StorageControl(BaseModel):
             # Log any other error with context before re-raising (no silent failures).
             logging.exception("Validation failed for %s: %s", file_name, e)
             raise
+        finally:
+            _unlink_if_exists(local_csv_path)
 
     def _write_dataframe_to_gcs_as_csv(
         self, bucket: Any, blob_name: str, normalized_df: pd.DataFrame
     ) -> None:
         """Write a DataFrame to GCS as UTF-8 CSV. Used for validated/ output."""
-        csv_buffer = io.StringIO()
-        normalized_df.to_csv(
-            csv_buffer, index=False, encoding="utf-8", lineterminator="\n"
-        )
-        blob = bucket.blob(blob_name)
-        blob.upload_from_string(
-            csv_buffer.getvalue().encode("utf-8"),
-            content_type="text/csv; charset=utf-8",
-        )
+        fd, local_csv_path = tempfile.mkstemp(suffix=".csv", prefix="validated_out_")
+        os.close(fd)
+        try:
+            try:
+                normalized_df.to_csv(
+                    local_csv_path,
+                    index=False,
+                    encoding="utf-8",
+                    lineterminator="\n",
+                )
+            except OSError as e:
+                logger.error(
+                    "to_csv failed for validated blob %r temp_path=%r errno=%s strerror=%s",
+                    blob_name,
+                    local_csv_path,
+                    e.errno,
+                    e.strerror,
+                    exc_info=True,
+                )
+                raise
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(
+                local_csv_path,
+                content_type="text/csv; charset=utf-8",
+            )
+        finally:
+            _unlink_if_exists(local_csv_path)
 
     def get_file_contents(self, bucket_name: str, file_name: str) -> Any:
         """Returns a file as a bytes object."""

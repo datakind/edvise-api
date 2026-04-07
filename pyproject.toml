@@ -26,12 +26,12 @@ dependencies = [
     "pandas~=2.0",
     "six~=1.16.0",
     "thefuzz[speedup]~=0.22.1",
-    "databricks-sql-connector~=3.5.0",
+    "databricks-sql-connector[pyarrow]~=4.2.0",
     "pandera~=0.13",
     "mlflow~=2.22",
     "cachetools",
     "types-cachetools",
-    "edvise",
+    "edvise~=0.1.12",
 ]
 
 [project.urls]

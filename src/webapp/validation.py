@@ -19,7 +19,7 @@ import re
 import logging
 import tempfile
 from contextlib import contextmanager
-from functools import lru_cache, partial
+from functools import lru_cache
 from typing import (
     Any,
     BinaryIO,
@@ -45,6 +45,19 @@ from . import validation_pdp_edvise as pdp_edvise
 
 # Type for PDP converter functions (DataFrame -> DataFrame); used for cohort/course.
 PDPConverterFunc = Optional[Callable[[pd.DataFrame], pd.DataFrame]]
+
+
+def _default_pdp_course_duplicate_converter(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    PDP course duplicate cleanup for read_raw_pdp_course_data.
+
+    Passes the schema selector as the second *positional* argument so this works
+    with current edvise (``schema_type``) and older builds that used the same slot
+    for ``school_type``. Do not pass bare ``handling_duplicates`` as a converter:
+    read_raw_pdp_course_data calls ``converter_func(df)`` with a single argument.
+    """
+    return handling_duplicates(df, "pdp")
+
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -74,8 +87,8 @@ def validate_file_reader(
         allowed_schema: List of model names to validate against.
         base_schema: Base schema dict (e.g. base.data_models).
         inst_schema: Optional extension schema with institutions.* blocks.
-        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
-            institution UUID for custom. Default "pdp" for backward compatibility.
+        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
+            "legacy" (any-format), or institution UUID for custom. Default "pdp".
         institution_identifier: Optional institution identifier (e.g. UUID) for display/context.
         pdp_cohort_converter_func: Optional custom PDP cohort converter (school-specific).
         pdp_course_converter_func: Optional custom PDP course converter (school-specific).
@@ -179,7 +192,7 @@ def get_extension_model_columns_only(
 ) -> Dict[str, dict]:
     """
     Return only the extension columns for the given institution and model (no base).
-    Used for PDP and Edvise so we do not pull in base columns that don't match the repo schema.
+    Used for PDP and Edvise Schema (ES) so we do not pull in base columns that don't match the repo schema.
     """
     if not extension_schema:
         return {}
@@ -867,9 +880,8 @@ def _read_pdp_course_edvise(
 
     Tries each datetime format with each converter. If a custom
     course_converter_func is provided (e.g. from a school), it is tried first;
-    then the default handling_duplicates(..., school_type="pdp"), then
-    handling_duplicates for older edvise. Raises HardValidationError if all
-    attempts fail.
+    then :func:`_default_pdp_course_duplicate_converter` (``handling_duplicates``
+    with PDP settings). Raises HardValidationError if all attempts fail.
 
     Args:
         path: Path to course CSV.
@@ -882,10 +894,7 @@ def _read_pdp_course_edvise(
     Raises:
         HardValidationError: If no (converter, format) pair succeeded.
     """
-    default_converters = (
-        partial(handling_duplicates, school_type="pdp"),
-        handling_duplicates,
-    )
+    default_converters = (_default_pdp_course_duplicate_converter,)
     converters = (
         (course_converter_func,) if course_converter_func is not None else ()
     ) + default_converters
@@ -903,7 +912,7 @@ def _read_pdp_course_edvise(
             except ValueError as e:
                 last_error = e
             except TypeError as e:
-                if "school_type" in str(e):
+                if "school_type" in str(e) or "schema_type" in str(e):
                     last_error = None
                     break
                 raise
@@ -1004,6 +1013,86 @@ def _validate_pdp_with_edvise_read(
 # --------------------------------------------------------------------------- #
 
 
+def _validate_legacy_any_format(
+    filename: Src,
+    enc: str,
+    models: Union[str, List[str], None],
+) -> Dict[str, Any]:
+    """
+    Legacy institutions: accept any CSV format (encoding check only, no schema).
+
+    Reads the file as CSV with no column or type checks; returns the DataFrame
+    as-is as normalized_df so it can be written to validated/.
+
+    Args:
+        filename: Path or file-like object for the CSV.
+        enc: Encoding already sniffed for the file.
+        models: Allowed schema names (e.g. ["STUDENT"]); used for response only.
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
+        and normalized_df (the DataFrame as read, or empty if read failed/empty).
+
+    Raises:
+        HardValidationError: If the file cannot be read or parsed as CSV, or if
+            column names indicate PII (e.g. email, ssn, first_name); such files
+            are rejected before being written to raw/ or validated/.
+    """
+    if models is None:
+        model_list: List[str] = ["UNKNOWN"]
+    elif isinstance(models, str):
+        model_list = [models]
+    else:
+        model_list = list(models)
+    if not model_list:
+        model_list = ["UNKNOWN"]
+
+    with _path_for_edvise_read(filename, enc) as path:
+        read_enc = "utf-8" if not isinstance(filename, (str, os.PathLike)) else enc
+        try:
+            df = pd.read_csv(path, encoding=read_enc)
+        except (
+            pd.errors.ParserError,
+            pd.errors.EmptyDataError,
+            UnicodeDecodeError,
+            OSError,
+        ) as e:
+            logger.exception("Legacy CSV read failed: %s", e)
+            raise HardValidationError(
+                schema_errors="Legacy upload: could not read CSV.",
+                failure_cases=[str(e)],
+            ) from e
+    if df is None or not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame()
+
+    # PII check: reject legacy uploads that contain columns indicating PII (before moving to raw/validated).
+    # Run whenever there are columns (including header-only CSVs: df.empty is True for 0 rows).
+    if len(df.columns) > 0:
+        # Lazy import to avoid circular dependency: validation_error_formatter imports from this module.
+        from .validation_error_formatter import _is_pii_column
+
+        pii_columns = [str(c) for c in df.columns if _is_pii_column(str(c))]
+        if pii_columns:
+            logger.warning(
+                "Legacy upload rejected: PII columns detected: %s", pii_columns
+            )
+            raise HardValidationError(
+                schema_errors=(
+                    "Legacy upload: file contains columns that may contain personally identifiable information (PII). "
+                    "Please remove or de-identify these columns before uploading."
+                ),
+                failure_cases=pii_columns,
+            )
+
+    return {
+        "validation_status": "passed",
+        "schemas": model_list,
+        "missing_optional": [],
+        "unknown_extra_columns": [],
+        "normalized_df": df,
+    }
+
+
 def validate_dataset(
     filename: Src,
     base_schema: dict,
@@ -1021,6 +1110,7 @@ def validate_dataset(
     (if applicable) or JSON-based validation. Returns dict with validation_status,
     schemas, normalized_df (or None if empty merged_specs). Raises HardValidationError
     on failure; UnicodeError if encoding is not UTF-8/UTF-16/UTF-32.
+    Legacy institutions (institution_id=="legacy"): accept any format (encoding + CSV read only).
 
     For PDP uploads, optional pdp_cohort_converter_func and pdp_course_converter_func
     allow schools to supply custom converters (e.g. from config); if None, edvise
@@ -1031,6 +1121,9 @@ def validate_dataset(
     except UnicodeError as ex:
         raise HardValidationError(schema_errors="decode_error", failure_cases=[str(ex)])
     _reset_to_start_if_possible(filename)
+
+    if institution_id == "legacy":
+        return _validate_legacy_any_format(filename, enc, models)
 
     model_list, merged_specs = _compute_model_list_and_merged_specs(
         base_schema, ext_schema, institution_id, models
