@@ -45,6 +45,10 @@ _EXACTLY_ONE_SCHOOL_TYPE_DETAIL = (
     "Edvise Schema (ES) (set edvise_id or is_edvise), or Legacy "
     "(set legacy_id or is_legacy)."
 )
+_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL = (
+    "An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. "
+    "Please choose one schema type."
+)
 
 
 class InstitutionCreationRequest(BaseModel):
@@ -162,6 +166,154 @@ def _compute_edvise_legacy_ids_for_create(
     return (edvise_id, legacy_id)
 
 
+def _raise_if_existing_row_invalid_for_duplicate_post(existing: InstTable) -> None:
+    """Reject idempotent POST when the stored row violates school-type invariants."""
+    ep, ee, el = existing.pdp_id, existing.edvise_id, existing.legacy_id
+    if not has_at_most_one_school_type(ep, ee, el):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    if sum(bool(x) for x in (ep, ee, el)) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "An institution with this name and state already exists but does not "
+                "have a valid school type configured. "
+                + _EXACTLY_ONE_SCHOOL_TYPE_DETAIL
+            ),
+        )
+
+
+def _raise_if_institution_name_patch_disallowed(
+    update_data: dict, existing_name: str
+) -> None:
+    if "name" in update_data and update_data["name"] != existing_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Institution names cannot be changed.",
+        )
+
+
+def _normalize_patch_school_id_strings(update_data: dict) -> None:
+    for key in ("pdp_id", "edvise_id", "legacy_id"):
+        if key in update_data:
+            update_data[key] = (update_data[key] or "").strip() or None
+
+
+def _resolve_merged_school_type_triple_for_patch(
+    existing_inst: InstTable,
+    update_data: dict,
+    sess: Session,
+) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+    """Merge PATCH school-type fields, auto-assign ids, enforce exactly one type."""
+    old_type_triple = (
+        existing_inst.pdp_id,
+        existing_inst.edvise_id,
+        existing_inst.legacy_id,
+    )
+    _raise_if_institution_name_patch_disallowed(update_data, existing_inst.name)
+    _normalize_patch_school_id_strings(update_data)
+    final_pdp_id = (
+        update_data["pdp_id"] if "pdp_id" in update_data else existing_inst.pdp_id
+    )
+    final_edvise_id = (
+        update_data["edvise_id"]
+        if "edvise_id" in update_data
+        else existing_inst.edvise_id
+    )
+    final_legacy_id = (
+        update_data["legacy_id"]
+        if "legacy_id" in update_data
+        else existing_inst.legacy_id
+    )
+    if _patch_indicates_more_than_one_school_type(
+        update_data, final_pdp_id, final_edvise_id, final_legacy_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    final_edvise_id, final_legacy_id = _compute_edvise_legacy_ids_for_patch(
+        sess, update_data, final_edvise_id, final_legacy_id
+    )
+    if not has_at_most_one_school_type(final_pdp_id, final_edvise_id, final_legacy_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    if sum(bool(x) for x in (final_pdp_id, final_edvise_id, final_legacy_id)) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_EXACTLY_ONE_SCHOOL_TYPE_DETAIL,
+        )
+    school_type_changed = old_type_triple != (
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
+    )
+    return final_pdp_id, final_edvise_id, final_legacy_id, school_type_changed
+
+
+def _require_single_institution_row_by_uuid(sess: Session, inst_id: str) -> InstTable:
+    """Load exactly one InstTable row by UUID or raise HTTP 400."""
+    query_result = (
+        sess.execute(
+            select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+        ).all()
+    )
+    if not query_result or len(query_result) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unexpected number of institutions found with this id. Expected 1 got "
+            + str(len(query_result)),
+        )
+    return query_result[0][0]
+
+
+def _persist_institution_patch_row_fields(
+    existing_inst: InstTable,
+    update_data: dict,
+    final_pdp_id: Optional[str],
+    final_edvise_id: Optional[str],
+    final_legacy_id: Optional[str],
+) -> None:
+    """Apply non-schema PATCH fields and the resolved school-type triple to the ORM row."""
+    if "state" in update_data:
+        existing_inst.state = update_data["state"]
+    if "allowed_emails" in update_data:
+        existing_inst.allowed_emails = update_data["allowed_emails"]
+    if "retention_days" in update_data:
+        existing_inst.retention_days = update_data["retention_days"]
+    existing_inst.pdp_id = final_pdp_id
+    existing_inst.edvise_id = final_edvise_id
+    existing_inst.legacy_id = final_legacy_id
+
+
+def _apply_institution_schema_updates_from_patch(
+    existing_inst: InstTable,
+    update_data: dict,
+    school_type_changed: bool,
+    final_pdp_id: Optional[str],
+    final_edvise_id: Optional[str],
+    final_legacy_id: Optional[str],
+) -> None:
+    if school_type_changed:
+        extra_allowed = (
+            update_data["allowed_schemas"]
+            if "allowed_schemas" in update_data
+            else None
+        )
+        existing_inst.schemas = _build_requested_schemas(
+            extra_allowed,
+            final_pdp_id,
+            final_edvise_id,
+            final_legacy_id,
+        )
+    elif "allowed_schemas" in update_data:
+        existing_inst.schemas = update_data["allowed_schemas"]
+
+
 def _patch_indicates_more_than_one_school_type(
     update_data: dict,
     pdp_id: Optional[str],
@@ -275,7 +427,7 @@ def _validate_and_prepare_create_institution(
     if _request_has_more_than_one_school_type(req, pdp_id, edvise_id, legacy_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
         )
     local_session.set(sql_session)
     sess = local_session.get()
@@ -285,7 +437,7 @@ def _validate_and_prepare_create_institution(
     if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
         )
     school_type_count = sum(bool(x) for x in (pdp_id, edvise_id, legacy_id))
     if school_type_count != 1:
@@ -405,21 +557,7 @@ def create_institution(
         )
     else:
         existing = query_result[0][0]
-        ep, ee, el = existing.pdp_id, existing.edvise_id, existing.legacy_id
-        if not has_at_most_one_school_type(ep, ee, el):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
-            )
-        if sum(bool(x) for x in (ep, ee, el)) != 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "An institution with this name and state already exists but does not "
-                    "have a valid school type configured. "
-                    + _EXACTLY_ONE_SCHOOL_TYPE_DETAIL
-                ),
-            )
+        _raise_if_existing_row_invalid_for_duplicate_post(existing)
         row = existing
     if len(query_result) > 1:
         raise HTTPException(
@@ -450,131 +588,36 @@ def update_inst(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authorized to modify an institution.",
         )
-
     update_data = request.model_dump(exclude_unset=True)
     local_session.set(sql_session)
-    # Check that the batch exists.
-    query_result = (
-        local_session.get()
-        .execute(
-            select(InstTable).where(
-                InstTable.id == str_to_uuid(inst_id),
-            )
-        )
-        .all()
-    )
-    if not query_result or len(query_result) != 1:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unexpected number of institutions found with this id. Expected 1 got "
-            + str(len(query_result)),
-        )
-    existing_inst = query_result[0][0]
-    old_type_triple = (
-        existing_inst.pdp_id,
-        existing_inst.edvise_id,
-        existing_inst.legacy_id,
-    )
-    if "name" in update_data:
-        if update_data["name"] != existing_inst.name:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Institution names cannot be changed.",
-            )
-    # Normalize empty strings to None for consistency
-    # Strip whitespace and convert empty strings to None
-    if "pdp_id" in update_data:
-        update_data["pdp_id"] = (update_data["pdp_id"] or "").strip() or None
-    if "edvise_id" in update_data:
-        update_data["edvise_id"] = (update_data["edvise_id"] or "").strip() or None
-    if "legacy_id" in update_data:
-        update_data["legacy_id"] = (update_data["legacy_id"] or "").strip() or None
-    # Merge patch into existing row (before is_* auto-assign, same as POST ordering)
-    final_pdp_id = (
-        update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
-    )
-    final_edvise_id = (
-        update_data.get("edvise_id")
-        if "edvise_id" in update_data
-        else existing_inst.edvise_id
-    )
-    final_legacy_id = (
-        update_data.get("legacy_id")
-        if "legacy_id" in update_data
-        else existing_inst.legacy_id
-    )
-    if _patch_indicates_more_than_one_school_type(
-        update_data, final_pdp_id, final_edvise_id, final_legacy_id
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
-        )
     sess = local_session.get()
-    final_edvise_id, final_legacy_id = _compute_edvise_legacy_ids_for_patch(
-        sess, update_data, final_edvise_id, final_legacy_id
+    existing_inst = _require_single_institution_row_by_uuid(sess, inst_id)
+    (
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
+        school_type_changed,
+    ) = _resolve_merged_school_type_triple_for_patch(
+        existing_inst, update_data, sess
     )
-    if not has_at_most_one_school_type(final_pdp_id, final_edvise_id, final_legacy_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
-        )
-    school_type_count = sum(
-        bool(x) for x in (final_pdp_id, final_edvise_id, final_legacy_id)
+    _persist_institution_patch_row_fields(
+        existing_inst,
+        update_data,
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
     )
-    if school_type_count != 1:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_EXACTLY_ONE_SCHOOL_TYPE_DETAIL,
-        )
-
-    new_type_triple = (final_pdp_id, final_edvise_id, final_legacy_id)
-    school_type_changed = old_type_triple != new_type_triple
-
-    if "state" in update_data:
-        existing_inst.state = update_data["state"]
-    if "allowed_emails" in update_data:
-        existing_inst.allowed_emails = update_data["allowed_emails"]
-    if "retention_days" in update_data:
-        existing_inst.retention_days = update_data["retention_days"]
-    # Persist merged type triple (covers partial PATCH and is_edvise/is_legacy auto-ids).
-    existing_inst.pdp_id = final_pdp_id
-    existing_inst.edvise_id = final_edvise_id
-    existing_inst.legacy_id = final_legacy_id
-
-    # Recompute schemas only when the resolved school-type triple changes.
-    if school_type_changed:
-        extra_allowed = (
-            update_data["allowed_schemas"] if "allowed_schemas" in update_data else None
-        )
-        existing_inst.schemas = _build_requested_schemas(
-            extra_allowed,
-            final_pdp_id,
-            final_edvise_id,
-            final_legacy_id,
-        )
-    elif "allowed_schemas" in update_data:
-        existing_inst.schemas = update_data["allowed_schemas"]
-
-    local_session.get().commit()
-    res = (
-        local_session.get()
-        .execute(
-            select(InstTable).where(
-                InstTable.id == str_to_uuid(inst_id),
-            )
-        )
-        .all()
+    _apply_institution_schema_updates_from_patch(
+        existing_inst,
+        update_data,
+        school_type_changed,
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
     )
-    return {
-        "inst_id": uuid_to_str(res[0][0].id),
-        "name": res[0][0].name,
-        "state": res[0][0].state,
-        "pdp_id": res[0][0].pdp_id,
-        "edvise_id": res[0][0].edvise_id,
-        "legacy_id": res[0][0].legacy_id,
-        "retention_days": res[0][0].retention_days,
-    }
+    sess.commit()
+    refreshed = _require_single_institution_row_by_uuid(sess, inst_id)
+    return _institution_row_to_response(refreshed)
 
 
 @router.delete("/institutions/{inst_id}", response_model=None)
