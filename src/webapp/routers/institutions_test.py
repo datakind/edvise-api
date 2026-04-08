@@ -406,6 +406,99 @@ def test_create_inst_duplicate_name_state_ok_when_existing_row_is_valid(
     assert data["edvise_id"] is None
 
 
+def test_create_inst_rejects_is_pdp_without_pdp_id(datakinder_client: TestClient) -> None:
+    """is_pdp alone does not set a school type; pdp_id is required for PDP (POST parity)."""
+    os.environ["ENV"] = "DEV"
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "pdp_flag_only", "state": "WA", "is_pdp": True},
+    )
+    assert response.status_code == 400
+    assert "exactly one" in response.json()["detail"].lower()
+
+
+def test_create_inst_rejects_duplicate_when_existing_row_has_conflicting_ids(
+    datakinder_client: TestClient,
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """POST (name, state) match must 400 if stored row violates mutual exclusivity."""
+    inst = session.get(InstTable, UUID_1)
+    assert inst is not None
+    saved = (inst.pdp_id, inst.edvise_id, inst.legacy_id)
+    try:
+        inst.edvise_id = "corrupt_edvise"
+        session.commit()
+        response = datakinder_client.post(
+            "/institutions",
+            json={
+                "name": "school_1",
+                "state": "GA",
+                "pdp_id": "456",
+                "is_pdp": True,
+            },
+        )
+        assert response.status_code == 400
+        assert "more than one" in response.json()["detail"].lower()
+    finally:
+        inst.pdp_id, inst.edvise_id, inst.legacy_id = saved
+        session.commit()
+
+
+def test_update_inst_patch_is_edvise_on_pdp_institution_returns_400(
+    datakinder_client: TestClient,
+) -> None:
+    """Cannot set is_edvise intent while row still has pdp_id (must clear in same PATCH)."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_1),
+        json={"is_edvise": True},
+    )
+    assert response.status_code == 400
+    assert "more than one" in response.json()["detail"].lower()
+
+
+def test_update_inst_patch_both_is_edvise_and_is_legacy_returns_400(
+    datakinder_client: TestClient,
+) -> None:
+    """PATCH cannot indicate both Edvise and Legacy in one request."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_2),
+        json={"is_edvise": True, "is_legacy": True},
+    )
+    assert response.status_code == 400
+    assert "more than one" in response.json()["detail"].lower()
+
+
+def test_update_inst_allowed_schemas_only_updates_schemas(
+    datakinder_client: TestClient,
+    session: sqlalchemy.orm.Session,
+) -> None:
+    """allowed_schemas without changing type triple replaces schemas (no recompute merge)."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    inst = session.get(InstTable, UUID_1)
+    assert inst is not None
+    inst.schemas = ["STUDENT", "COURSE"]
+    session.commit()
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_1),
+        json={"allowed_schemas": ["UNKNOWN"]},
+    )
+    assert response.status_code == 200
+    session.refresh(inst)
+    assert inst.schemas == ["UNKNOWN"]
+
+
 def test_edit_inst(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions/<uuid>. For various user access types."""
     MOCK_STORAGE.create_bucket.return_value = None
