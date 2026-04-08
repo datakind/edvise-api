@@ -369,6 +369,43 @@ def test_create_inst_rejects_no_school_type(datakinder_client: TestClient) -> No
     assert "exactly one" in response.json()["detail"]
 
 
+def test_create_inst_rejects_duplicate_when_existing_row_has_no_school_type(
+    datakinder_client: TestClient,
+) -> None:
+    """POST must not return 200 for (name, state) match if the stored row is typeless."""
+    os.environ["ENV"] = "DEV"
+    # UUID_2 fixture: name school_2, state None, all school-type ids null
+    response = datakinder_client.post(
+        "/institutions",
+        json={"name": "school_2", "is_legacy": True},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "already exists" in detail
+    assert "exactly one" in detail.lower()
+
+
+def test_create_inst_duplicate_name_state_ok_when_existing_row_is_valid(
+    datakinder_client: TestClient,
+) -> None:
+    """Idempotent POST returns existing row when it already has exactly one school type."""
+    os.environ["ENV"] = "DEV"
+    response = datakinder_client.post(
+        "/institutions",
+        json={
+            "name": "school_1",
+            "state": "GA",
+            "pdp_id": "456",
+            "is_pdp": True,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "school_1"
+    assert data["pdp_id"] == "456"
+    assert data["edvise_id"] is None
+
+
 def test_edit_inst(datakinder_client: TestClient) -> None:
     """Test PATCH /institutions/<uuid>. For various user access types."""
     MOCK_STORAGE.create_bucket.return_value = None

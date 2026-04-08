@@ -404,7 +404,23 @@ def create_institution(
             databricks_control,
         )
     else:
-        row = query_result[0][0]
+        existing = query_result[0][0]
+        ep, ee, el = existing.pdp_id, existing.edvise_id, existing.legacy_id
+        if not has_at_most_one_school_type(ep, ee, el):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. Please choose one schema type.",
+            )
+        if sum(bool(x) for x in (ep, ee, el)) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "An institution with this name and state already exists but does not "
+                    "have a valid school type configured. "
+                    + _EXACTLY_ONE_SCHOOL_TYPE_DETAIL
+                ),
+            )
+        row = existing
     if len(query_result) > 1:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
