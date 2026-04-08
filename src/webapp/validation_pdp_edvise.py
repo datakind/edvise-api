@@ -1,12 +1,13 @@
-"""PDP schema validation using canonical schemas from the edvise package.
+"""PDP Pandera schemas re-exported from edvise for upload validation.
 
-This module runs the same validation as the edvise repo (RawPDPCohortDataSchema,
-RawPDPCourseDataSchema) for PDP uploads only, so PDP validation rules match pipelines
-and audits. The edvise extension/institution uses JSON-based validation only (different
-columns and setup). All logic is in edvise-api; the edvise package is consumed read-only.
+Imports ``RawPDPCohortDataSchema`` and ``RawPDPCourseDataSchema`` so PDP uploads use
+the same column and type rules as edvise pipeline audits. Cohort row transforms run
+in ``validation.py`` (optional converter) and can differ from batch ``dataio`` hooks;
+this module only supplies schema classes and helpers.
 
-The edvise package is required for PDP validation: it must be installed (e.g. in
-pyproject.toml) so that PDP uploads are validated with the same schemas as the repo.
+Non-PDP Edvise institutions use JSON-based validation elsewhere (different columns).
+
+Requires the ``edvise`` package (see pyproject.toml).
 """
 
 from __future__ import annotations

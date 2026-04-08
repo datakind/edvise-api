@@ -1,4 +1,8 @@
-"""Tests for PDP validation path that uses edvise read_raw_pdp_* (single source of truth)."""
+"""
+Tests for the PDP branch of validation (edvise ``read_raw_pdp_*`` integration).
+
+Covers routing from ``validate_file_reader``, cohort/course converter wiring, and errors.
+"""
 
 import io
 from pathlib import Path
@@ -9,7 +13,6 @@ import pandas as pd
 import pytest
 from pandera.errors import SchemaErrors
 
-from edvise.dataio.pdp_cohort_converters import converter_func_cohort
 
 from src.webapp.validation import (
     HardValidationError,
@@ -272,8 +275,8 @@ def test_validate_pdp_with_edvise_read_accepts_file_like() -> None:
     # Edvise read was given a path (temp file when file-like); keyword is file_path
     assert "file_path" in mock_read.call_args[1]
     assert isinstance(mock_read.call_args[1]["file_path"], str)
-    # Cohort validation uses converter_func_cohort by default (filters DE/DS/SE)
-    assert mock_read.call_args[1]["converter_func"] is converter_func_cohort
+    # Cohort validation uses no converter unless pdp_cohort_converter_func is passed
+    assert mock_read.call_args[1]["converter_func"] is None
 
 
 def test_validate_pdp_with_edvise_read_student_uses_custom_cohort_converter_when_provided(
