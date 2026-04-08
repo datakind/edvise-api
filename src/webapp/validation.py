@@ -89,12 +89,9 @@ def validate_file_reader(
         inst_schema: Optional extension schema with institutions.* blocks.
         institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
             or "legacy" (any-format). Default "pdp".
-        institution_identifier: Optional opaque string for validation context (not the
-            removed "custom institution" row type).
-        pdp_cohort_converter_func: Optional school-specific PDP cohort converter
-            (injectable function; unrelated to custom institution removal).
-        pdp_course_converter_func: Optional school-specific PDP course converter
-            (same meaning as cohort converter above).
+        institution_identifier: Optional institution identifier (e.g. UUID) for display/context.
+        pdp_cohort_converter_func: Optional custom PDP cohort converter (school-specific).
+        pdp_course_converter_func: Optional custom PDP course converter (school-specific).
 
     Returns:
         Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
@@ -881,15 +878,15 @@ def _read_pdp_course_edvise(
     """
     Read and validate PDP course data via edvise (same as pipeline).
 
-    Tries each datetime format with each converter. If a per-school
-    course_converter_func is provided (e.g. from config), it is tried first;
+    Tries each datetime format with each converter. If a custom
+    course_converter_func is provided (e.g. from a school), it is tried first;
     then :func:`_default_pdp_course_duplicate_converter` (``handling_duplicates``
     with PDP settings). Raises HardValidationError if all attempts fail.
 
     Args:
         path: Path to course CSV.
-        course_converter_func: Optional per-school converter (e.g. converter_func_course);
-            if None, only default converters are used. Not related to custom institutions.
+        course_converter_func: Optional custom converter (e.g. converter_func_course)
+            that schools can provide; if None, only default converters are used.
 
     Returns:
         Validated DataFrame (same as pipeline output).
@@ -953,17 +950,16 @@ def _validate_pdp_with_edvise_read(
     read_raw_pdp_cohort_data or read_raw_pdp_course_data. Uses the same
     converter functions as the edvise repo: cohort converter filters dual
     enrollment students (DE/DS/SE); course converter handles duplicates.
-    Schools can provide per-school converter overrides via the optional func args
-    (unrelated to the removed custom-institution tenant type).
+    Schools can provide custom converters via the optional func args.
 
     Args:
         filename: Path or file-like to CSV.
         enc: Encoding (from sniff_encoding) for file-like decode.
         model_list: Single model, e.g. ["STUDENT"] or ["COURSE"].
         institution_id: Institution schema key (e.g. "pdp").
-        pdp_cohort_converter_func: Optional per-school cohort converter; if None,
+        pdp_cohort_converter_func: Optional custom cohort converter; if None,
             uses converter_func_cohort from edvise (filters DE/DS/SE).
-        pdp_course_converter_func: Optional per-school course converter (e.g.
+        pdp_course_converter_func: Optional custom course converter (e.g.
             converter_func_course); if None, uses default handling_duplicates.
 
     Returns:
@@ -1117,9 +1113,8 @@ def validate_dataset(
     Legacy institutions (institution_id=="legacy"): accept any format (encoding + CSV read only).
 
     For PDP uploads, optional pdp_cohort_converter_func and pdp_course_converter_func
-    allow per-school converter overrides (e.g. from config); if None, edvise defaults
-    are used (cohort: filter DE/DS/SE; course: handling_duplicates). Unrelated to
-    custom institutions.
+    allow schools to supply custom converters (e.g. from config); if None, edvise
+    defaults are used (cohort: filter DE/DS/SE; course: handling_duplicates).
     """
     try:
         enc = sniff_encoding(filename)

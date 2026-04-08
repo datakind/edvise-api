@@ -124,8 +124,8 @@ def test_validate_file_reader_fails_missing_required(tmp_path):
         mock_load.side_effect = lambda path: (
             MOCK_BASE_SCHEMA if "base" in path else MOCK_EXT_SCHEMA
         )
-        # Use an arbitrary institutions.* key (not pdp/edvise/legacy) so base+extension merge
-        # applies; unrelated to the removed "custom institution" product type.
+        # Use a custom institution_id so we merge base + extension (not extension-only).
+        # PDP/Edvise use extension-only and this test's extension has empty pdp data_models.
         with pytest.raises(HardValidationError) as exc_info:
             validate_file_reader(
                 str(file_path),

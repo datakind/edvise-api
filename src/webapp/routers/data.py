@@ -1680,8 +1680,6 @@ def get_upload_url(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-# Name retains "custom" for historical/clients; not related to the removed "custom
-# institution" type (institutions without pdp/edvise/legacy IDs).
 @router.post("/{inst_id}/add-custom-school-job/{job_run_id}")
 def add_custom_school_job(
     inst_id: str,
@@ -1741,7 +1739,7 @@ def add_custom_school_job(
             id=job_run_id,
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
-            batch_name=f"{model_name}_{triggered_timestamp}",  # update later when we figure out how to add batches to this job type (name: add-custom-school-job)
+            batch_name=f"{model_name}_{triggered_timestamp}",  # update later when we figure out how to add batches to custom jobs
             output_filename=f"{job_run_id}/inference_output.csv",
             model_id=query_result[0][0].id,
             output_valid=True,

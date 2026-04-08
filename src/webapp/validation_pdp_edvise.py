@@ -89,8 +89,7 @@ def get_edvise_schema_for_upload(
     institution has a different shape and uses JSON validation only.
 
     Args:
-        institution_id: Validation namespace ("pdp", "edvise", or "legacy"). Only "pdp"
-            selects an edvise-package Pandera schema; "edvise"/"legacy" return None here.
+        institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy"). Only "pdp" uses repo schema.
         model_list: Inferred model names from filename (e.g. ["STUDENT"], ["COURSE"]). May be None.
 
     Returns:
