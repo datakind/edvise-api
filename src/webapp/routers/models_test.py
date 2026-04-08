@@ -430,7 +430,8 @@ def test_check_file_types_valid_schema_configs():
             multiple_allowed=False,
         ),
     ]
-    custom = [
+    # Model config using UNKNOWN (not the removed "custom institution" tenant type).
+    unknown_multi_config = [
         SchemaConfigObj(
             schema_type=SchemaType.UNKNOWN,
             optional=False,
@@ -440,18 +441,18 @@ def test_check_file_types_valid_schema_configs():
     schema_configs1 = [
         pdp_configs,
         sst_configs,
-        custom,
+        unknown_multi_config,
     ]
     assert not check_file_types_valid_schema_configs(file_types1, [pdp_configs])
     assert not check_file_types_valid_schema_configs(file_types1, [sst_configs])
-    assert not check_file_types_valid_schema_configs(file_types1, [custom])
+    assert not check_file_types_valid_schema_configs(file_types1, [unknown_multi_config])
     assert not check_file_types_valid_schema_configs(file_types1, schema_configs1)
     assert check_file_types_valid_schema_configs(file_types2, [sst_configs])
     assert check_file_types_valid_schema_configs(file_types2, [pdp_configs])
-    assert not check_file_types_valid_schema_configs(file_types2, [custom])
+    assert not check_file_types_valid_schema_configs(file_types2, [unknown_multi_config])
     assert check_file_types_valid_schema_configs(file_types3, [sst_configs])
     assert check_file_types_valid_schema_configs(file_types3, [pdp_configs])
-    assert not check_file_types_valid_schema_configs(file_types3, [custom])
+    assert not check_file_types_valid_schema_configs(file_types3, [unknown_multi_config])
     assert not check_file_types_valid_schema_configs(file_types4, [sst_configs])
     assert not check_file_types_valid_schema_configs(file_types4, [pdp_configs])
-    assert check_file_types_valid_schema_configs(file_types4, [custom])
+    assert check_file_types_valid_schema_configs(file_types4, [unknown_multi_config])

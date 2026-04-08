@@ -26,12 +26,9 @@ def test_should_use_edvise_schema_returns_false_for_empty_institution_id() -> No
     assert should_use_edvise_schema("  ", ["COURSE"]) is False
 
 
-def test_should_use_edvise_schema_returns_false_for_custom_namespace() -> None:
-    """Custom institution UUID should not use edvise schema."""
-    assert (
-        should_use_edvise_schema("a1b2c3d4-e5f6-7890-abcd-ef1234567890", ["STUDENT"])
-        is False
-    )
+def test_should_use_edvise_schema_returns_false_for_unknown_namespace() -> None:
+    """Non-PDP/Edvise/Legacy namespace strings must not use the edvise-package PDP schema."""
+    assert should_use_edvise_schema("arbitrary-other-namespace", ["STUDENT"]) is False
 
 
 def test_should_use_edvise_schema_returns_false_for_multi_model() -> None:

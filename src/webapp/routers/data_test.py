@@ -1494,8 +1494,9 @@ def test_validate_file_edvise_schema_validation_errors(
 def test_edvise_schema_takes_precedence_over_custom(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test that Edvise Schema (ES) is used instead of custom when edvise_id is set."""
-    # Add a custom extension for this institution with unique version_label
+    """Edvise uploads use standard Edvise JSON shape, not ad-hoc extension docs."""
+    # Stale extension row: json_doc uses a "custom" top-level key (schema JSON shape), not
+    # the removed custom-institution type. Router should still route validation as edvise.
     custom_schema = SchemaRegistryTable(
         doc_type=DocType.extension,
         inst_id=EDVISE_INST_UUID,
