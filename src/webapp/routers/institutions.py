@@ -2,7 +2,7 @@
 
 import re
 
-from typing import Annotated, Any, Dict, Optional, Tuple
+from typing import Annotated, Any, Dict, Optional, Tuple, cast
 from fastapi import HTTPException, status, APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -268,7 +268,7 @@ def _require_single_institution_row_by_uuid(sess: Session, inst_id: str) -> Inst
             detail="Unexpected number of institutions found with this id. Expected 1 got "
             + str(len(query_result)),
         )
-    return query_result[0][0]
+    return cast(InstTable, query_result[0][0])
 
 
 def _persist_institution_patch_row_fields(
