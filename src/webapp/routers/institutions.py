@@ -257,11 +257,9 @@ def _resolve_merged_school_type_triple_for_patch(
 
 def _require_single_institution_row_by_uuid(sess: Session, inst_id: str) -> InstTable:
     """Load exactly one InstTable row by UUID or raise HTTP 400."""
-    query_result = (
-        sess.execute(
-            select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
-        ).all()
-    )
+    query_result = sess.execute(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    ).all()
     if not query_result or len(query_result) != 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -300,9 +298,7 @@ def _apply_institution_schema_updates_from_patch(
 ) -> None:
     if school_type_changed:
         extra_allowed = (
-            update_data["allowed_schemas"]
-            if "allowed_schemas" in update_data
-            else None
+            update_data["allowed_schemas"] if "allowed_schemas" in update_data else None
         )
         existing_inst.schemas = _build_requested_schemas(
             extra_allowed,
@@ -322,12 +318,8 @@ def _patch_indicates_more_than_one_school_type(
 ) -> bool:
     """True if merged IDs plus explicit is_edvise/is_legacy flags imply more than one school type."""
     pdp_set = bool(pdp_id)
-    edvise_flag = (
-        update_data["is_edvise"] if "is_edvise" in update_data else False
-    )
-    legacy_flag = (
-        update_data["is_legacy"] if "is_legacy" in update_data else False
-    )
+    edvise_flag = update_data["is_edvise"] if "is_edvise" in update_data else False
+    legacy_flag = update_data["is_legacy"] if "is_legacy" in update_data else False
     edvise_set = bool(edvise_id) or bool(edvise_flag)
     legacy_set = bool(legacy_id) or bool(legacy_flag)
     return (pdp_set + edvise_set + legacy_set) > 1
@@ -391,9 +383,7 @@ def _build_requested_schemas_for_create(
     legacy_id: Optional[str],
 ) -> list:
     """Build the requested_schemas list from req and school-type IDs (same rules as PATCH)."""
-    return _build_requested_schemas(
-        req.allowed_schemas, pdp_id, edvise_id, legacy_id
-    )
+    return _build_requested_schemas(req.allowed_schemas, pdp_id, edvise_id, legacy_id)
 
 
 def _validate_and_prepare_create_institution(
@@ -597,9 +587,7 @@ def update_inst(
         final_edvise_id,
         final_legacy_id,
         school_type_changed,
-    ) = _resolve_merged_school_type_triple_for_patch(
-        existing_inst, update_data, sess
-    )
+    ) = _resolve_merged_school_type_triple_for_patch(existing_inst, update_data, sess)
     _persist_institution_patch_row_fields(
         existing_inst,
         update_data,

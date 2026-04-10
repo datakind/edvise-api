@@ -406,7 +406,9 @@ def test_create_inst_duplicate_name_state_ok_when_existing_row_is_valid(
     assert data["edvise_id"] is None
 
 
-def test_create_inst_rejects_is_pdp_without_pdp_id(datakinder_client: TestClient) -> None:
+def test_create_inst_rejects_is_pdp_without_pdp_id(
+    datakinder_client: TestClient,
+) -> None:
     """is_pdp alone does not set a school type; pdp_id is required for PDP (POST parity)."""
     os.environ["ENV"] = "DEV"
     response = datakinder_client.post(
@@ -875,7 +877,9 @@ def test_update_inst_mutual_exclusivity_error(datakinder_client: TestClient) -> 
     assert "Please choose one schema type" in response.json()["detail"]
 
 
-def test_update_inst_clear_edvise_id_requires_other_type(datakinder_client: TestClient) -> None:
+def test_update_inst_clear_edvise_id_requires_other_type(
+    datakinder_client: TestClient,
+) -> None:
     """PATCH cannot leave zero school types; clearing edvise must set another type."""
     MOCK_STORAGE.create_bucket.return_value = None
     MOCK_STORAGE.create_folders.return_value = None
