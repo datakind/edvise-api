@@ -90,7 +90,7 @@ def get_edvise_schema_for_upload(
     institution has a different shape and uses JSON validation only.
 
     Args:
-        institution_id: Schema namespace (e.g. "pdp", or institution UUID). Only "pdp" uses repo schema.
+        institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy"). Only "pdp" uses repo schema.
         model_list: Inferred model names from filename (e.g. ["STUDENT"], ["COURSE"]). May be None.
 
     Returns:

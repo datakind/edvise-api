@@ -1340,31 +1340,6 @@ def _get_validation_base_schema(sess: Session) -> Tuple[Any, Any, float]:
     return (base_schema_id, base_schema, now)
 
 
-def _ext_models_set(doc: Optional[dict], inst: Any, inst_id: str) -> set[str]:
-    """Extract model keys from extension document (root or institutions.* layout).
-
-    Args:
-        doc: Extension schema JSON doc (or None).
-        inst: Institution row (for id in institutions lookup).
-        inst_id: Institution id string (for institutions lookup).
-
-    Returns:
-        Set of lowercase model names (e.g. {"student", "course"}).
-    """
-    if not doc or not isinstance(doc, dict):
-        return set()
-    if isinstance(doc.get("data_models"), dict):
-        return {str(k).lower() for k in doc["data_models"].keys()}
-    inst_key_candidates = {str(getattr(inst, "id", "")), inst_id}
-    insts = doc.get("institutions", {})
-    if isinstance(insts, dict):
-        for key in inst_key_candidates:
-            block = insts.get(key)
-            if isinstance(block, dict) and isinstance(block.get("data_models"), dict):
-                return {str(k).lower() for k in block["data_models"].keys()}
-    return set()
-
-
 def _resolve_edvise_schema(
     sess: Session, now: float
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -1422,109 +1397,6 @@ def _resolve_pdp_schema(
     return (schema_namespace, inst_schema)
 
 
-def _persist_custom_schema_extension(
-    sess: Session,
-    inst_id: str,
-    schema_extension: Dict[str, Any],
-    base_schema_id: Any,
-    cache_key: str,
-) -> None:
-    """Deactivate existing extension records and insert new one; update cache."""
-    import time
-
-    existing_extensions = (
-        sess.execute(
-            select(SchemaRegistryTable).where(
-                SchemaRegistryTable.inst_id == str_to_uuid(inst_id),
-                SchemaRegistryTable.doc_type == DocType.extension,
-                SchemaRegistryTable.is_active.is_(True),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for existing in existing_extensions:
-        existing.is_active = False
-    new_record = SchemaRegistryTable(
-        doc_type=DocType.extension,
-        inst_id=str_to_uuid(inst_id),
-        is_pdp=False,  # type: ignore
-        version_label="1.0.0",
-        extends_schema_id=base_schema_id,
-        json_doc=schema_extension,
-        is_active=True,
-    )
-    sess.add(new_record)
-    sess.flush()
-    logging.info(
-        "Schema record inserted for '%s' (deactivated %d existing)",
-        inst_id,
-        len(existing_extensions),
-    )
-    STATE._ext_cache[cache_key] = (time.monotonic() + EXT_TTL, schema_extension)
-
-
-def _resolve_custom_schema(
-    sess: Session,
-    inst: Any,
-    inst_id: str,
-    now: float,
-    allowed_schemas: List[str],
-    bucket: str,
-    base_schema: dict,
-    base_schema_id: Any,
-    file_name: str,
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for custom (non-PDP/ES/legacy) institutions."""
-    schema_namespace = str(getattr(inst, "id", ""))
-    ext_cache = STATE._ext_cache
-    key = str(getattr(inst, "id", ""))
-    cached = ext_cache.get(key)
-    if cached and now < cached[0]:
-        inst_schema = cached[1]
-    else:
-        inst_schema = sess.execute(
-            select(SchemaRegistryTable.json_doc)
-            .where(
-                SchemaRegistryTable.inst_id == getattr(inst, "id", None),
-                SchemaRegistryTable.is_active.is_(True),
-                SchemaRegistryTable.doc_type == DocType.extension,
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        ext_cache[key] = (now + EXT_TTL, inst_schema)
-    inferred_lower = {m.lower() for m in allowed_schemas}
-    ext_models = _ext_models_set(inst_schema, inst, inst_id)
-    if inferred_lower.issubset(ext_models):
-        return (schema_namespace, inst_schema)
-    dbc = DatabricksControl()
-    schema_extension: Optional[Dict[str, Any]] = dbc.create_custom_schema_extension(
-        bucket_name=bucket,
-        inst_query=inst,
-        file_name=file_name,
-        base_schema=base_schema,
-        extension_schema=inst_schema,
-    )
-    if schema_extension is not None:
-        try:
-            _persist_custom_schema_extension(
-                sess, inst_id, schema_extension, base_schema_id, key
-            )
-        except IntegrityError as e:
-            sess.rollback()
-            logging.warning("IntegrityError: %s", e)
-        except Exception as e:
-            sess.rollback()
-            logging.error("Unexpected DB error: %s", e)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Unexpected database error while inserting file record: {e}",
-            )
-        return (schema_namespace, schema_extension)
-    logging.info("No-op: extension already contains this model for inst %s", inst_id)
-    return (schema_namespace, inst_schema)
-
-
 def _resolve_schema_namespace_and_extension(
     sess: Session,
     inst: Any,
@@ -1536,7 +1408,7 @@ def _resolve_schema_namespace_and_extension(
     base_schema_id: Any,
     file_name: str,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy/custom)."""
+    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy)."""
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
     legacy_id = getattr(inst, "legacy_id", None)
@@ -1552,16 +1424,12 @@ def _resolve_schema_namespace_and_extension(
         return _resolve_pdp_schema(sess, now)
     if legacy_id:
         return ("legacy", None)
-    return _resolve_custom_schema(
-        sess,
-        inst,
-        inst_id,
-        now,
-        allowed_schemas,
-        bucket,
-        base_schema,
-        base_schema_id,
-        file_name,
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=(
+            "Institution configuration error: institution has no pdp_id, edvise_id, "
+            "or legacy_id; cannot resolve validation schema."
+        ),
     )
 
 

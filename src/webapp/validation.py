@@ -91,7 +91,7 @@ def validate_file_reader(
         base_schema: Base schema dict (e.g. base.data_models).
         inst_schema: Optional extension schema with institutions.* blocks.
         institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
-            "legacy" (any-format), or institution UUID for custom. Default "pdp".
+            or "legacy" (any-format). Default "pdp".
         institution_identifier: Optional institution identifier (e.g. UUID) for display/context.
         pdp_cohort_converter_func: Optional cohort row transform before Pandera; default
             None. Batch PDP jobs may still apply school-specific cohort converters via ``dataio``.
