@@ -19,7 +19,7 @@ import re
 import logging
 import tempfile
 from contextlib import contextmanager
-from functools import lru_cache, partial
+from functools import lru_cache
 from typing import (
     Any,
     BinaryIO,
@@ -38,13 +38,25 @@ from pandera import Column, Check, DataFrameSchema
 from pandera.errors import SchemaError, SchemaErrors
 
 from edvise.dataio.read import read_raw_pdp_cohort_data, read_raw_pdp_course_data
-from edvise.dataio.pdp_cohort_converters import converter_func_cohort
 from edvise.utils.data_cleaning import handling_duplicates
 
 from . import validation_pdp_edvise as pdp_edvise
 
 # Type for PDP converter functions (DataFrame -> DataFrame); used for cohort/course.
 PDPConverterFunc = Optional[Callable[[pd.DataFrame], pd.DataFrame]]
+
+
+def _default_pdp_course_duplicate_converter(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    PDP course duplicate cleanup for read_raw_pdp_course_data.
+
+    Passes the schema selector as the second *positional* argument so this works
+    with current edvise (``schema_type``) and older builds that used the same slot
+    for ``school_type``. Do not pass bare ``handling_duplicates`` as a converter:
+    read_raw_pdp_course_data calls ``converter_func(df)`` with a single argument.
+    """
+    return handling_duplicates(df, "pdp")
+
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -67,26 +79,31 @@ def validate_file_reader(
     pdp_cohort_converter_func: PDPConverterFunc = None,
     pdp_course_converter_func: PDPConverterFunc = None,
 ) -> dict[str, Any]:
-    """Validates a dataset given a filename and schema selection.
+    """
+    Validate a CSV from a path or file-like handle against schema selection.
+
+    Thin wrapper around :func:`validate_dataset` with the same arguments
+    reordered for call sites that pass ``allowed_schema`` first.
 
     Args:
         filename: Path or file-like object for the CSV.
         allowed_schema: List of model names to validate against.
         base_schema: Base schema dict (e.g. base.data_models).
         inst_schema: Optional extension schema with institutions.* blocks.
-        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp", or
-            institution UUID for custom. Default "pdp" for backward compatibility.
+        institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
+            or "legacy" (any-format). Default "pdp".
         institution_identifier: Optional institution identifier (e.g. UUID) for display/context.
-        pdp_cohort_converter_func: Optional custom PDP cohort converter (school-specific).
-        pdp_course_converter_func: Optional custom PDP course converter (school-specific).
+        pdp_cohort_converter_func: Optional cohort row transform before Pandera; default
+            None. Batch PDP jobs may still apply school-specific cohort converters via ``dataio``.
+        pdp_course_converter_func: Optional course converter; default duplicate handling only.
 
     Returns:
-        Dict with validation_status, schemas, missing_optional, unknown_extra_columns.
-        On success also contains "normalized_df" (DataFrame, or None if nothing was validated).
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
+        and on success normalized_df (DataFrame, or None if nothing was validated).
 
     Raises:
-        HardValidationError: When required columns are missing or schema validation fails.
-        UnicodeError: When file encoding is not UTF-8/UTF-16/UTF-32.
+        HardValidationError: When required columns are missing, schema validation fails,
+            or encoding cannot be resolved (decode failures use failure_cases, not UnicodeError).
     """
     return validate_dataset(
         filename,
@@ -179,7 +196,7 @@ def get_extension_model_columns_only(
 ) -> Dict[str, dict]:
     """
     Return only the extension columns for the given institution and model (no base).
-    Used for PDP and Edvise so we do not pull in base columns that don't match the repo schema.
+    Used for PDP and Edvise Schema (ES) so we do not pull in base columns that don't match the repo schema.
     """
     if not extension_schema:
         return {}
@@ -738,7 +755,8 @@ def _compute_model_list_and_merged_specs(
 
 
 # --------------------------------------------------------------------------- #
-# PDP: use edvise read + validate (single source of truth)
+# PDP single-model path: edvise read + Pandera validate. Cohort converter defaults
+# to None so validated row sets can differ from batch jobs that use dataio converters.
 # --------------------------------------------------------------------------- #
 
 # Datetime formats to try for PDP course (same order as pdp_data_audit)
@@ -785,7 +803,7 @@ def _convert_pdp_schema_errors_to_hard(
 def _read_pdp_validated_dataframe(
     path: str,
     model_set: set[str],
-    cohort_converter: Callable[[pd.DataFrame], pd.DataFrame],
+    cohort_converter: PDPConverterFunc,
     course_converter_func: PDPConverterFunc,
 ) -> pd.DataFrame:
     """Read and validate PDP cohort or course data; return validated DataFrame or raise."""
@@ -863,29 +881,27 @@ def _read_pdp_course_edvise(
     course_converter_func: PDPConverterFunc = None,
 ) -> pd.DataFrame:
     """
-    Read and validate PDP course data via edvise (same as pipeline).
+    Read and validate a PDP course CSV using edvise helpers.
 
-    Tries each datetime format with each converter. If a custom
-    course_converter_func is provided (e.g. from a school), it is tried first;
-    then the default handling_duplicates(..., school_type="pdp"), then
-    handling_duplicates for older edvise. Raises HardValidationError if all
-    attempts fail.
+    Tries each value in ``PDP_COURSE_DTTM_FORMATS`` with each converter: optional
+    ``course_converter_func`` first, then :func:`_default_pdp_course_duplicate_converter`.
+
+    Batch PDP jobs may also try school-specific converters from ``dataio``; this
+    path only runs converters passed in here, so results may differ from those jobs.
 
     Args:
         path: Path to course CSV.
-        course_converter_func: Optional custom converter (e.g. converter_func_course)
-            that schools can provide; if None, only default converters are used.
+        course_converter_func: Optional school-specific converter; if None, only the
+            default duplicate-handling converter is used.
 
     Returns:
-        Validated DataFrame (same as pipeline output).
+        Validated DataFrame from ``read_raw_pdp_course_data`` for the first successful
+        converter and datetime format.
 
     Raises:
-        HardValidationError: If no (converter, format) pair succeeded.
+        HardValidationError: If every converter and format combination fails.
     """
-    default_converters = (
-        partial(handling_duplicates, school_type="pdp"),
-        handling_duplicates,
-    )
+    default_converters = (_default_pdp_course_duplicate_converter,)
     converters = (
         (course_converter_func,) if course_converter_func is not None else ()
     ) + default_converters
@@ -903,7 +919,7 @@ def _read_pdp_course_edvise(
             except ValueError as e:
                 last_error = e
             except TypeError as e:
-                if "school_type" in str(e):
+                if "school_type" in str(e) or "schema_type" in str(e):
                     last_error = None
                     break
                 raise
@@ -935,30 +951,30 @@ def _validate_pdp_with_edvise_read(
     pdp_course_converter_func: PDPConverterFunc = None,
 ) -> Dict[str, Any]:
     """
-    Validate PDP cohort or course via edvise read + schema (same as pipeline).
+    Validate a single-model PDP cohort or course file via edvise read and Pandera.
 
-    Resolves filename to a path (temp file if file-like), then calls
-    read_raw_pdp_cohort_data or read_raw_pdp_course_data. Uses the same
-    converter functions as the edvise repo: cohort converter filters dual
-    enrollment students (DE/DS/SE); course converter handles duplicates.
-    Schools can provide custom converters via the optional func args.
+    Writes file-like inputs to a temp path, then calls ``read_raw_pdp_cohort_data``
+    (STUDENT) or ``_read_pdp_course_edvise`` (COURSE). Cohort rows are only
+    transformed when ``pdp_cohort_converter_func`` is set; batch jobs may still
+    filter cohort rows via ``dataio``, so API output rows are not guaranteed to
+    match pipeline output for the same file.
 
     Args:
-        filename: Path or file-like to CSV.
-        enc: Encoding (from sniff_encoding) for file-like decode.
-        model_list: Single model, e.g. ["STUDENT"] or ["COURSE"].
-        institution_id: Institution schema key (e.g. "pdp").
-        pdp_cohort_converter_func: Optional custom cohort converter; if None,
-            uses converter_func_cohort from edvise (filters DE/DS/SE).
-        pdp_course_converter_func: Optional custom course converter (e.g.
-            converter_func_course); if None, uses default handling_duplicates.
+        filename: Path or file-like CSV source.
+        enc: Encoding from :func:`sniff_encoding` (used when materializing file-like input).
+        model_list: Exactly one model, e.g. ``["STUDENT"]`` or ``["COURSE"]``.
+        institution_id: Schema namespace (e.g. ``"pdp"``); reserved for callers and logging.
+        pdp_cohort_converter_func: Optional ``DataFrame -> DataFrame`` step before cohort
+            schema validation; ``None`` means validate rows as read.
+        pdp_course_converter_func: Optional course converter before default duplicate handling.
 
     Returns:
-        Dict with validation_status, schemas, missing_optional,
-        unknown_extra_columns, normalized_df.
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
+        and normalized_df on success.
 
     Raises:
-        HardValidationError: If read/schema fails (or SchemaErrors converted).
+        HardValidationError: If converters are non-callable, read fails, or Pandera
+            validation fails (including converted SchemaErrors).
     """
     _reset_to_start_if_possible(filename)
     model_set = {str(m).strip().upper() for m in model_list if m}
@@ -966,7 +982,7 @@ def _validate_pdp_with_edvise_read(
     _validate_pdp_converter_callables(
         pdp_cohort_converter_func, pdp_course_converter_func
     )
-    cohort_converter = pdp_cohort_converter_func or converter_func_cohort
+    cohort_converter = pdp_cohort_converter_func
 
     with _path_for_edvise_read(filename, enc) as path:
         try:
@@ -1004,6 +1020,86 @@ def _validate_pdp_with_edvise_read(
 # --------------------------------------------------------------------------- #
 
 
+def _validate_legacy_any_format(
+    filename: Src,
+    enc: str,
+    models: Union[str, List[str], None],
+) -> Dict[str, Any]:
+    """
+    Legacy institutions: accept any CSV format (encoding check only, no schema).
+
+    Reads the file as CSV with no column or type checks; returns the DataFrame
+    as-is as normalized_df so it can be written to validated/.
+
+    Args:
+        filename: Path or file-like object for the CSV.
+        enc: Encoding already sniffed for the file.
+        models: Allowed schema names (e.g. ["STUDENT"]); used for response only.
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
+        and normalized_df (the DataFrame as read, or empty if read failed/empty).
+
+    Raises:
+        HardValidationError: If the file cannot be read or parsed as CSV, or if
+            column names indicate PII (e.g. email, ssn, first_name); such files
+            are rejected before being written to raw/ or validated/.
+    """
+    if models is None:
+        model_list: List[str] = ["UNKNOWN"]
+    elif isinstance(models, str):
+        model_list = [models]
+    else:
+        model_list = list(models)
+    if not model_list:
+        model_list = ["UNKNOWN"]
+
+    with _path_for_edvise_read(filename, enc) as path:
+        read_enc = "utf-8" if not isinstance(filename, (str, os.PathLike)) else enc
+        try:
+            df = pd.read_csv(path, encoding=read_enc)
+        except (
+            pd.errors.ParserError,
+            pd.errors.EmptyDataError,
+            UnicodeDecodeError,
+            OSError,
+        ) as e:
+            logger.exception("Legacy CSV read failed: %s", e)
+            raise HardValidationError(
+                schema_errors="Legacy upload: could not read CSV.",
+                failure_cases=[str(e)],
+            ) from e
+    if df is None or not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame()
+
+    # PII check: reject legacy uploads that contain columns indicating PII (before moving to raw/validated).
+    # Run whenever there are columns (including header-only CSVs: df.empty is True for 0 rows).
+    if len(df.columns) > 0:
+        # Lazy import to avoid circular dependency: validation_error_formatter imports from this module.
+        from .validation_error_formatter import _is_pii_column
+
+        pii_columns = [str(c) for c in df.columns if _is_pii_column(str(c))]
+        if pii_columns:
+            logger.warning(
+                "Legacy upload rejected: PII columns detected: %s", pii_columns
+            )
+            raise HardValidationError(
+                schema_errors=(
+                    "Legacy upload: file contains columns that may contain personally identifiable information (PII). "
+                    "Please remove or de-identify these columns before uploading."
+                ),
+                failure_cases=pii_columns,
+            )
+
+    return {
+        "validation_status": "passed",
+        "schemas": model_list,
+        "missing_optional": [],
+        "unknown_extra_columns": [],
+        "normalized_df": df,
+    }
+
+
 def validate_dataset(
     filename: Src,
     base_schema: dict,
@@ -1015,22 +1111,39 @@ def validate_dataset(
     pdp_course_converter_func: PDPConverterFunc = None,
 ) -> Dict[str, Any]:
     """
-    Validate a dataset against merged base/extension schemas.
+    Validate a dataset against merged base and optional extension schemas.
 
-    Steps: encoding, merge specs, header pass, typed read, then PDP repo schema
-    (if applicable) or JSON-based validation. Returns dict with validation_status,
-    schemas, normalized_df (or None if empty merged_specs). Raises HardValidationError
-    on failure; UnicodeError if encoding is not UTF-8/UTF-16/UTF-32.
+    Detects encoding, merges institution column specs, then routes to legacy
+    any-format handling, PDP edvise read (single-model STUDENT/COURSE), or
+    JSON Pandera validation. ``institution_id == "legacy"`` skips column schema checks.
 
-    For PDP uploads, optional pdp_cohort_converter_func and pdp_course_converter_func
-    allow schools to supply custom converters (e.g. from config); if None, edvise
-    defaults are used (cohort: filter DE/DS/SE; course: handling_duplicates).
+    Args:
+        filename: CSV path or file-like object.
+        base_schema: Base schema dict (e.g. base.data_models).
+        ext_schema: Optional extension schema with institutions.* blocks.
+        models: Model name(s) to validate; ``None`` follows merged_specs resolution.
+        institution_id: Institutions key, or ``"legacy"`` for encoding-only validation.
+        institution_identifier: Optional UUID string for caller context (e.g. Edvise).
+        pdp_cohort_converter_func: Optional cohort transform before Pandera; default ``None``.
+            Batch PDP jobs may still apply school-specific cohort converters via ``dataio``.
+        pdp_course_converter_func: Optional course converter before default duplicate handling.
+
+    Returns:
+        Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
+        and normalized_df (``None`` when merged_specs is empty).
+
+    Raises:
+        HardValidationError: On decode failure, missing columns, schema errors, or
+            other validation failures (including Unicode decode issues from sniff_encoding).
     """
     try:
         enc = sniff_encoding(filename)
     except UnicodeError as ex:
         raise HardValidationError(schema_errors="decode_error", failure_cases=[str(ex)])
     _reset_to_start_if_possible(filename)
+
+    if institution_id == "legacy":
+        return _validate_legacy_any_format(filename, enc, models)
 
     model_list, merged_specs = _compute_model_list_and_merged_specs(
         base_schema, ext_schema, institution_id, models
@@ -1044,7 +1157,7 @@ def validate_dataset(
             "normalized_df": None,
         }
 
-    # PDP single-model: use edvise read + validate (same as pipeline)
+    # Route PDP STUDENT/COURSE to edvise read path (cohort converter optional; see section above).
     if pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list) is not None:
         return _validate_pdp_with_edvise_read(
             filename,
