@@ -76,9 +76,9 @@ flowchart TB
 
 Databricks is the platform where ML training and inference run. It is a key part of the application.
 
-- **Separate workspaces per environment:** Dev, staging, and prod each have their own Databricks workspace. The webapp and worker connect to the workspace for their environment via config in the env-file secrets (`DATABRICKS_HOST_URL`, `CATALOG_NAME`, etc.).
+- **Separate workspaces per environment:** Dev, staging, and prod[FUTURE] each have their own Databricks workspace. The webapp and worker connect to the workspace for their environment via config in the env-file secrets (`DATABRICKS_HOST_URL`, `CATALOG_NAME`, etc.).
 - **Webapp (edvise-api) talks to Databricks via the Databricks SDK (WorkspaceClient):** triggers jobs (e.g. PDP inference pipeline), provisions per-institution schemas and Unity Catalog volumes (bronze/silver/gold), fetches table data and model versions (MLflow Unity Catalog), and deletes institutions or models. Job run IDs are stored in Cloud SQL.
-- **Training and inference execute on Databricks:** edvise library code runs in Databricks jobs (Spark, H2O, MLflow). Pipelines read from GCS or Databricks Volumes, write to Unity Catalog tables and the model registry. PDP inference is defined in edvise (e.g. `pipelines/pdp/resources/github_pdp_inference.yml`) and runs as a Databricks job.
+- **Training and inference execute on Databricks:** edvise library code runs in Databricks jobs (Spark, H2O, MLflow). Pipelines read from GCS or Databricks Volumes (inference pipelines also read trained models from the model registry) and write to Unity Catalog tables and the model registry. PDP inference is defined in edvise (e.g. `pipelines/pdp/resources/github_pdp_inference.yml`) and runs as a Databricks job.
 - **Data flow:** Webapp triggers a run → Databricks job runs (edvise + Spark/H2O) → results and models land in Unity Catalog / MLflow → webapp fetches model version or table data via SDK when serving the UI.
 
 Databricks is external to GCP; auth from Cloud Run to Databricks uses a GCP service account (e.g. `GCP_SERVICE_ACCOUNT_EMAIL`) registered in Databricks.
