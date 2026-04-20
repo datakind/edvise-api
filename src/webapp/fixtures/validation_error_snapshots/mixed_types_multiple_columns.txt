@@ -8,4 +8,4 @@ Column 'Score' has validation errors:
   • Row 3: Validation failed for greater_than(0) check. Current value: found '-5'
 
 Column 'Student ID' has validation errors:
-  • Row 1: Value must be at least 3 characters long. Current value: found '****' (value masked for privacy)
+  • Row 1: Value must be at least 3 characters long. Current value: found 'AB'

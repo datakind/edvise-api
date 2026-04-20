@@ -13,11 +13,9 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
-from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, Optional
-from fastapi import HTTPException
 import requests
 import hashlib
 import json
@@ -25,7 +23,6 @@ import gzip
 from cachetools import TTLCache
 import threading
 import re
-import pandas as pd
 
 # Setting up logger
 LOGGER = logging.getLogger(__name__)
@@ -623,78 +620,3 @@ class DatabricksControl(BaseModel):
                     return key
 
         return None
-
-    def create_custom_schema_extension(
-        self,
-        bucket_name: str,
-        inst_query: Any,
-        file_name: str,
-        base_schema: Dict[str, Any],  # pass base schema dict in
-        extension_schema: Optional[dict] = None,  # existing extension or None
-    ) -> Any:
-        if (
-            os.getenv("SST_SKIP_EXT_GEN") == "1"
-        ):  # skip using workspace client for tests
-            LOGGER.info("SST_SKIP_EXT_GEN=1; skipping Databricks extension generation.")
-            return None
-
-        inst_name = inst_query.name
-        inst_id = str(inst_query.id)
-
-        mapping = {
-            "course": [
-                "course.csv",
-                "courses.csv",
-                r"^(?=.*AR_DEIDENTIFIED)(?=.*COURSE).*\.csv$",
-            ],
-            "student": ["student.csv", r"^(?=.*AR_DEIDENTIFIED)(?!.*COURSE).*\.csv$"],
-            "semester": ["semester.csv"],
-        }
-
-        key = self.get_key_for_file(mapping, file_name)  # e.g., "student"
-        if key is None:
-            raise HTTPException(
-                404, detail=f"{file_name} not found in {inst_name} validation_mapping"
-            )
-
-        key_lc = key.lower()
-
-        # 4) If this model already exists in the provided extension for this institution, skip
-        if extension_schema is not None:
-            if not isinstance(extension_schema, dict):
-                raise HTTPException(
-                    400, detail="extension_schema must be a dict if provided"
-                )
-
-            inst_block = extension_schema.get("institutions", {}).get(inst_id, {})
-            data_models = inst_block.get("data_models", {})
-            existing_keys_lc = {str(k).lower() for k in data_models.keys()}
-
-            if key_lc in existing_keys_lc:
-                LOGGER.info(
-                    "Model '%s' already present for institution '%s' — skipping (return None).",
-                    key,
-                    inst_id,
-                )
-                return None  # <-- sentinel: do not write
-
-        # 5) Read the unvalidated CSV from GCS
-        try:
-            client = storage.Client()
-            bucket = client.bucket(bucket_name)
-            blob = bucket.blob(f"unvalidated/{file_name}")
-            with blob.open("r") as fh:
-                df = pd.read_csv(fh)
-        except Exception as e:
-            LOGGER.exception("Failed to read %s from GCS", file_name)
-            raise HTTPException(500, detail=f"Failed to read {file_name} from GCS: {e}")
-
-        updated_extension = generate_extension_schema(
-            df=df,
-            models=key,  # exactly one model
-            institution_id=inst_id,
-            base_schema=base_schema,  # reference only, not mutated
-            existing_extension=extension_schema,  # may be None
-        )
-
-        return updated_extension

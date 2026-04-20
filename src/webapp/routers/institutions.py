@@ -2,7 +2,7 @@
 
 import re
 
-from typing import Annotated, Any, Dict
+from typing import Annotated, Any, Dict, Optional, Tuple, cast
 from fastapi import HTTPException, status, APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from sqlalchemy import and_, delete, func
 
 from ..utilities import (
     has_access_to_inst_or_err,
+    has_at_most_one_school_type,
     BaseUser,
     AccessType,
     get_external_bucket_name_from_uuid,
@@ -20,6 +21,7 @@ from ..utilities import (
     SchemaType,
     PDP_SCHEMA_GROUP,
     EDVISE_SCHEMA_GROUP,
+    LEGACY_SCHEMA_GROUP,
     UsState,
     get_external_bucket_name,
 )
@@ -35,6 +37,17 @@ from ..databricks import DatabricksControl
 
 router = APIRouter(
     tags=["institutions"],
+)
+
+# PATCH/POST: every institution must resolve to exactly one school type (IDs on the row).
+_EXACTLY_ONE_SCHOOL_TYPE_DETAIL = (
+    "Institution must be exactly one of PDP (set pdp_id), "
+    "Edvise Schema (ES) (set edvise_id or is_edvise), or Legacy "
+    "(set legacy_id or is_legacy)."
+)
+_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL = (
+    "An institution cannot be more than one of PDP, Edvise Schema (ES), or Legacy. "
+    "Please choose one schema type."
 )
 
 
@@ -55,9 +68,12 @@ class InstitutionCreationRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored. PDP status is derived from pdp_id presence.
     is_pdp: bool | None = None
     pdp_id: str | None = None
-    # Note: is_edvise is kept for backward compatibility but is ignored. Edvise status is derived from edvise_id presence.
+    # Note: is_edvise is kept for backward compatibility. When True and edvise_id is omitted, edvise_id is auto-assigned.
     is_edvise: bool | None = None
     edvise_id: str | None = None
+    # Legacy schools: upload data in any format. When True and legacy_id is omitted, legacy_id is auto-assigned.
+    is_legacy: bool | None = None
+    legacy_id: str | None = None
     retention_days: int | None = None
 
 
@@ -72,6 +88,7 @@ class Institution(BaseModel):
     retention_days: int | None = None  # In Days
     pdp_id: str | None = None
     edvise_id: str | None = None
+    legacy_id: str | None = None
 
 
 @router.get("/institutions", response_model=list[Institution])
@@ -100,22 +117,283 @@ def read_all_inst(
                 "retention_days": elem[0].retention_days,
                 "pdp_id": None if elem[0].pdp_id is None else elem[0].pdp_id,
                 "edvise_id": None if elem[0].edvise_id is None else elem[0].edvise_id,
+                "legacy_id": None if elem[0].legacy_id is None else elem[0].legacy_id,
             }
         )
     return res
 
 
-@router.post("/institutions", response_model=Institution)
-def create_institution(
+def _request_has_more_than_one_school_type(
     req: InstitutionCreationRequest,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-    storage_control: Annotated[StorageControl, Depends(StorageControl)],
-    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
-) -> Any:
-    """Create a new institution.
+    pdp_id: Optional[str],
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+) -> bool:
+    """Return True if the request indicates more than one of PDP, Edvise Schema (ES), or Legacy."""
+    pdp_set = bool(pdp_id)
+    edvise_set = bool(req.is_edvise) or bool(edvise_id)
+    legacy_set = bool(req.is_legacy) or bool(legacy_id)
+    return (pdp_set + edvise_set + legacy_set) > 1
 
-    Only available to Datakinders.
+
+def _compute_edvise_legacy_ids_for_create(
+    sess: Session,
+    req: InstitutionCreationRequest,
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Auto-assign edvise_id or legacy_id when type is set but no id provided. Returns (edvise_id, legacy_id)."""
+    if req.is_edvise and not edvise_id:
+        count = (
+            sess.execute(
+                select(func.count())
+                .select_from(InstTable)
+                .where(InstTable.edvise_id.isnot(None))
+            ).scalar()
+            or 0
+        )
+        edvise_id = f"edvise_{count + 1}"
+    if req.is_legacy and not legacy_id:
+        count = (
+            sess.execute(
+                select(func.count())
+                .select_from(InstTable)
+                .where(InstTable.legacy_id.isnot(None))
+            ).scalar()
+            or 0
+        )
+        legacy_id = f"legacy_{count + 1}"
+    return (edvise_id, legacy_id)
+
+
+def _raise_if_existing_row_invalid_for_duplicate_post(existing: InstTable) -> None:
+    """Reject idempotent POST when the stored row violates school-type invariants."""
+    ep, ee, el = existing.pdp_id, existing.edvise_id, existing.legacy_id
+    if not has_at_most_one_school_type(ep, ee, el):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    if sum(bool(x) for x in (ep, ee, el)) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "An institution with this name and state already exists but does not "
+                "have a valid school type configured. "
+                + _EXACTLY_ONE_SCHOOL_TYPE_DETAIL
+            ),
+        )
+
+
+def _raise_if_institution_name_patch_disallowed(
+    update_data: dict, existing_name: str
+) -> None:
+    if "name" in update_data and update_data["name"] != existing_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Institution names cannot be changed.",
+        )
+
+
+def _normalize_patch_school_id_strings(update_data: dict) -> None:
+    for key in ("pdp_id", "edvise_id", "legacy_id"):
+        if key in update_data:
+            update_data[key] = (update_data[key] or "").strip() or None
+
+
+def _resolve_merged_school_type_triple_for_patch(
+    existing_inst: InstTable,
+    update_data: dict,
+    sess: Session,
+) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+    """Merge PATCH school-type fields, auto-assign ids, enforce exactly one type."""
+    old_type_triple = (
+        existing_inst.pdp_id,
+        existing_inst.edvise_id,
+        existing_inst.legacy_id,
+    )
+    _raise_if_institution_name_patch_disallowed(update_data, existing_inst.name)
+    _normalize_patch_school_id_strings(update_data)
+    final_pdp_id = (
+        update_data["pdp_id"] if "pdp_id" in update_data else existing_inst.pdp_id
+    )
+    final_edvise_id = (
+        update_data["edvise_id"]
+        if "edvise_id" in update_data
+        else existing_inst.edvise_id
+    )
+    final_legacy_id = (
+        update_data["legacy_id"]
+        if "legacy_id" in update_data
+        else existing_inst.legacy_id
+    )
+    if _patch_indicates_more_than_one_school_type(
+        update_data, final_pdp_id, final_edvise_id, final_legacy_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    final_edvise_id, final_legacy_id = _compute_edvise_legacy_ids_for_patch(
+        sess, update_data, final_edvise_id, final_legacy_id
+    )
+    if not has_at_most_one_school_type(final_pdp_id, final_edvise_id, final_legacy_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    if sum(bool(x) for x in (final_pdp_id, final_edvise_id, final_legacy_id)) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_EXACTLY_ONE_SCHOOL_TYPE_DETAIL,
+        )
+    school_type_changed = old_type_triple != (
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
+    )
+    return final_pdp_id, final_edvise_id, final_legacy_id, school_type_changed
+
+
+def _require_single_institution_row_by_uuid(sess: Session, inst_id: str) -> InstTable:
+    """Load exactly one InstTable row by UUID or raise HTTP 400."""
+    query_result = sess.execute(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    ).all()
+    if not query_result or len(query_result) != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unexpected number of institutions found with this id. Expected 1 got "
+            + str(len(query_result)),
+        )
+    return cast(InstTable, query_result[0][0])
+
+
+def _persist_institution_patch_row_fields(
+    existing_inst: InstTable,
+    update_data: dict,
+    final_pdp_id: Optional[str],
+    final_edvise_id: Optional[str],
+    final_legacy_id: Optional[str],
+) -> None:
+    """Apply non-schema PATCH fields and the resolved school-type triple to the ORM row."""
+    if "state" in update_data:
+        existing_inst.state = update_data["state"]
+    if "allowed_emails" in update_data:
+        existing_inst.allowed_emails = update_data["allowed_emails"]
+    if "retention_days" in update_data:
+        existing_inst.retention_days = update_data["retention_days"]
+    existing_inst.pdp_id = final_pdp_id
+    existing_inst.edvise_id = final_edvise_id
+    existing_inst.legacy_id = final_legacy_id
+
+
+def _apply_institution_schema_updates_from_patch(
+    existing_inst: InstTable,
+    update_data: dict,
+    school_type_changed: bool,
+    final_pdp_id: Optional[str],
+    final_edvise_id: Optional[str],
+    final_legacy_id: Optional[str],
+) -> None:
+    if school_type_changed:
+        extra_allowed = (
+            update_data["allowed_schemas"] if "allowed_schemas" in update_data else None
+        )
+        existing_inst.schemas = _build_requested_schemas(
+            extra_allowed,
+            final_pdp_id,
+            final_edvise_id,
+            final_legacy_id,
+        )
+    elif "allowed_schemas" in update_data:
+        existing_inst.schemas = update_data["allowed_schemas"]
+
+
+def _patch_indicates_more_than_one_school_type(
+    update_data: dict,
+    pdp_id: Optional[str],
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+) -> bool:
+    """True if merged IDs plus explicit is_edvise/is_legacy flags imply more than one school type."""
+    pdp_set = bool(pdp_id)
+    edvise_flag = update_data["is_edvise"] if "is_edvise" in update_data else False
+    legacy_flag = update_data["is_legacy"] if "is_legacy" in update_data else False
+    edvise_set = bool(edvise_id) or bool(edvise_flag)
+    legacy_set = bool(legacy_id) or bool(legacy_flag)
+    return (pdp_set + edvise_set + legacy_set) > 1
+
+
+def _compute_edvise_legacy_ids_for_patch(
+    sess: Session,
+    update_data: dict,
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Auto-assign edvise_id/legacy_id when PATCH sets is_edvise/is_legacy True and id is still empty."""
+    if update_data.get("is_edvise") and not edvise_id:
+        count = (
+            sess.execute(
+                select(func.count())
+                .select_from(InstTable)
+                .where(InstTable.edvise_id.isnot(None))
+            ).scalar()
+            or 0
+        )
+        edvise_id = f"edvise_{count + 1}"
+    if update_data.get("is_legacy") and not legacy_id:
+        count = (
+            sess.execute(
+                select(func.count())
+                .select_from(InstTable)
+                .where(InstTable.legacy_id.isnot(None))
+            ).scalar()
+            or 0
+        )
+        legacy_id = f"legacy_{count + 1}"
+    return (edvise_id, legacy_id)
+
+
+def _build_requested_schemas(
+    allowed_schemas: Optional[list],
+    pdp_id: Optional[str],
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+) -> list:
+    """Merge optional explicit allowed_schemas with the schema group for the school type.
+
+    Callers must ensure exactly one of pdp_id, edvise_id, or legacy_id is set;
+    the merged groups are always non-empty.
+    """
+    requested_schemas = list(allowed_schemas) if allowed_schemas else []
+    if pdp_id:
+        requested_schemas += list(PDP_SCHEMA_GROUP)
+    if edvise_id:
+        requested_schemas += list(EDVISE_SCHEMA_GROUP)
+    if legacy_id:
+        requested_schemas += list(LEGACY_SCHEMA_GROUP)
+    return list(set(requested_schemas))
+
+
+def _build_requested_schemas_for_create(
+    req: InstitutionCreationRequest,
+    pdp_id: Optional[str],
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+) -> list:
+    """Build the requested_schemas list from req and school-type IDs (same rules as PATCH)."""
+    return _build_requested_schemas(req.allowed_schemas, pdp_id, edvise_id, legacy_id)
+
+
+def _validate_and_prepare_create_institution(
+    req: InstitutionCreationRequest,
+    current_user: BaseUser,
+    sql_session: Session,
+) -> Tuple[Session, Optional[str], Optional[str], Optional[str]]:
+    """
+    Validate request and compute normalized IDs. Returns (sess, pdp_id, edvise_id, legacy_id).
+    Raises HTTPException on validation failure.
     """
     if not current_user.is_datakinder():
         raise HTTPException(
@@ -127,106 +405,156 @@ def create_institution(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Please set the institution name.",
         )
-    # Normalize empty strings to None for consistency
-    # Strip whitespace and convert empty strings to None
-    pdp_id = (req.pdp_id or "").strip() or None
-    edvise_id = (req.edvise_id or "").strip() or None
-    # Validate mutual exclusivity: cannot be both PDP and Edvise
-    if pdp_id and edvise_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be both PDP and Edvise. Please choose one schema type.",
-        )
-
-    pattern = "^[A-Za-z0-9&_ -]*$"
-    if not re.match(pattern, req.name):
+    if not re.match(r"^[A-Za-z0-9&_ -]*$", req.name):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only alphanumeric characters, -, _, &, and a space are allowed in institution names.",
         )
+    pdp_id = (req.pdp_id or "").strip() or None
+    edvise_id = (req.edvise_id or "").strip() or None
+    legacy_id = (req.legacy_id or "").strip() or None
 
+    if _request_has_more_than_one_school_type(req, pdp_id, edvise_id, legacy_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
     local_session.set(sql_session)
-    query_result = (
-        local_session.get()
-        .execute(
-            select(InstTable).where(
-                and_(InstTable.name == req.name, InstTable.state == req.state)
-            )
-        )
-        .all()
+    sess = local_session.get()
+    edvise_id, legacy_id = _compute_edvise_legacy_ids_for_create(
+        sess, req, edvise_id, legacy_id
     )
+    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
+        )
+    school_type_count = sum(bool(x) for x in (pdp_id, edvise_id, legacy_id))
+    if school_type_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_EXACTLY_ONE_SCHOOL_TYPE_DETAIL,
+        )
+    return (sess, pdp_id, edvise_id, legacy_id)
+
+
+def _institution_row_to_response(row: Any) -> Dict[str, Any]:
+    """Build the Institution response dict from an InstTable row."""
+    return {
+        "inst_id": uuid_to_str(row.id),
+        "name": row.name,
+        "state": row.state,
+        "pdp_id": row.pdp_id,
+        "edvise_id": row.edvise_id,
+        "legacy_id": row.legacy_id,
+        "retention_days": row.retention_days,
+    }
+
+
+def _create_institution_record_and_infrastructure(
+    sess: Session,
+    req: InstitutionCreationRequest,
+    pdp_id: Optional[str],
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+    requested_schemas: list,
+    current_user: BaseUser,
+    storage_control: StorageControl,
+    databricks_control: DatabricksControl,
+) -> Any:
+    """
+    Add institution record, commit, create bucket and Databricks setup. Returns the created InstTable row.
+    Raises HTTPException on failure.
+    """
+    sess.add(
+        InstTable(
+            name=req.name,
+            retention_days=req.retention_days,
+            pdp_id=pdp_id,
+            edvise_id=edvise_id,
+            legacy_id=legacy_id,
+            schemas=requested_schemas,
+            allowed_emails=req.allowed_emails,
+            state=req.state,
+            created_by=str_to_uuid(current_user.user_id),
+        )
+    )
+    sess.commit()
+    query_result = sess.execute(
+        select(InstTable).where(InstTable.name == req.name)
+    ).all()
+    if not query_result:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database write of the institution creation failed.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database write of the institution created duplicate entries.",
+        )
+    inst_row = query_result[0][0]
+    bucket_name = get_external_bucket_name_from_uuid(inst_row.id)
+    try:
+        storage_control.create_bucket(bucket_name)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Storage bucket creation failed:" + str(e),
+        ) from e
+    try:
+        databricks_control.setup_new_inst(inst_row.name)
+    except Exception as e:
+        # DatabricksControl may raise various exceptions; catch and re-raise with context.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Databricks setup failed:" + str(e),
+        ) from e
+    return inst_row
+
+
+@router.post("/institutions", response_model=Institution)
+def create_institution(
+    req: InstitutionCreationRequest,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """Create a new institution. Only available to Datakinders."""
+    sess, pdp_id, edvise_id, legacy_id = _validate_and_prepare_create_institution(
+        req, current_user, sql_session
+    )
+    query_result = sess.execute(
+        select(InstTable).where(
+            and_(InstTable.name == req.name, InstTable.state == req.state)
+        )
+    ).all()
     if len(query_result) == 0:
-        # If the institution does not exist create it and create a storage bucket for it.
-        requested_schemas = []
-        if req.allowed_schemas:
-            requested_schemas = req.allowed_schemas
-        # Derive PDP status from pdp_id presence (ignore is_pdp for backward compat)
-        if pdp_id:
-            requested_schemas += PDP_SCHEMA_GROUP
-        # Derive Edvise status from edvise_id presence (ignore is_edvise for backward compat)
-        if edvise_id:
-            requested_schemas += EDVISE_SCHEMA_GROUP
-        # if no schema is set and neither PDP nor Edvise is set, we default to custom.
-        if not requested_schemas:
-            requested_schemas = [SchemaType.UNKNOWN]
-        local_session.get().add(
-            InstTable(
-                name=req.name,
-                retention_days=req.retention_days,
-                pdp_id=pdp_id,
-                edvise_id=edvise_id,
-                # Sets aren't json serializable, so turn them into lists first
-                schemas=list(set(requested_schemas)),
-                allowed_emails=req.allowed_emails,
-                state=req.state,
-                created_by=str_to_uuid(current_user.user_id),
-            )
+        requested_schemas = _build_requested_schemas_for_create(
+            req, pdp_id, edvise_id, legacy_id
         )
-        local_session.get().commit()
-        query_result = (
-            local_session.get()
-            .execute(select(InstTable).where(InstTable.name == req.name))
-            .all()
+        row = _create_institution_record_and_infrastructure(
+            sess,
+            req,
+            pdp_id,
+            edvise_id,
+            legacy_id,
+            requested_schemas,
+            current_user,
+            storage_control,
+            databricks_control,
         )
-        if not query_result:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Database write of the institution creation failed.",
-            )
-        if len(query_result) > 1:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Database write of the institution created duplicate entries.",
-            )
-        # Create a storage bucket for it. During creation, we have to include the /.
-        bucket_name = get_external_bucket_name_from_uuid(query_result[0][0].id)
-        try:
-            storage_control.create_bucket(bucket_name)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Storage bucket creation failed:" + str(e),
-            ) from e
-        try:
-            databricks_control.setup_new_inst(query_result[0][0].name)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Databricks setup failed:" + str(e),
-            ) from e
+    else:
+        existing = query_result[0][0]
+        _raise_if_existing_row_invalid_for_duplicate_post(existing)
+        row = existing
     if len(query_result) > 1:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Institution duplicates found.",
         )
-    return {
-        "inst_id": uuid_to_str(query_result[0][0].id),
-        "name": query_result[0][0].name,
-        "state": query_result[0][0].state,
-        "pdp_id": query_result[0][0].pdp_id,
-        "edvise_id": query_result[0][0].edvise_id,
-        "retention_days": query_result[0][0].retention_days,
-    }
+    return _institution_row_to_response(row)
 
 
 @router.patch("/institutions/{inst_id}", response_model=Institution)
@@ -236,92 +564,48 @@ def update_inst(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
 ) -> Any:
-    """Modifies an existing institution. Only some fields are allowed to be modified."""
+    """Modifies an existing institution.
+
+    The row must keep exactly one of pdp_id, edvise_id, or legacy_id (same as POST).
+    ``is_edvise`` / ``is_legacy`` in the body trigger the same auto-id assignment as
+    POST when the corresponding id is still empty after merging with the existing row.
+
+    ``schemas`` is recomputed (like POST) only when the school-type triple actually
+    changes; ``allowed_schemas`` alone still replaces ``schemas`` when no type change.
+    """
     if not current_user.is_datakinder():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authorized to modify an institution.",
         )
-
     update_data = request.model_dump(exclude_unset=True)
     local_session.set(sql_session)
-    # Check that the batch exists.
-    query_result = (
-        local_session.get()
-        .execute(
-            select(InstTable).where(
-                InstTable.id == str_to_uuid(inst_id),
-            )
-        )
-        .all()
+    sess = local_session.get()
+    existing_inst = _require_single_institution_row_by_uuid(sess, inst_id)
+    (
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
+        school_type_changed,
+    ) = _resolve_merged_school_type_triple_for_patch(existing_inst, update_data, sess)
+    _persist_institution_patch_row_fields(
+        existing_inst,
+        update_data,
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
     )
-    if not query_result or len(query_result) != 1:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unexpected number of institutions found with this id. Expected 1 got "
-            + str(len(query_result)),
-        )
-    existing_inst = query_result[0][0]
-    if "name" in update_data:
-        if update_data["name"] != existing_inst.name:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Institution names cannot be changed.",
-            )
-    # Normalize empty strings to None for consistency
-    # Strip whitespace and convert empty strings to None
-    if "pdp_id" in update_data:
-        update_data["pdp_id"] = (update_data["pdp_id"] or "").strip() or None
-    if "edvise_id" in update_data:
-        update_data["edvise_id"] = (update_data["edvise_id"] or "").strip() or None
-    # Validate mutual exclusivity: cannot be both PDP and Edvise
-    final_pdp_id = (
-        update_data.get("pdp_id") if "pdp_id" in update_data else existing_inst.pdp_id
+    _apply_institution_schema_updates_from_patch(
+        existing_inst,
+        update_data,
+        school_type_changed,
+        final_pdp_id,
+        final_edvise_id,
+        final_legacy_id,
     )
-    final_edvise_id = (
-        update_data.get("edvise_id")
-        if "edvise_id" in update_data
-        else existing_inst.edvise_id
-    )
-    if final_pdp_id and final_edvise_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An institution cannot be both PDP and Edvise. Please choose one schema type.",
-        )
-
-    if "state" in update_data:
-        existing_inst.state = update_data["state"]
-    if "allowed_schemas" in update_data:
-        existing_inst.allowed_schemas = update_data["allowed_schemas"]
-    if "allowed_emails" in update_data:
-        existing_inst.allowed_emails = update_data["allowed_emails"]
-    # Note: is_pdp is ignored - PDP status is derived from pdp_id presence
-    if "pdp_id" in update_data:
-        existing_inst.pdp_id = update_data["pdp_id"]
-    # Note: is_edvise is ignored - Edvise status is derived from edvise_id presence
-    if "edvise_id" in update_data:
-        existing_inst.edvise_id = update_data["edvise_id"]
-    if "retention_days" in update_data:
-        existing_inst.retention_days = update_data["retention_days"]
-
-    local_session.get().commit()
-    res = (
-        local_session.get()
-        .execute(
-            select(InstTable).where(
-                InstTable.id == str_to_uuid(inst_id),
-            )
-        )
-        .all()
-    )
-    return {
-        "inst_id": uuid_to_str(res[0][0].id),
-        "name": res[0][0].name,
-        "state": res[0][0].state,
-        "pdp_id": res[0][0].pdp_id,
-        "edvise_id": res[0][0].edvise_id,
-        "retention_days": res[0][0].retention_days,
-    }
+    sess.commit()
+    refreshed = _require_single_institution_row_by_uuid(sess, inst_id)
+    return _institution_row_to_response(refreshed)
 
 
 @router.delete("/institutions/{inst_id}", response_model=None)
@@ -420,6 +704,7 @@ def read_inst_name(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
     }
 
 
@@ -455,6 +740,7 @@ def read_inst_pdp_id(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
     }
 
 
@@ -492,4 +778,5 @@ def read_inst_id(
         "state": query_result[0][0].state,
         "pdp_id": query_result[0][0].pdp_id,
         "edvise_id": query_result[0][0].edvise_id,
+        "legacy_id": query_result[0][0].legacy_id,
     }

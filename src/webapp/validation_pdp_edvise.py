@@ -1,12 +1,13 @@
-"""PDP schema validation using canonical schemas from the edvise package.
+"""PDP Pandera schemas re-exported from edvise for upload validation.
 
-This module runs the same validation as the edvise repo (RawPDPCohortDataSchema,
-RawPDPCourseDataSchema) for PDP uploads only, so PDP validation rules match pipelines
-and audits. The edvise extension/institution uses JSON-based validation only (different
-columns and setup). All logic is in edvise-api; the edvise package is consumed read-only.
+Imports ``RawPDPCohortDataSchema`` and ``RawPDPCourseDataSchema`` so PDP uploads use
+the same column and type rules as edvise pipeline audits. Cohort row transforms run
+in ``validation.py`` (optional converter) and can differ from batch ``dataio`` hooks;
+this module only supplies schema classes and helpers.
 
-The edvise package is required for PDP validation: it must be installed (e.g. in
-pyproject.toml) so that PDP uploads are validated with the same schemas as the repo.
+Non-PDP Edvise institutions use JSON-based validation elsewhere (different columns).
+
+Requires the ``edvise`` package (see pyproject.toml).
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ def get_edvise_schema_for_upload(
     institution has a different shape and uses JSON validation only.
 
     Args:
-        institution_id: Schema namespace (e.g. "pdp", or institution UUID). Only "pdp" uses repo schema.
+        institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy"). Only "pdp" uses repo schema.
         model_list: Inferred model names from filename (e.g. ["STUDENT"], ["COURSE"]). May be None.
 
     Returns:
@@ -220,7 +221,7 @@ def _convert_schema_errors_to_hard_validation_error(
     if schema_errors is None:
         schema_errors = str(err) if err else None
     logger.error(
-        "PDP/Edvise schema validation failed: missing_required=%s, failure_cases_count=%s",
+        "PDP/Edvise Schema (ES) validation failed: missing_required=%s, failure_cases_count=%s",
         missing_required,
         len(normalized_failure_cases),
     )
@@ -266,7 +267,7 @@ def validate_dataframe_with_edvise_schema(
     HardValidationError = _get_hard_validation_error_class()
     if df is None or df.empty:
         raise HardValidationError(
-            schema_errors="PDP/Edvise schema validation failed: empty or missing DataFrame",
+            schema_errors="PDP/Edvise Schema (ES) validation failed: empty or missing DataFrame",
             raw_to_canon=raw_to_canon,
             canon_to_raw=canon_to_raw,
             merged_specs=merged_specs,
