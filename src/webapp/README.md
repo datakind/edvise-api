@@ -182,10 +182,11 @@ To revert back to the pinned Git dependency, run `uv sync --reinstall-package ed
 
 ## Local institutions (optional)
 
-Use real institution names and batch/file metadata locally without committing them. See **[config/README_LOCAL_INST_DATA.md](../../config/README_LOCAL_INST_DATA.md)** for:
+You can seed the local database with institution, batch, and file metadata that matches dev or staging (names, UUIDs, batch membership) without checking secrets into Git.
 
-- What the file does and how it’s formatted
-- How to get data (from dev API or a backup)
-- Canonical vs accepted shapes (so exports keep working)
+1. Copy `config/local_inst_data.example.json` to `config/local_inst_data.json`. The latter is gitignored.
+2. Edit `local_inst_data.json` to match your needs. Use the example file as the schema: one array element per institution, with `inst_id`, `name`, and optionally `state`, `pdp_id`, `batches`, and `files`.
 
-**Quick start:** Copy `config/local_inst_data.example.json` to `config/local_inst_data.json` (gitignored). Add one entry per institution, keyed by institution UUID; each entry needs at least `name`. Optional: `state`, `pdp_id`, `files`, `batches`. EDA still reads CSV from GCS (`dev_<inst_hex>`); use dev GCP credentials if you need EDA locally.
+If the file is missing, startup skips this step and the default local seed in code still applies.
+
+**Limitation:** Endpoints that read uploaded CSV (for example EDA) load blobs from GCS under the bucket name `dev_<institution_uuid_hex>`, not from this JSON. To exercise those flows locally you still need GCP credentials and the corresponding objects in that bucket, or you rely on tests/mocks instead.
