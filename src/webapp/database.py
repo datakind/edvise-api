@@ -65,54 +65,45 @@ DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
 
 def _setup_test_institutions(session: Session) -> None:
     """Load optional local institution display data from config/local_inst_data.json (gitignored)."""
-    FILE = (
-        Path(__file__).resolve().parent.parent.parent
-        / "config"
-        / "local_inst_data.json"
-    )
-    if not FILE.is_file():
-        return
-    try:
-        data = json.load(FILE.open())
-        for inst in data:
-            session.merge(
-                InstTable(
-                    id=uuid.UUID(inst["inst_id"]),
-                    name=inst["name"],
-                    state=inst["state"],
-                    pdp_id=inst["pdp_id"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                    created_by=LOCAL_USER_UUID,
-                )
-            )
-            schemas_by_file_id = {
-                f["data_id"]: f.get("schemas", []) for f in inst.get("files", [])
-            }
-            for batch in inst.get("batches", []):
-                batch_table = BatchTable(
-                    id=uuid.UUID(batch["batch_id"]),
-                    inst_id=uuid.UUID(inst["inst_id"]),
-                    name=batch["name"],
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                    created_by=LOCAL_USER_UUID,
-                )
-                for file_name, file_id in batch["file_names_to_ids"].items():
-                    batch_table.files.add(
-                        session.merge(
-                            FileTable(
-                                id=uuid.UUID(file_id),
-                                inst_id=uuid.UUID(inst["inst_id"]),
-                                name=file_name,
-                                schemas=schemas_by_file_id.get(file_id, []),
-                            )
-                        )  # type: ignore
+    file = Path("config/local_inst_data.json")
+    if file.exists():
+        with open(file) as f:
+            for inst in json.load(f):
+                session.merge(
+                    InstTable(
+                        id=uuid.UUID(inst["inst_id"]),
+                        name=inst["name"],
+                        state=inst["state"],
+                        pdp_id=inst["pdp_id"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                        created_by=LOCAL_USER_UUID,
                     )
-                session.merge(batch_table)
-
-    except (json.JSONDecodeError, OSError):
-        pass
+                )
+                schemas_by_file_id = {
+                    f["data_id"]: f.get("schemas", []) for f in inst.get("files", [])
+                }
+                for batch in inst.get("batches", []):
+                    batch_table = BatchTable(
+                        id=uuid.UUID(batch["batch_id"]),
+                        inst_id=uuid.UUID(inst["inst_id"]),
+                        name=batch["name"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                        created_by=LOCAL_USER_UUID,
+                    )
+                    for file_name, file_id in batch["file_names_to_ids"].items():
+                        batch_table.files.add(
+                            session.merge(
+                                FileTable(
+                                    id=uuid.UUID(file_id),
+                                    inst_id=uuid.UUID(inst["inst_id"]),
+                                    name=file_name,
+                                    schemas=schemas_by_file_id.get(file_id, []),
+                                )
+                            )  # type: ignore
+                        )
+                    session.merge(batch_table)
 
 
 @event.listens_for(Mapper, "before_insert")
