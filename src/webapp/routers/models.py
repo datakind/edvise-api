@@ -142,7 +142,7 @@ class InferenceRunRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored.
     # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
-    # Legacy schools inference parameters (required for legacy schools, ignored for PDP)
+    # Legacy schools inference parameters (optional passthrough; ignored for PDP)
     config_file_name: str | None = None
     features_table_name: str | None = None
 
@@ -545,15 +545,10 @@ def trigger_inference_run(
         )
     is_pdp = bool(pdp_id)
     is_edvise = bool(edvise_id)
-    is_legacy = not is_pdp and not is_edvise
+    is_legacy = bool(legacy_id)
 
     # Legacy schools inference
     if is_legacy:
-        if not req.config_file_name or not req.features_table_name:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Legacy schools inference requires config_file_name and features_table_name.",
-            )
         legacy_model_result = (
             local_session.get()
             .execute(
