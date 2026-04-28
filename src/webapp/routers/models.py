@@ -576,7 +576,7 @@ def trigger_inference_run(
             config_file_name=req.config_file_name or "",
             features_table_name=req.features_table_name or "",
             gcp_external_bucket_name=get_external_bucket_name(inst_id),
-            email=cast(str, current_user.email),
+            email=current_user.email or "",
         )
         try:
             res = databricks_control.run_legacy_inference(db_req)

@@ -2,7 +2,7 @@
 
 import os
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import catalog
 from databricks.sdk.service.sql import (
@@ -53,11 +53,17 @@ class DatabricksLegacyInferenceRunRequest(BaseModel):
 
     inst_name: str
     model_name: str
-    config_file_name: str
-    features_table_name: str
+    config_file_name: str = ""
+    features_table_name: str = ""
     # The email where notifications will get sent.
-    email: str
+    email: str = ""
     gcp_external_bucket_name: str
+
+    @field_validator("config_file_name", "features_table_name", "email", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v: object) -> object:
+        """Allow callers to omit or pass null; Databricks job treats empty like YAML defaults."""
+        return "" if v is None else v
 
 
 class DatabricksInferenceRunResponse(BaseModel):
