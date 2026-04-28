@@ -31,9 +31,70 @@ LOGGER = logging.getLogger(__name__)
 # List of data medallion levels
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
-# The name of the deployed pipeline in Databricks. Must match directly.
+# The name of the deployed pipeline in Databricks. Must match the job's `name` in that workspace.
+# Override with LEGACY_INFERENCE_JOB_NAME (and PDP_INFERENCE_JOB_NAME) when dev/staging deploy
+# uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
+
+
+def _pdp_inference_job_name() -> str:
+    name = os.environ.get("PDP_INFERENCE_JOB_NAME", "").strip()
+    return name or PDP_INFERENCE_JOB_NAME
+
+
+def _legacy_inference_job_name() -> str:
+    name = os.environ.get("LEGACY_INFERENCE_JOB_NAME", "").strip()
+    return name or LEGACY_INFERENCE_JOB_NAME
+
+
+def _resolve_pipeline_job(w: Any, pipeline_type: str, caller_label: str) -> Any:
+    """Find a job by exact name, else by unique substring match on display name.
+
+    Development bundles often prefix job names (e.g. ``[dev vishakh] edvise_...``) while
+    the API passes the canonical base name. Optional env ``PDP_INFERENCE_JOB_NAME`` /
+    ``LEGACY_INFERENCE_JOB_NAME`` still wins when set to the full exact name.
+    """
+    job = next(w.jobs.list(name=pipeline_type), None)
+    if job is not None and getattr(job, "job_id", None) is not None:
+        LOGGER.info("%s: resolved job by exact name %r (job_id=%s)", caller_label, pipeline_type, job.job_id)
+        return job
+
+    matches: list[tuple[str, Any]] = []
+    for j in w.jobs.list():
+        settings = getattr(j, "settings", None)
+        name = getattr(settings, "name", None) if settings is not None else None
+        if not name:
+            continue
+        if pipeline_type in name:
+            matches.append((name, j))
+
+    if len(matches) == 1:
+        picked_name, picked = matches[0]
+        if getattr(picked, "job_id", None) is None:
+            raise ValueError(
+                f"{caller_label}: Job name {picked_name!r} matched substring {pipeline_type!r} but has no job_id."
+            )
+        LOGGER.info(
+            "%s: resolved job by substring %r -> display name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            picked_name,
+            picked.job_id,
+        )
+        return picked
+
+    if len(matches) > 1:
+        names = [n for n, _ in matches]
+        raise ValueError(
+            f"{caller_label}: Multiple jobs match substring {pipeline_type!r}: {names}. "
+            "Set PDP_INFERENCE_JOB_NAME or LEGACY_INFERENCE_JOB_NAME to the full job name."
+        )
+
+    raise ValueError(
+        f"{caller_label}: Job {pipeline_type!r} was not found (exact name or unique substring of settings.name) "
+        f"for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
+    )
 
 
 class DatabricksPDPInferenceRunRequest(BaseModel):
@@ -232,14 +293,10 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-        pipeline_type = PDP_INFERENCE_JOB_NAME
+        pipeline_type = _pdp_inference_job_name()
 
         try:
-            job = next(w.jobs.list(name=pipeline_type), None)
-            if not job or job.job_id is None:
-                raise ValueError(
-                    f"run_pdp_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
-                )
+            job = _resolve_pipeline_job(w, pipeline_type, "run_pdp_inference")
             job_id = job.job_id
             LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
         except Exception as e:
@@ -302,14 +359,10 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-        pipeline_type = LEGACY_INFERENCE_JOB_NAME
+        pipeline_type = _legacy_inference_job_name()
 
         try:
-            job = next(w.jobs.list(name=pipeline_type), None)
-            if not job or job.job_id is None:
-                raise ValueError(
-                    f"run_legacy_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
-                )
+            job = _resolve_pipeline_job(w, pipeline_type, "run_legacy_inference")
             job_id = job.job_id
             LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
         except Exception as e:
