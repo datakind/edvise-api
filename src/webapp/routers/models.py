@@ -568,11 +568,13 @@ def trigger_inference_run(
                 + str(len(legacy_model_result)),
             )
         # For legacy schools, we don't need batch validation (config and features table are used instead)
+        # Omitting names is allowed; pass empty strings so Pydantic accepts the request and the
+        # Edvise legacy_inference_inputs job can resolve artifacts under silver_volume (same as YAML defaults).
         db_req = DatabricksLegacyInferenceRunRequest(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
-            config_file_name=req.config_file_name,
-            features_table_name=req.features_table_name,
+            config_file_name=req.config_file_name or "",
+            features_table_name=req.features_table_name or "",
             gcp_external_bucket_name=get_external_bucket_name(inst_id),
             email=cast(str, current_user.email),
         )
