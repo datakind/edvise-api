@@ -43,7 +43,10 @@ from ..database import (
     DocType,
 )
 
-from ..databricks import DatabricksControl
+from ..databricks import (
+    DatabricksBronzeSyncRequest,
+    DatabricksControl,
+)
 from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
@@ -53,6 +56,43 @@ from edvise.data_audit.eda import EdaSummary
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _qualifies_for_gcs_bronze_sync(inst: InstTable) -> bool:
+    """
+    Edvise- and legacy-type schools: copy validated/ objects to Databricks bronze after
+    validation. PDP-only flows use other pipelines; opt out with env.
+    """
+    if os.environ.get("ENABLE_GCS_BRONZE_SYNC_ON_VALIDATION", "true").lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return False
+    return inst.edvise_id is not None or inst.legacy_id is not None
+
+
+def _trigger_gcs_bronze_sync_if_applicable(
+    inst: InstTable,
+    file_name: str,
+    bucket: str,
+    databricks_control: DatabricksControl,
+) -> None:
+    if not _qualifies_for_gcs_bronze_sync(inst):
+        return
+    blob = f"validated/{file_name}"
+    try:
+        databricks_control.run_validated_gcs_to_bronze_sync(
+            DatabricksBronzeSyncRequest(
+                inst_name=inst.name,
+                gcp_bucket_name=bucket,
+                validated_blob_paths=[blob],
+            )
+        )
+    except Exception:
+        logger.exception(
+            "Failed to trigger GCS→bronze Databricks job after validation (non-fatal)."
+        )
 logger.setLevel(logging.DEBUG)
 
 # Cache for EDA data - TTL of 10 minutes (600 seconds)
@@ -1539,6 +1579,7 @@ def validation_helper(
     current_user: BaseUser,
     storage_control: StorageControl,
     sql_session: Session,
+    databricks_control: DatabricksControl,
 ) -> Any:
     """Run file validation for an institution and upsert the file record.
 
@@ -1603,7 +1644,7 @@ def validation_helper(
         base_schema_id,
         file_name,
     )
-    return _run_validation_and_upsert_file_record(
+    result = _run_validation_and_upsert_file_record(
         bucket,
         file_name,
         allowed_schemas,
@@ -1616,6 +1657,10 @@ def validation_helper(
         storage_control,
         sess,
     )
+    _trigger_gcs_bronze_sync_if_applicable(
+        inst, file_name, bucket, databricks_control
+    )
+    return result
 
 
 @router.post(
@@ -1627,6 +1672,7 @@ def validate_file_sftp(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
     """Validate a given file pulled from SFTP. The file_name should be url encoded."""
     file_name = decode_url_piece(file_name)
@@ -1636,7 +1682,13 @@ def validate_file_sftp(
             detail="SFTP validation needs to be done by a datakinder.",
         )
     return validation_helper(
-        "PDP_SFTP", inst_id, file_name, current_user, storage_control, sql_session
+        "PDP_SFTP",
+        inst_id,
+        file_name,
+        current_user,
+        storage_control,
+        sql_session,
+        databricks_control,
     )
 
 
@@ -1649,13 +1701,20 @@ def validate_file_manual_upload(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
     """Validate a given file. The file_name should be url encoded."""
 
     file_name = decode_url_piece(file_name)
 
     return validation_helper(
-        "MANUAL_UPLOAD", inst_id, file_name, current_user, storage_control, sql_session
+        "MANUAL_UPLOAD",
+        inst_id,
+        file_name,
+        current_user,
+        storage_control,
+        sql_session,
+        databricks_control,
     )
 
 

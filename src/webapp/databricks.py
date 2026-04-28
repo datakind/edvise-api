@@ -33,6 +33,8 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match directly.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+# GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
+VALIDATED_BRONZE_SYNC_JOB_NAME = "edvise_validated_gcs_to_bronze_sync"
 
 
 class DatabricksInferenceRunRequest(BaseModel):
@@ -49,6 +51,21 @@ class DatabricksInferenceRunRequest(BaseModel):
 
 class DatabricksInferenceRunResponse(BaseModel):
     """Databricks parameters for an inference run."""
+
+    job_run_id: int
+
+
+class DatabricksBronzeSyncRequest(BaseModel):
+    """Parameters to copy validated GCS objects into the institution bronze volume."""
+
+    inst_name: str
+    gcp_bucket_name: str
+    # Full object paths in the bucket, e.g. ["validated/file.csv"].
+    validated_blob_paths: list[str]
+
+
+class DatabricksBronzeSyncResponse(BaseModel):
+    """Result of triggering the bronze sync Databricks job."""
 
     job_run_id: int
 
@@ -260,6 +277,80 @@ class DatabricksControl(BaseModel):
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
 
         return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_validated_gcs_to_bronze_sync(
+        self, req: DatabricksBronzeSyncRequest
+    ) -> DatabricksBronzeSyncResponse:
+        """Trigger the job that copies validated/ objects from GCS into bronze_volume/gcs_uploads."""
+        if not req.validated_blob_paths:
+            raise ValueError(
+                "run_validated_gcs_to_bronze_sync: validated_blob_paths must be non-empty."
+            )
+        LOGGER.info(
+            "Triggering GCS→bronze sync for institution: %s (%s objects)",
+            req.inst_name,
+            len(req.validated_blob_paths),
+        )
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient for bronze sync: %s / %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"run_validated_gcs_to_bronze_sync(): Workspace client failed: {e}"
+            ) from e
+
+        try:
+            job = next(w.jobs.list(name=VALIDATED_BRONZE_SYNC_JOB_NAME), None)
+            if not job or job.job_id is None:
+                raise ValueError(
+                    f"Job '{VALIDATED_BRONZE_SYNC_JOB_NAME}' not found or has no job_id."
+                )
+            job_id = job.job_id
+            LOGGER.info("Resolved job ID for '%s': %s", VALIDATED_BRONZE_SYNC_JOB_NAME, job_id)
+        except Exception as e:
+            LOGGER.exception("Job lookup failed for '%s'.", VALIDATED_BRONZE_SYNC_JOB_NAME)
+            raise ValueError(
+                f"run_validated_gcs_to_bronze_sync(): Failed to find job: {e}"
+            ) from e
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        include_json = json.dumps(req.validated_blob_paths, separators=(",", ":"))
+
+        try:
+            run_job: Any = w.jobs.run_now(
+                job_id,
+                job_parameters={
+                    "gcp_bucket_name": req.gcp_bucket_name,
+                    "databricks_institution_name": db_inst_name,
+                    "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+                    "sync_run_id": "",
+                    "gcs_source_prefix": "validated/",
+                    "bronze_subdir": "gcs_uploads",
+                    "max_objects": "1000",
+                    "require_at_least_one_file": "true",
+                    "strict_mode": "auto",
+                    "include_blob_paths_json": include_json,
+                },
+            )
+        except Exception as e:
+            LOGGER.exception("Failed to run GCS→bronze sync job.")
+            raise ValueError(
+                f"run_validated_gcs_to_bronze_sync(): Job could not be run: {e}"
+            ) from e
+
+        if not run_job.response or run_job.response.run_id is None:
+            raise ValueError("run_validated_gcs_to_bronze_sync(): No run_id returned.")
+
+        run_id = run_job.response.run_id
+        LOGGER.info("GCS→bronze sync job started. Run ID: %s", run_id)
+        return DatabricksBronzeSyncResponse(job_run_id=run_id)
 
     def delete_inst(self, inst_name: str) -> None:
         """Cleanup tasks required on the Databricks side to delete an institution."""

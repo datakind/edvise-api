@@ -37,8 +37,11 @@ from .data import (
 )
 from fastapi import HTTPException
 from ..gcsutil import StorageControl
+from ..databricks import DatabricksControl
 
 MOCK_STORAGE = mock.Mock()
+MOCK_DATABRICKS = mock.Mock()
+MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.return_value = mock.Mock(job_run_id=1)
 
 UUID_2 = uuid.UUID("9bcbc782-2e71-4441-afa2-7a311024a5ec")
 FILE_UUID_1 = uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a")
@@ -214,10 +217,14 @@ def client_fixture(session: sqlalchemy.orm.Session, monkeypatch: Any) -> Any:
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -963,10 +970,14 @@ def legacy_client_fixture(
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -1083,10 +1094,14 @@ def edvise_client_fixture(
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -1100,6 +1115,7 @@ def edvise_client_fixture(
 def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     """Test file upload validation uses Edvise Schema (ES) when edvise_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
 
     response = edvise_client.post(
         "/institutions/"
@@ -1118,10 +1134,17 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
+    # GCS → bronze Databricks job triggered for Edvise schools
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.validated_blob_paths == ["validated/edvise_student_file.csv"]
+    assert sync_req.inst_name == "edvise_school"
+
 
 def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     """Test file upload validation uses legacy (any-format) path when legacy_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
 
     response = legacy_client.post(
         "/institutions/"
@@ -1135,6 +1158,10 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
 
     assert MOCK_STORAGE.validate_file.called
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.validated_blob_paths == ["validated/legacy_student_data.csv"]
+    assert sync_req.inst_name == "legacy_school"
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_id") == "legacy"
 
@@ -1611,10 +1638,14 @@ def test_validate_edvise_unauthorized(
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     try:
