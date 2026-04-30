@@ -170,11 +170,12 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
     response = datakinder_client.get("/institutions")
     assert response.status_code == 200
     data = response.json()
-    # Verify all institutions have edvise_id, pdp_id, and legacy_id fields
+    # Verify all institutions have school-type id fields
     for inst in data:
         assert "edvise_id" in inst
         assert "pdp_id" in inst
         assert "legacy_id" in inst
+        assert "genai_id" in inst
     # Verify specific expected values
     assert len(data) == 4  # UUID_1, UUID_2, UUID_3, USER_VALID_INST_UUID
     school_1 = next(i for i in data if i["name"] == "school_1")
@@ -190,6 +191,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "pdp_id": "456",
             "edvise_id": None,
             "legacy_id": None,
+            "genai_id": None,
             "retention_days": None,
             "state": "GA",
         },
@@ -199,6 +201,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "pdp_id": None,
             "edvise_id": None,
             "legacy_id": None,
+            "genai_id": None,
             "retention_days": None,
             "state": None,
         },
@@ -208,6 +211,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "pdp_id": "12345",
             "edvise_id": None,
             "legacy_id": None,
+            "genai_id": None,
             "retention_days": None,
             "state": "NY",
         },
@@ -217,6 +221,7 @@ def test_read_all_inst_datakinder(datakinder_client: TestClient) -> None:
             "pdp_id": None,
             "edvise_id": "edvise456",
             "legacy_id": None,
+            "genai_id": None,
             "retention_days": None,
             "state": "CA",
         },
@@ -359,7 +364,7 @@ def test_create_inst(datakinder_client: TestClient) -> None:
 
 
 def test_create_inst_rejects_no_school_type(datakinder_client: TestClient) -> None:
-    """POST /institutions requires exactly one of PDP, Edvise Schema (ES), or Legacy."""
+    """POST /institutions requires exactly one school type (PDP, ES, Legacy, or GenAI)."""
     os.environ["ENV"] = "DEV"
     response = datakinder_client.post(
         "/institutions",
@@ -404,6 +409,7 @@ def test_create_inst_duplicate_name_state_ok_when_existing_row_is_valid(
     assert data["name"] == "school_1"
     assert data["pdp_id"] == "456"
     assert data["edvise_id"] is None
+    assert data["genai_id"] is None
 
 
 def test_create_inst_rejects_is_pdp_without_pdp_id(
@@ -426,7 +432,7 @@ def test_create_inst_rejects_duplicate_when_existing_row_has_conflicting_ids(
     """POST (name, state) match must 400 if stored row violates mutual exclusivity."""
     inst = session.get(InstTable, UUID_1)
     assert inst is not None
-    saved = (inst.pdp_id, inst.edvise_id, inst.legacy_id)
+    saved = (inst.pdp_id, inst.edvise_id, inst.legacy_id, inst.genai_id)
     try:
         inst.edvise_id = "corrupt_edvise"
         session.commit()
@@ -442,7 +448,7 @@ def test_create_inst_rejects_duplicate_when_existing_row_has_conflicting_ids(
         assert response.status_code == 400
         assert "more than one" in response.json()["detail"].lower()
     finally:
-        inst.pdp_id, inst.edvise_id, inst.legacy_id = saved
+        inst.pdp_id, inst.edvise_id, inst.legacy_id, inst.genai_id = saved
         session.commit()
 
 
@@ -457,6 +463,22 @@ def test_update_inst_patch_is_edvise_on_pdp_institution_returns_400(
     response = datakinder_client.patch(
         "/institutions/" + uuid_to_str(UUID_1),
         json={"is_edvise": True},
+    )
+    assert response.status_code == 400
+    assert "more than one" in response.json()["detail"].lower()
+
+
+def test_update_inst_patch_both_is_edvise_and_is_genai_returns_400(
+    datakinder_client: TestClient,
+) -> None:
+    """PATCH cannot indicate both Edvise and GenAI in one request."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_2),
+        json={"is_edvise": True, "is_genai": True},
     )
     assert response.status_code == 400
     assert "more than one" in response.json()["detail"].lower()
@@ -692,6 +714,7 @@ def test_create_inst_auto_assign_edvise_id(
     assert data["edvise_id"] is not None and data["edvise_id"].startswith("edvise_")
     assert data["pdp_id"] is None
     assert data["legacy_id"] is None
+    assert data["genai_id"] is None
 
 
 def test_create_inst_auto_assign_legacy_id(
@@ -715,6 +738,7 @@ def test_create_inst_auto_assign_legacy_id(
     assert data["legacy_id"] == "legacy_1"
     assert data["pdp_id"] is None
     assert data["edvise_id"] is None
+    assert data["genai_id"] is None
 
 
 def test_create_inst_reject_both_edvise_and_legacy(
@@ -725,6 +749,20 @@ def test_create_inst_reject_both_edvise_and_legacy(
         "name": "both_types_test",
         "is_edvise": True,
         "is_legacy": True,
+    }
+    response = datakinder_client.post("/institutions", json=request_data)
+    assert response.status_code == 400
+    assert "cannot be more than one" in response.json()["detail"]
+
+
+def test_create_inst_reject_both_is_edvise_and_is_genai(
+    datakinder_client: TestClient,
+) -> None:
+    """POST cannot set is_edvise and is_genai together."""
+    request_data = {
+        "name": "edvise_genai_conflict",
+        "is_edvise": True,
+        "is_genai": True,
     }
     response = datakinder_client.post("/institutions", json=request_data)
     assert response.status_code == 400
@@ -749,6 +787,53 @@ def test_create_inst_with_legacy_id_explicit(datakinder_client: TestClient) -> N
     assert data["legacy_id"] == "custom_legacy_123"
     assert data["pdp_id"] is None
     assert data["edvise_id"] is None
+    assert data["genai_id"] is None
+
+
+def test_create_inst_auto_assign_genai_id(datakinder_client: TestClient) -> None:
+    """POST is_genai=True with no genai_id auto-assigns genai_id."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.post(
+        "/institutions",
+        json={
+            "name": "auto_genai_test",
+            "is_genai": True,
+            "genai_id": None,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["genai_id"] == "genai_1"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+    assert data["legacy_id"] is None
+
+
+def test_create_inst_with_genai_id_explicit(datakinder_client: TestClient) -> None:
+    """POST with explicit genai_id."""
+    os.environ["ENV"] = "DEV"
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.post(
+        "/institutions",
+        json={
+            "name": "explicit_genai_school",
+            "state": "WA",
+            "genai_id": "custom_genai_99",
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["genai_id"] == "custom_genai_99"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+    assert data["legacy_id"] is None
 
 
 def test_create_inst_storage_bucket_fails(datakinder_client: TestClient) -> None:
@@ -826,6 +911,25 @@ def test_update_inst_add_legacy_id(datakinder_client: TestClient) -> None:
     assert data["legacy_id"] == "legacy_abc"
     assert data["pdp_id"] is None
     assert data["edvise_id"] is None
+    assert data["genai_id"] is None
+
+
+def test_update_inst_add_genai_id(datakinder_client: TestClient) -> None:
+    """Test PATCH /institutions - add genai_id when institution had no type yet."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_2),
+        json={"genai_id": "genai_abc"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["genai_id"] == "genai_abc"
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
+    assert data["legacy_id"] is None
 
 
 def test_update_inst_switch_pdp_to_edvise(datakinder_client: TestClient) -> None:
@@ -955,6 +1059,8 @@ def test_read_inst_by_id_includes_edvise_id(client: TestClient) -> None:
     data = response.json()
     assert "edvise_id" in data
     assert data["edvise_id"] is None  # This institution doesn't have Edvise Schema (ES)
+    assert "genai_id" in data
+    assert data["genai_id"] is None
 
 
 def test_read_inst_by_name_includes_edvise_id(client: TestClient) -> None:
@@ -1093,6 +1199,26 @@ def test_update_inst_is_edvise_auto_assigns_id(datakinder_client: TestClient) ->
     assert data["edvise_id"] is not None
     assert data["edvise_id"].startswith("edvise_")
     assert data["pdp_id"] is None
+    assert data["legacy_id"] is None
+    assert data["genai_id"] is None
+
+
+def test_update_inst_is_genai_auto_assigns_id(datakinder_client: TestClient) -> None:
+    """PATCH is_genai True assigns genai_id when row had no type (same as POST)."""
+    MOCK_STORAGE.create_bucket.return_value = None
+    MOCK_STORAGE.create_folders.return_value = None
+    MOCK_DATABRICKS.setup_new_inst.return_value = None
+
+    response = datakinder_client.patch(
+        "/institutions/" + uuid_to_str(UUID_2),
+        json={"is_genai": True},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["genai_id"] is not None
+    assert data["genai_id"].startswith("genai_")
+    assert data["pdp_id"] is None
+    assert data["edvise_id"] is None
     assert data["legacy_id"] is None
 
 

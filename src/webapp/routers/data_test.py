@@ -1376,7 +1376,7 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 
     assert response.status_code == 500
     assert (
-        "cannot have more than one of pdp_id, edvise_id, or legacy_id set"
+        "cannot have more than one of pdp_id, edvise_id, legacy_id, or genai_id set"
         in response.json()["detail"]
     )
 
@@ -1388,14 +1388,15 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 def test_validation_helper_rejects_institution_without_school_type(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Upload validation requires pdp_id, edvise_id, or legacy_id on the institution."""
+    """Upload validation requires a school-type id on the institution."""
     inst = edvise_session.execute(
         select(InstTable).where(InstTable.id == EDVISE_INST_UUID)
     ).scalar_one()
-    saved = (inst.edvise_id, inst.pdp_id, inst.legacy_id)
+    saved = (inst.edvise_id, inst.pdp_id, inst.legacy_id, inst.genai_id)
     inst.edvise_id = None  # type: ignore
     inst.pdp_id = None  # type: ignore
     inst.legacy_id = None  # type: ignore
+    inst.genai_id = None  # type: ignore
     edvise_session.commit()
 
     from .data import STATE
@@ -1408,9 +1409,9 @@ def test_validation_helper_rejects_institution_without_school_type(
         + "/input/validate-upload/test_student_file.csv",
     )
     assert response.status_code == 500
-    assert "no pdp_id, edvise_id, or legacy_id" in response.json()["detail"]
+    assert "no pdp_id, edvise_id, legacy_id, or genai_id" in response.json()["detail"]
 
-    inst.edvise_id, inst.pdp_id, inst.legacy_id = saved
+    inst.edvise_id, inst.pdp_id, inst.legacy_id, inst.genai_id = saved
     edvise_session.commit()
 
 

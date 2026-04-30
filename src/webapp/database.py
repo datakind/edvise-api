@@ -222,6 +222,10 @@ class InstTable(Base):
     legacy_id: Mapped[str | None] = mapped_column(
         String(VAR_CHAR_LENGTH), nullable=True
     )
+    # Only populated for GenAI onboarding schools (loose uploads; mapping pipeline).
+    genai_id: Mapped[str | None] = mapped_column(
+        String(VAR_CHAR_LENGTH), nullable=True, unique=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
