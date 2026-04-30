@@ -253,9 +253,7 @@ def _resolve_merged_school_type_ids_for_patch(
         else existing_inst.legacy_id
     )
     final_genai_id = (
-        update_data["genai_id"]
-        if "genai_id" in update_data
-        else existing_inst.genai_id
+        update_data["genai_id"] if "genai_id" in update_data else existing_inst.genai_id
     )
     if _patch_indicates_more_than_one_school_type(
         update_data, final_pdp_id, final_edvise_id, final_legacy_id, final_genai_id
@@ -277,7 +275,10 @@ def _resolve_merged_school_type_ids_for_patch(
             detail=_MUTUALLY_EXCLUSIVE_SCHOOL_TYPE_DETAIL,
         )
     if (
-        sum(bool(x) for x in (final_pdp_id, final_edvise_id, final_legacy_id, final_genai_id))
+        sum(
+            bool(x)
+            for x in (final_pdp_id, final_edvise_id, final_legacy_id, final_genai_id)
+        )
         != 1
     ):
         raise HTTPException(
@@ -597,8 +598,8 @@ def create_institution(
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
     """Create a new institution. Only available to Datakinders."""
-    sess, pdp_id, edvise_id, legacy_id, genai_id = _validate_and_prepare_create_institution(
-        req, current_user, sql_session
+    sess, pdp_id, edvise_id, legacy_id, genai_id = (
+        _validate_and_prepare_create_institution(req, current_user, sql_session)
     )
     query_result = sess.execute(
         select(InstTable).where(
