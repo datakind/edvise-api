@@ -168,3 +168,25 @@ The process to upload a file involves three API calls:
 ## Local VSCode Debugging
 
 From the Run & Debug panel (⇧⌘D on 🍎) you can run the [debug launch config](../../.vscode/launch.json) for the webapp or worker modules. This will allow you to set breakpoints within the source code while the applications are running.
+
+## Local edvise development override
+
+Production uses a pinned Git reference for `edvise`. For local development, use an
+editable install after syncing the environment.
+
+1. Clone `edvise` alongside `edvise-api` (so `../edvise` exists).
+2. Run `uv sync`.
+3. Override locally: `uv pip install -e ../edvise`
+
+To revert back to the pinned Git dependency, run `uv sync --reinstall-package edvise`.
+
+## Local institutions (optional)
+
+You can seed the local database with institution, batch, and file metadata that matches dev or staging (names, UUIDs, batch membership) without checking secrets into Git.
+
+1. Copy `config/local_inst_data.example.json` to `config/local_inst_data.json`. The latter is gitignored.
+2. Edit `local_inst_data.json` to match your needs. Use the example file as the schema: one array element per institution, with `inst_id`, `name`, and optionally `state`, `pdp_id`, `batches`, and `files`.
+
+If the file is missing, startup skips this step and the default local seed in code still applies.
+
+**Limitation:** Endpoints that read uploaded CSV (for example EDA) load blobs from GCS under the bucket name `dev_<institution_uuid_hex>`, not from this JSON. To exercise those flows locally you still need GCP credentials and the corresponding objects in that bucket, or you rely on tests/mocks instead.
