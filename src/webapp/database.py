@@ -73,8 +73,8 @@ def _setup_test_institutions(session: Session) -> None:
                     InstTable(
                         id=uuid.UUID(inst["inst_id"]),
                         name=inst["name"],
-                        state=inst["state"],
-                        pdp_id=inst["pdp_id"],
+                        state=inst.get("state"),
+                        pdp_id=inst.get("pdp_id"),
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                         created_by=LOCAL_USER_UUID,
