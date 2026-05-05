@@ -5,7 +5,7 @@ from datetime import datetime, date
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, false, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 import os
@@ -29,6 +29,8 @@ from ..utilities import (
     DataSource,
     get_external_bucket_name,
     decode_url_piece,
+    expand_batch_file_name_lookups,
+    file_name_variants_for_lookup,
 )
 
 from ..database import (
@@ -749,9 +751,16 @@ def create_batch(
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),  # type: ignore
         )
-        f_names = [] if not req.file_names else req.file_names
+        f_names = [] if not req.file_names else list(req.file_names)
         f_ids = [] if not req.file_ids else strs_to_uuids(req.file_ids)
-        print(f"File names: {f_names}, File Ids: {f_ids}")
+        file_match_parts: List[Any] = []
+        if f_ids:
+            file_match_parts.append(FileTable.id.in_(f_ids))
+        if f_names:
+            file_match_parts.append(
+                FileTable.name.in_(expand_batch_file_name_lookups(f_names))
+            )
+        file_clause = or_(*file_match_parts) if file_match_parts else false()
         # Check that the files requested for this batch exists.
         # Only valid non-sst generated files can be added to a batch at creation time.
         query_result_files = (
@@ -759,10 +768,7 @@ def create_batch(
             .execute(
                 select(FileTable).where(
                     and_(
-                        or_(
-                            FileTable.id.in_(f_ids),
-                            FileTable.name.in_(f_names),
-                        ),
+                        file_clause,
                         FileTable.inst_id == str_to_uuid(inst_id),
                         FileTable.valid == True,
                         FileTable.sst_generated == False,
@@ -904,12 +910,15 @@ def update_batch(
     if "file_names" in update_data_req:
         for f in update_data_req["file_names"]:
             # Check that the files requested for this batch exists
+            name_variants = list(file_name_variants_for_lookup(f))
             query_result_file = (
                 local_session.get()
                 .execute(
                     select(FileTable).where(
                         and_(
-                            FileTable.name == f,
+                            FileTable.name.in_(name_variants)
+                            if name_variants
+                            else false(),
                             FileTable.inst_id == str_to_uuid(inst_id),
                         )
                     )

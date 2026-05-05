@@ -4,6 +4,9 @@ import pytest
 
 from fastapi import HTTPException
 from .utilities import (
+    decode_url_piece,
+    expand_batch_file_name_lookups,
+    file_name_variants_for_lookup,
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
     has_at_most_one_school_type,
@@ -91,3 +94,23 @@ def test_databricksify_inst_name():
     with pytest.raises(ValueError) as err:
         databricksify_inst_name("Northwest (invalid)")
     assert str(err.value) == "Unexpected character found in Databricks compatible name."
+
+
+def test_decode_url_piece_treats_plus_as_space() -> None:
+    """Form-style + encoding in paths should decode to spaces."""
+    assert decode_url_piece("a+b.csv") == "a b.csv"
+    assert decode_url_piece("foo%20bar.csv") == "foo bar.csv"
+    assert decode_url_piece("x%2By.csv") == "x+y.csv"
+
+
+def test_file_name_variants_for_lookup() -> None:
+    """Batch lookups accept spaces vs. plus spellings."""
+    v = file_name_variants_for_lookup("a b.csv")
+    assert v == {"a b.csv", "a+b.csv"}
+    assert file_name_variants_for_lookup("  a+b.csv  ") == {"a b.csv", "a+b.csv"}
+
+
+def test_expand_batch_file_name_lookups() -> None:
+    out = set(expand_batch_file_name_lookups(["x y.csv", "p+q.csv"]))
+    assert "x y.csv" in out and "x+y.csv" in out
+    assert "p q.csv" in out and "p+q.csv" in out

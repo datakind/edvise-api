@@ -8,7 +8,11 @@ from pydantic import BaseModel
 from sqlalchemy import and_, update, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
-from ..databricks import DatabricksControl, DatabricksInferenceRunRequest
+from ..databricks import (
+    DatabricksControl,
+    DatabricksPDPInferenceRunRequest,
+    DatabricksLegacyInferenceRunRequest,
+)
 from ..utilities import (
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
@@ -138,6 +142,9 @@ class InferenceRunRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored.
     # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
+    # Legacy schools inference parameters (optional passthrough; ignored for PDP)
+    config_file_name: str | None = None
+    features_table_name: str | None = None
 
 
 # Model related operations. Or model specific data.
@@ -524,11 +531,95 @@ def trigger_inference_run(
             + str(len(inst_result)),
         )
     inst = inst_result[0][0]
-    # Check PDP status from institution's pdp_id (ignore req.is_pdp for backward compat)
-    if not inst.pdp_id:
+    # Determine institution type: PDP, Edvise, or Legacy
+    # There are only three options: PDP (pdp_id), Edvise (edvise_id), or Legacy (legacy_id or none)
+    # Follows the same pattern as validation_helper in data.py
+    pdp_id = getattr(inst, "pdp_id", None)
+    edvise_id = getattr(inst, "edvise_id", None)
+    legacy_id = getattr(inst, "legacy_id", None)
+    # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
+    if sum(bool(x) for x in (pdp_id, edvise_id, legacy_id)) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution configuration error: cannot have more than one of pdp_id, edvise_id, or legacy_id set",
+        )
+    is_pdp = bool(pdp_id)
+    is_legacy = bool(legacy_id)
+
+    # Legacy schools inference
+    if is_legacy:
+        legacy_model_result = (
+            local_session.get()
+            .execute(
+                select(ModelTable).where(
+                    and_(
+                        ModelTable.name == model_name,
+                        ModelTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
+            .all()
+        )
+        if len(legacy_model_result) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unexpected number of models found: Expected 1, got "
+                + str(len(legacy_model_result)),
+            )
+        # For legacy schools, we don't need batch validation (config and features table are used instead)
+        # Omitting names is allowed; pass empty strings so Pydantic accepts the request and the
+        # Edvise legacy_inference_inputs job can resolve artifacts under silver_volume (same as YAML defaults).
+        db_req = DatabricksLegacyInferenceRunRequest(
+            inst_name=inst_result[0][0].name,
+            model_name=model_name,
+            config_file_name=req.config_file_name or "",
+            features_table_name=req.features_table_name or "",
+            gcp_external_bucket_name=get_external_bucket_name(inst_id),
+            email=current_user.email or "",
+        )
+        try:
+            res = databricks_control.run_legacy_inference(db_req)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Databricks run failure:\n{tb}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Databricks run_legacy_inference error. Error = {str(e)}",
+            ) from e
+        triggered_timestamp = datetime.now()
+        latest_model_version = databricks_control.fetch_model_version(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=inst_result[0][0].name,
+            model_name=model_name,
+        )
+        job = JobTable(
+            id=res.job_run_id,
+            triggered_at=triggered_timestamp,
+            created_by=str_to_uuid(current_user.user_id),
+            batch_name=f"{model_name}_{triggered_timestamp}",  # Legacy schools don't use batches
+            model_id=legacy_model_result[0][0].id,
+            output_valid=False,
+            model_version=latest_model_version.version,
+            model_run_id=latest_model_version.run_id,
+        )
+        local_session.get().add(job)
+        return {
+            "inst_id": inst_id,
+            "m_name": model_name,
+            "run_id": res.job_run_id,
+            "created_by": current_user.user_id,
+            "triggered_at": triggered_timestamp,
+            "batch_name": f"{model_name}_{triggered_timestamp}",
+            "output_valid": False,
+            "model_version": latest_model_version.version,
+            "model_run_id": latest_model_version.run_id,
+        }
+
+    # PDP inference (existing logic)
+    if not is_pdp:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP inference is supported.",
+            detail="Currently, only PDP and Legacy schools inference are supported.",
         )
     query_result = (
         local_session.get()
@@ -589,7 +680,7 @@ def trigger_inference_run(
             detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
         )
     # Note to Datakind: In the long-term, this is where you would have a case block or something that would call different types of pipelines.
-    db_req = DatabricksInferenceRunRequest(
+    pdp_db_req = DatabricksPDPInferenceRunRequest(
         inst_name=inst_result[0][0].name,
         filepath_to_type=convert_files_to_dict(batch_result[0][0].files),
         model_name=model_name,
@@ -598,7 +689,7 @@ def trigger_inference_run(
         email=cast(str, current_user.email),
     )
     try:
-        res = databricks_control.run_pdp_inference(db_req)
+        res = databricks_control.run_pdp_inference(pdp_db_req)
     except Exception as e:
         tb = traceback.format_exc()
         logging.error(f"Databricks run failure:\n{tb}")
