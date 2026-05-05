@@ -681,7 +681,7 @@ def trigger_inference_run(
             detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
         )
     # Note to Datakind: In the long-term, this is where you would have a case block or something that would call different types of pipelines.
-    db_req = DatabricksPDPInferenceRunRequest(
+    pdp_db_req = DatabricksPDPInferenceRunRequest(
         inst_name=inst_result[0][0].name,
         filepath_to_type=convert_files_to_dict(batch_result[0][0].files),
         model_name=model_name,
@@ -690,7 +690,7 @@ def trigger_inference_run(
         email=cast(str, current_user.email),
     )
     try:
-        res = databricks_control.run_pdp_inference(db_req)
+        res = databricks_control.run_pdp_inference(pdp_db_req)
     except Exception as e:
         tb = traceback.format_exc()
         logging.error(f"Databricks run failure:\n{tb}")
