@@ -544,7 +544,6 @@ def trigger_inference_run(
             detail="Institution configuration error: cannot have more than one of pdp_id, edvise_id, or legacy_id set",
         )
     is_pdp = bool(pdp_id)
-    is_edvise = bool(edvise_id)
     is_legacy = bool(legacy_id)
 
     # Legacy schools inference
