@@ -1,7 +1,9 @@
 """Database configuration."""
 
+import json
 import uuid
 import datetime
+from pathlib import Path
 from typing import Set, List, Any
 from contextvars import ContextVar
 import enum
@@ -59,6 +61,49 @@ LOCAL_APIKEY_UUID = uuid.UUID("cd65804d-c597-40c2-bc89-0b0810e66346")
 LOCAL_USER_EMAIL = "tester@datakind.org"
 LOCAL_PASSWORD = "tester_password"
 DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
+
+
+def _setup_test_institutions(session: Session) -> None:
+    """Load optional local institution display data from config/local_inst_data.json (gitignored)."""
+    file = Path("config/local_inst_data.json")
+    if file.exists():
+        with open(file) as f:
+            for inst in json.load(f):
+                session.merge(
+                    InstTable(
+                        id=uuid.UUID(inst["inst_id"]),
+                        name=inst["name"],
+                        state=inst.get("state"),
+                        pdp_id=inst.get("pdp_id"),
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                        created_by=LOCAL_USER_UUID,
+                    )
+                )
+                schemas_by_file_id = {
+                    f["data_id"]: f.get("schemas", []) for f in inst.get("files", [])
+                }
+                for batch in inst.get("batches", []):
+                    batch_table = BatchTable(
+                        id=uuid.UUID(batch["batch_id"]),
+                        inst_id=uuid.UUID(inst["inst_id"]),
+                        name=batch["name"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                        created_by=LOCAL_USER_UUID,
+                    )
+                    for file_name, file_id in batch["file_names_to_ids"].items():
+                        batch_table.files.add(
+                            session.merge(
+                                FileTable(
+                                    id=uuid.UUID(file_id),
+                                    inst_id=uuid.UUID(inst["inst_id"]),
+                                    name=file_name,
+                                    schemas=schemas_by_file_id.get(file_id, []),
+                                )
+                            )  # type: ignore
+                        )
+                    session.merge(batch_table)
 
 
 @event.listens_for(Mapper, "before_insert")
@@ -121,6 +166,7 @@ def init_db(env: str) -> None:
             )
             # Create test files and batches for LOCAL environment
             if env == "LOCAL":
+                _setup_test_institutions(session)
                 # Create test files
                 test_file_1 = FileTable(
                     id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a"),
