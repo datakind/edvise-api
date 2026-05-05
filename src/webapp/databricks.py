@@ -57,7 +57,12 @@ def _resolve_pipeline_job(w: Any, pipeline_type: str, caller_label: str) -> Any:
     """
     job = next(w.jobs.list(name=pipeline_type), None)
     if job is not None and getattr(job, "job_id", None) is not None:
-        LOGGER.info("%s: resolved job by exact name %r (job_id=%s)", caller_label, pipeline_type, job.job_id)
+        LOGGER.info(
+            "%s: resolved job by exact name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            job.job_id,
+        )
         return job
 
     matches: list[tuple[str, Any]] = []
@@ -374,9 +379,7 @@ class DatabricksControl(BaseModel):
                 job_id,
                 job_parameters={
                     "databricks_institution_name": db_inst_name,
-                    "DB_workspace": databricks_vars[
-                        "DATABRICKS_WORKSPACE"
-                    ],
+                    "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
                     "model_name": req.model_name,
                     "config_file_name": req.config_file_name,
                     "features_table_name": req.features_table_name,
@@ -393,7 +396,9 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"run_legacy_inference(): Job could not be run: {e}")
 
         if not run_job.response or run_job.response.run_id is None:
-            raise ValueError("run_legacy_inference(): Job did not return a valid run_id.")
+            raise ValueError(
+                "run_legacy_inference(): Job did not return a valid run_id."
+            )
 
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
