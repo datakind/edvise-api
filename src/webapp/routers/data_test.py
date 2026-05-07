@@ -34,7 +34,6 @@ from .data import (
     DataOverview,
     DataInfo,
     _infer_allowed_schemas_from_filename,
-    _ext_models_set,
 )
 from fastapi import HTTPException
 from ..gcsutil import StorageControl
@@ -164,6 +163,9 @@ def session_fixture():
                     InstTable(
                         id=USER_VALID_INST_UUID,
                         name="school_1",
+                        legacy_id="legacy_test",
+                        pdp_id=None,
+                        edvise_id=None,
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                     ),
@@ -917,7 +919,7 @@ def legacy_session_fixture():
                         legacy_id="legacy123",
                         pdp_id=None,
                         edvise_id=None,
-                        schemas=["STUDENT", "COURSE"],
+                        schemas=["UNKNOWN"],
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                     ),
@@ -1271,36 +1273,6 @@ def test_infer_allowed_schemas_non_legacy_arbitrary_raises_422() -> None:
     assert "random" in exc_info.value.detail
 
 
-def test_ext_models_set_none_returns_empty() -> None:
-    """None doc returns empty set."""
-    inst = _make_inst()
-    assert _ext_models_set(None, inst, "inst-id") == set()
-
-
-def test_ext_models_set_root_data_models() -> None:
-    """Doc with root data_models returns lowercase keys."""
-    inst = _make_inst()
-    doc: dict[str, Any] = {"data_models": {"STUDENT": {}, "COURSE": {}}}
-    assert _ext_models_set(doc, inst, "x") == {"course", "student"}
-
-
-def test_ext_models_set_institutions_block() -> None:
-    """Doc with institutions[inst_id].data_models returns keys."""
-    inst = _make_inst()
-    inst.id = uuid.UUID("12345678-1234-1234-1234-123456789abc")  # type: ignore
-    doc: dict[str, Any] = {
-        "institutions": {
-            "12345678123412341234123456789abc": {
-                "data_models": {"student": {}, "course": {}},
-            }
-        }
-    }
-    assert _ext_models_set(doc, inst, "12345678123412341234123456789abc") == {
-        "course",
-        "student",
-    }
-
-
 def test_validate_edvise_non_descriptive_filename_returns_422(
     edvise_client: TestClient,
 ) -> None:
@@ -1410,6 +1382,35 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 
     # Restore for other tests
     corrupted_inst.pdp_id = None  # type: ignore
+    edvise_session.commit()
+
+
+def test_validation_helper_rejects_institution_without_school_type(
+    edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
+) -> None:
+    """Upload validation requires pdp_id, edvise_id, or legacy_id on the institution."""
+    inst = edvise_session.execute(
+        select(InstTable).where(InstTable.id == EDVISE_INST_UUID)
+    ).scalar_one()
+    saved = (inst.edvise_id, inst.pdp_id, inst.legacy_id)
+    inst.edvise_id = None  # type: ignore
+    inst.pdp_id = None  # type: ignore
+    inst.legacy_id = None  # type: ignore
+    edvise_session.commit()
+
+    from .data import STATE
+
+    STATE._edvise_cache = (0.0, None)
+
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/test_student_file.csv",
+    )
+    assert response.status_code == 500
+    assert "no pdp_id, edvise_id, or legacy_id" in response.json()["detail"]
+
+    inst.edvise_id, inst.pdp_id, inst.legacy_id = saved
     edvise_session.commit()
 
 

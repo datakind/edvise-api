@@ -153,8 +153,7 @@ EDVISE_SCHEMA_GROUP: Final = {
 }
 
 LEGACY_SCHEMA_GROUP: Final = {
-    SchemaType.STUDENT,
-    SchemaType.COURSE,
+    SchemaType.UNKNOWN,
 }
 
 
@@ -166,8 +165,8 @@ def has_at_most_one_school_type(
     """
     Return True if at most one of pdp_id, edvise_id, or legacy_id is set.
 
-    Used to enforce mutual exclusivity: an institution must be exactly one
-    of PDP, Edvise Schema (ES), or Legacy (or none, for custom).
+    Used to enforce mutual exclusivity: at most one of PDP, Edvise Schema (ES),
+    or Legacy may be set (create requires exactly one).
 
     Args:
         pdp_id: PDP institution identifier, or None.
