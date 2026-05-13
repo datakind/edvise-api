@@ -1,0 +1,1 @@
+Unexpected columns found: 'Student ID (and 2 similar)'. Please remove these columns or rename them to match the expected schema.

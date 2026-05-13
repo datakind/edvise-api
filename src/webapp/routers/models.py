@@ -1,11 +1,11 @@
 """API functions related to models."""
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 import jsonpickle
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import and_
+from sqlalchemy import and_, update, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 from ..databricks import DatabricksControl, DatabricksInferenceRunRequest
@@ -33,6 +33,7 @@ from ..database import (
 import traceback
 import logging
 from ..gcsdbutils import update_db_from_bucket
+from ..config import env_vars
 
 from ..gcsutil import StorageControl
 
@@ -60,7 +61,7 @@ def check_file_types_valid_schema_configs(
     """Check that a list of files are valid for a given schema configuration."""
     for config in valid_schema_configs:
         found = True
-        map_file_to_schema_config_obj = {}
+        map_file_to_schema_config_obj: dict = {}
         for idx, s in enumerate(file_types):
             for c in config:
                 if c.schema_type in s:
@@ -134,7 +135,8 @@ class InferenceRunRequest(BaseModel):
     """Parameters for an inference run."""
 
     batch_name: str
-    # This MUST be set for uses of the PDP inference pipeline.
+    # Note: is_pdp is kept for backward compatibility but is ignored.
+    # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
 
 
@@ -302,6 +304,49 @@ def read_inst_model(
     }
 
 
+@router.delete("/{inst_id}/models/{model_name}")
+def delete_model(
+    inst_id: str,
+    model_name: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> Any:
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    has_access_to_inst_or_err(inst_id, current_user)
+
+    local_session.set(sql_session)
+    sess = local_session.get()
+
+    model_list = sess.execute(
+        select(ModelTable).where(
+            ModelTable.name == transformed_model_name,
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
+    ).scalar_one_or_none()
+    if model_list is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Model not found."
+        )
+
+    # 2) Optionally Delete models from databricks itself
+    # TODO: Add databricks deletion functionality
+
+    try:
+        sess.delete(model_list)
+        sess.commit()
+    except Exception as e:
+        sess.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"DB batch delete failed after file cleanup: {e}"
+        )
+
+    return {
+        "inst_id": inst_id,
+        "model_name": transformed_model_name,
+        "status": "Model deleted",
+    }
+
+
 @router.get("/{inst_id}/models/{model_name}/runs", response_model=list[RunInfo])
 def read_inst_model_outputs(
     inst_id: str,
@@ -356,6 +401,8 @@ def read_inst_model_outputs(
                 "inst_id": uuid_to_str(query_result[0][0].inst_id),
                 "m_name": query_result[0][0].name,
                 "run_id": elem.id,
+                "model_run_id": elem.model_run_id,
+                "model_version": elem.model_version,
                 "created_by": uuid_to_str(elem.created_by),
                 "triggered_at": elem.triggered_at,
                 "batch_name": elem.batch_name,
@@ -458,11 +505,6 @@ def trigger_inference_run(
     """
     model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
-    if not req.is_pdp:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP inference is supported.",
-        )
     local_session.set(sql_session)
     inst_result = (
         local_session.get()
@@ -480,6 +522,13 @@ def trigger_inference_run(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unexpected number of institutions found: Expected 1, got "
             + str(len(inst_result)),
+        )
+    inst = inst_result[0][0]
+    # Check PDP status from institution's pdp_id (ignore req.is_pdp for backward compat)
+    if not inst.pdp_id:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Currently, only PDP inference is supported.",
         )
     query_result = (
         local_session.get()
@@ -546,7 +595,7 @@ def trigger_inference_run(
         model_name=model_name,
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
-        email=current_user.email,
+        email=cast(str, current_user.email),
     )
     try:
         res = databricks_control.run_pdp_inference(db_req)
@@ -558,6 +607,11 @@ def trigger_inference_run(
             detail=f"Databricks run_pdp_inference error. Error = {str(e)}",
         ) from e
     triggered_timestamp = datetime.now()
+    latest_model_version = databricks_control.fetch_model_version(
+        catalog_name=str(env_vars["CATALOG_NAME"]),
+        inst_name=inst_result[0][0].name,
+        model_name=model_name,
+    )
     job = JobTable(
         id=res.job_run_id,
         triggered_at=triggered_timestamp,
@@ -565,6 +619,8 @@ def trigger_inference_run(
         batch_name=req.batch_name,
         model_id=query_result[0][0].id,
         output_valid=False,
+        model_version=latest_model_version.version,
+        model_run_id=latest_model_version.run_id,
     )
     local_session.get().add(job)
     return {
@@ -575,4 +631,130 @@ def trigger_inference_run(
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,
         "output_valid": False,
+        "model_version": latest_model_version.version,
+        "model_run_id": latest_model_version.run_id,
+    }
+
+
+@router.get("/{inst_id}/models/{model_name}/get-model-versions")
+def get_model_versions(
+    inst_id: str,
+    model_name: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    has_access_to_inst_or_err(inst_id, current_user)
+
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    print(f"Initial model name = {model_name}")
+    print(f"Converted model name {transformed_model_name}")
+
+    latest_model_version = databricks_control.fetch_model_version(
+        catalog_name=str(env_vars["CATALOG_NAME"]),
+        inst_name=f"{query_result[0][0].name}",
+        model_name=transformed_model_name,
+    )
+
+    return latest_model_version
+
+
+@router.post("/{inst_id}/models/{model_name}/backfill-model-runs")
+def backfill_model_runs(
+    inst_id: str,
+    model_name: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """Backfills missing model run metadata and returns the latest model version info.
+
+    Temporary endpoint to populate model_run_id and model_version on existing jobs for this model.
+    Use only when backfilling historical job runs, not for regular operation.
+    """
+    model_name = str(decode_url_piece(model_name)).strip()
+    has_access_to_inst_or_err(inst_id, current_user)
+
+    # Load institution
+    local_session.set(sql_session)
+    inst_row = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+
+    model_id = (
+        local_session.get()
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                    ModelTable.name == model_name,
+                )
+            )
+        )
+        .all()
+    )
+
+    if not inst_row or len(inst_row) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(inst_row) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    latest_mv = databricks_control.fetch_model_version(
+        catalog_name=str(env_vars["CATALOG_NAME"]),
+        inst_name=f"{inst_row[0][0].name}",
+        model_name=model_name,
+    )
+
+    mv_version = str(latest_mv.version)
+    mv_run_id = str(latest_mv.run_id)
+
+    # UPDATE existing jobs for this model (only those missing values)
+    stmt = (
+        update(JobTable)
+        .where(JobTable.model_id == model_id[0][0].id)
+        .where(
+            or_(
+                JobTable.model_run_id.is_(None),
+                JobTable.model_run_id == "",
+                JobTable.model_version.is_(None),
+                JobTable.model_version == "",
+            )
+        )
+        .values(model_run_id=mv_run_id, model_version=mv_version)
+    )
+    result = local_session.get().execute(stmt)
+    updated_count = result.rowcount or 0  # type: ignore
+    local_session.get().commit()
+
+    return {
+        "inst_id": str(inst_id),
+        "model_id": str(model_id[0][0].id),
+        "model_name": model_name,
+        "latest_model_version": {"version": mv_version, "run_id": mv_run_id},
+        "updated_count": updated_count,
     }

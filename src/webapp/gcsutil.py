@@ -1,15 +1,19 @@
 """Cloud storage related helper functions."""
 
 import datetime
+import logging
+import os
+import tempfile
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
 from pydantic import BaseModel
 from google.cloud import storage
 import google.auth
 from google.auth.transport import requests
 
 from .config import gcs_vars, databricks_vars
-from .validation import validate_file_reader
-from typing import Any, List, Optional, Dict
-import logging
+from .validation import validate_file_reader, HardValidationError
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
@@ -19,11 +23,46 @@ logger.setLevel(logging.DEBUG)
 SIGNED_URL_EXPIRY_MIN = 30
 
 
+def _unlink_if_exists(path: Optional[str]) -> None:
+    """Remove a file if path is set; ignore missing file or permission errors."""
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _download_blob_to_temp_csv_path(blob: Any, file_name: str) -> str:
+    """
+    Stream GCS blob to a private temp CSV path for validation.
+
+    Raises:
+        OSError: If download fails (after logging errno/context). Temp file is removed.
+    """
+    fd, csv_path = tempfile.mkstemp(suffix=".csv", prefix="validate_upload_")
+    os.close(fd)
+    try:
+        blob.download_to_filename(csv_path)
+    except OSError as e:
+        logger.error(
+            "GCS download_to_filename failed for %r temp_path=%r errno=%s strerror=%s",
+            file_name,
+            csv_path,
+            e.errno,
+            e.strerror,
+            exc_info=True,
+        )
+        _unlink_if_exists(csv_path)
+        raise
+    return csv_path
+
+
 def rename_file(
-    bucket_name,
-    file_name,
-    new_file_name,
-):
+    bucket_name: str,
+    file_name: str,
+    new_file_name: str,
+) -> None:
     """Moves a blob from one bucket to another with a new name."""
     storage_client = storage.Client()
     source_bucket = storage_client.bucket(bucket_name)
@@ -323,32 +362,162 @@ class StorageControl(BaseModel):
         allowed_schemas: list[str],
         base_schema: dict,
         inst_schema: Optional[Dict[Any, Any]] = None,
+        institution_id: str = "pdp",
+        institution_identifier: Optional[str] = None,
     ) -> List[str]:
-        """Validate that a file is one of the allowed schemas."""
+        """Validate that a file conforms to one of the allowed schemas.
+
+        On success: archives the original to raw/{file_name}, writes the normalized
+        (canonical columns, coerced dtypes) DataFrame to validated/{file_name}, and
+        deletes from unvalidated/. Downstream uses validated/ only; raw/ is kept for record.
+
+        Args:
+            bucket_name: GCS bucket name.
+            file_name: Blob name under unvalidated/.
+            allowed_schemas: List of schema/model names allowed.
+            base_schema: Base schema dict.
+            inst_schema: Optional extension schema with institutions.* blocks.
+            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
+                or "legacy" (any-format uploads). Default "pdp".
+            institution_identifier: Optional institution ID (e.g. UUID). Reserved for
+                future use; Edvise uses JSON-based validation only (different shape).
+
+        Returns:
+            List of inferred schema names (e.g. ["STUDENT"]).
+
+        Raises:
+            ValueError: If file not in unvalidated/, validated/ already exists, or
+                normalized_df was not returned.
+            HardValidationError: If validation fails (propagated from validator).
+        """
+        if not file_name or not file_name.strip():
+            raise ValueError("file_name is required and must be non-empty.")
+        if "/" in file_name:
+            raise ValueError("file_name must not contain '/'.")
+        if not allowed_schemas:
+            raise ValueError("allowed_schemas must not be empty.")
+
         client = storage.Client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(f"unvalidated/{file_name}")
-        new_blob_name = f"validated/{file_name}"
-        schems: List[str] = []
-        try:
-            with blob.open("r") as file:
-                schemas = validate_file_reader(
-                    file, allowed_schemas, base_schema, inst_schema
-                )
-                schems = [str(s) for s in schemas.get("schemas", [])]
-                logging.debug(
-                    f"If you see this file validation was successful {schems}"
-                )
-        except Exception as e:
-            blob.delete()
-            raise e
-        new_blob = bucket.blob(new_blob_name)
-        if new_blob.exists():
-            raise ValueError(new_blob_name + ": File already exists.")
-        bucket.copy_blob(blob, bucket, new_blob_name)
+        if not blob.exists():
+            raise ValueError(
+                f"File not found: unvalidated/{file_name}. "
+                "Upload the file to unvalidated/ before validating."
+            )
+
+        inferred_schema_names, normalized_df = (
+            self._run_validation_and_get_normalized_df(
+                blob,
+                file_name,
+                allowed_schemas,
+                base_schema,
+                inst_schema,
+                institution_id,
+                institution_identifier,
+            )
+        )
+        if normalized_df is None:
+            raise ValueError(
+                "Validation succeeded but normalized_df was not returned; "
+                "cannot write validated output (e.g. empty schema list)."
+            )
+
+        validated_blob_name = f"validated/{file_name}"
+        validated_blob = bucket.blob(validated_blob_name)
+        if validated_blob.exists():
+            raise ValueError(validated_blob_name + ": File already exists.")
+
+        self._archive_raw_and_write_validated(bucket, blob, file_name, normalized_df)
+        return inferred_schema_names
+
+    def _archive_raw_and_write_validated(
+        self,
+        bucket: Any,
+        blob: Any,
+        file_name: str,
+        normalized_df: pd.DataFrame,
+    ) -> None:
+        """Copy blob to raw/, write normalized DataFrame to validated/, delete from unvalidated/."""
+        raw_blob_name = f"raw/{file_name}"
+        validated_blob_name = f"validated/{file_name}"
+        bucket.copy_blob(blob, bucket, raw_blob_name)
+        logging.debug("Archived original to %s", raw_blob_name)
+        self._write_dataframe_to_gcs_as_csv(bucket, validated_blob_name, normalized_df)
+        logging.debug("Wrote normalized data to %s", validated_blob_name)
         blob.delete()
-        logging.debug("If you see this file validation was complete")
-        return schems
+        logging.debug("Validation complete: validated=normalized, raw=archived")
+
+    def _run_validation_and_get_normalized_df(
+        self,
+        blob: Any,
+        file_name: str,
+        allowed_schemas: list[str],
+        base_schema: dict,
+        inst_schema: Optional[Dict[Any, Any]],
+        institution_id: str,
+        institution_identifier: Optional[str],
+    ) -> tuple[List[str], Any]:
+        """Run validation on blob content; return inferred schema names and normalized DataFrame."""
+        local_csv_path: Optional[str] = None
+        try:
+            local_csv_path = _download_blob_to_temp_csv_path(blob, file_name)
+            result = validate_file_reader(
+                local_csv_path,
+                allowed_schemas,
+                base_schema,
+                inst_schema,
+                institution_id=institution_id,
+                institution_identifier=institution_identifier,
+            )
+            inferred_schema_names = [str(s) for s in result.get("schemas", [])]
+            logging.debug(
+                "Validation successful for %s: %s", file_name, inferred_schema_names
+            )
+            return inferred_schema_names, result.get("normalized_df")
+        except HardValidationError:
+            raise
+        except (ValueError, UnicodeError) as e:
+            logging.exception("Validation failed for %s: %s", file_name, e)
+            raise
+        except Exception as e:
+            # Log any other error with context before re-raising (no silent failures).
+            logging.exception("Validation failed for %s: %s", file_name, e)
+            raise
+        finally:
+            _unlink_if_exists(local_csv_path)
+
+    def _write_dataframe_to_gcs_as_csv(
+        self, bucket: Any, blob_name: str, normalized_df: pd.DataFrame
+    ) -> None:
+        """Write a DataFrame to GCS as UTF-8 CSV. Used for validated/ output."""
+        fd, local_csv_path = tempfile.mkstemp(suffix=".csv", prefix="validated_out_")
+        os.close(fd)
+        try:
+            try:
+                normalized_df.to_csv(
+                    local_csv_path,
+                    index=False,
+                    encoding="utf-8",
+                    lineterminator="\n",
+                )
+            except OSError as e:
+                logger.error(
+                    "to_csv failed for validated blob %r temp_path=%r errno=%s strerror=%s",
+                    blob_name,
+                    local_csv_path,
+                    e.errno,
+                    e.strerror,
+                    exc_info=True,
+                )
+                raise
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(
+                local_csv_path,
+                content_type="text/csv; charset=utf-8",
+            )
+        finally:
+            _unlink_if_exists(local_csv_path)
 
     def get_file_contents(self, bucket_name: str, file_name: str) -> Any:
         """Returns a file as a bytes object."""
@@ -357,3 +526,28 @@ class StorageControl(BaseModel):
         blob = bucket.blob(file_name)
         res = blob.download_as_bytes()
         return res
+
+    def read_csv_as_dataframe(self, bucket_name: str, file_name: str) -> Any:
+        """Read a CSV file from GCS and return as pandas DataFrame.
+
+        Args:
+            bucket_name: GCS bucket name
+            file_name: Full blob path (e.g., 'validated/filename.csv')
+
+        Returns:
+            pandas DataFrame
+
+        Raises:
+            ValueError: If bucket or file not found
+        """
+        import pandas as pd
+
+        storage_client = storage.Client()
+        bucket = storage_client.get_bucket(bucket_name)
+        blob = bucket.blob(file_name)
+
+        if not blob.exists():
+            raise ValueError(f"File not found: {file_name}")
+
+        with blob.open("r") as fh:
+            return pd.read_csv(fh)

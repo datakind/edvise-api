@@ -1,6 +1,7 @@
 """Test file for the main.py file and constituent API functions."""
 
 import json
+from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 import sqlalchemy
@@ -32,8 +33,6 @@ def session_fixture():
     """Unit test database setup."""
     engine = sqlalchemy.create_engine(
         "sqlite://",
-        echo=True,
-        echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
@@ -103,7 +102,9 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: sqlalchemy.orm.Session):
+def client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for DATAKINDER type."""
 
     def get_session_override():
@@ -121,7 +122,9 @@ def client_fixture(session: sqlalchemy.orm.Session):
 
 
 @pytest.fixture(name="user_client")
-def user_client_fixture(session: sqlalchemy.orm.Session):
+def user_client_fixture(
+    session: sqlalchemy.orm.Session,
+) -> Generator[TestClient, None, None]:
     """Unit test mocks setup for non-Datakinder type."""
 
     def get_session_override():
@@ -138,13 +141,13 @@ def user_client_fixture(session: sqlalchemy.orm.Session):
     app.dependency_overrides.clear()
 
 
-def test_get_root(client: TestClient):
+def test_get_root(client: TestClient) -> None:
     """Test GET /."""
     response = client.get("/")
     assert response.status_code == 200
 
 
-def test_retrieve_token_gen_from_api_key(client: TestClient):
+def test_retrieve_token_gen_from_api_key(client: TestClient) -> None:
     """Test POST /token-from-api-key."""
     response = client.post(
         "/token-from-api-key",
@@ -154,7 +157,7 @@ def test_retrieve_token_gen_from_api_key(client: TestClient):
     assert response.json()["token_type"] == "bearer"
 
 
-def test_get_cross_isnt_users(client: TestClient):
+def test_get_cross_isnt_users(client: TestClient) -> None:
     """Test GET /non_inst_users."""
     response = client.get("/non-inst-users")
     assert response.status_code == 200
@@ -176,14 +179,14 @@ def test_get_cross_isnt_users(client: TestClient):
     ]
 
 
-def test_set_datakinders(client: TestClient):
+def test_set_datakinders(client: TestClient) -> None:
     """Test POST /datakinders."""
     response = client.post("/datakinders", json=["new_dk@example.com"])
     assert response.status_code == 200
     assert response.json() == ["new_dk@example.com"]
 
 
-def test_check_self_datakinder(client: TestClient):
+def test_check_self_datakinder(client: TestClient) -> None:
     """Test GET /check_self."""
     response = client.get("/check-self")
     assert response.status_code == 200
@@ -195,7 +198,7 @@ def test_check_self_datakinder(client: TestClient):
     }
 
 
-def test_check_self(user_client: TestClient):
+def test_check_self(user_client: TestClient) -> None:
     """Test GET /check_self."""
     response = user_client.get("/check-self")
     assert response.status_code == 200

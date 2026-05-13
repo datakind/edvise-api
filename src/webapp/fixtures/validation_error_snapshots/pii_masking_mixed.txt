@@ -1,0 +1,14 @@
+Column 'Course Name' has validation errors:
+  • Row 1: Value must be at least 3 characters long. Current value: found 'XY'
+
+Column 'Email' has validation errors:
+  • Row 2: Value must be at least 5 characters long. Current value: found 'ca******om' (value masked for privacy)
+
+Column 'Grade' has validation errors:
+  • Row 2: Value must be one of: A, B, C. Current value: found 'X'
+
+Column 'SSN' has validation errors:
+  • Row 3: Value must be at least 9 characters long. Current value: found 'CA******89' (value masked for privacy)
+
+Column 'Student Name' has validation errors:
+  • Row 1: Value must be at least 3 characters long. Current value: found 'CA******23' (value masked for privacy)
