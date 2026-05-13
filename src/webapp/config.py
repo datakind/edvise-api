@@ -51,7 +51,6 @@ databricks_vars = {
     "DATABRICKS_HOST_URL": "",
     # The service account that is used in Databricks to access GCP buckets.
     "DATABRICKS_SERVICE_ACCOUNT_EMAIL": "",
-    "GCP_CACHE_BUCKET": "",
 }
 
 

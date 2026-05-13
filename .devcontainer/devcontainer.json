@@ -15,11 +15,11 @@
         "vscode": {
             "extensions": [
                 "hashicorp.terraform",
-                "charliermarsh.ruff"
+                "ms-python.black-formatter"
             ],
             "settings": {
                 "[python]": {
-                    "editor.defaultFormatter": "charliermarsh.ruff",
+                    "editor.defaultFormatter": "ms-python.black-formatter",
                     "editor.formatOnSave": true
                   }
             }

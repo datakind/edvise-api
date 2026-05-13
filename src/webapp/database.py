@@ -1,9 +1,7 @@
 """Database configuration."""
 
-import json
 import uuid
 import datetime
-from pathlib import Path
 from typing import Set, List, Any
 from contextvars import ContextVar
 import enum
@@ -24,7 +22,6 @@ from sqlalchemy import (
     Integer,
     BigInteger,
     Index,
-    CheckConstraint,
     event,
 )
 from sqlalchemy.orm import (
@@ -61,49 +58,6 @@ LOCAL_APIKEY_UUID = uuid.UUID("cd65804d-c597-40c2-bc89-0b0810e66346")
 LOCAL_USER_EMAIL = "tester@datakind.org"
 LOCAL_PASSWORD = "tester_password"
 DATETIME_TESTING = datetime.datetime(2024, 12, 26, 19, 37, 59, 753357)
-
-
-def _setup_test_institutions(session: Session) -> None:
-    """Load optional local institution display data from config/local_inst_data.json (gitignored)."""
-    file = Path("config/local_inst_data.json")
-    if file.exists():
-        with open(file) as f:
-            for inst in json.load(f):
-                session.merge(
-                    InstTable(
-                        id=uuid.UUID(inst["inst_id"]),
-                        name=inst["name"],
-                        state=inst.get("state"),
-                        pdp_id=inst.get("pdp_id"),
-                        created_at=DATETIME_TESTING,
-                        updated_at=DATETIME_TESTING,
-                        created_by=LOCAL_USER_UUID,
-                    )
-                )
-                schemas_by_file_id = {
-                    f["data_id"]: f.get("schemas", []) for f in inst.get("files", [])
-                }
-                for batch in inst.get("batches", []):
-                    batch_table = BatchTable(
-                        id=uuid.UUID(batch["batch_id"]),
-                        inst_id=uuid.UUID(inst["inst_id"]),
-                        name=batch["name"],
-                        created_at=DATETIME_TESTING,
-                        updated_at=DATETIME_TESTING,
-                        created_by=LOCAL_USER_UUID,
-                    )
-                    for file_name, file_id in batch["file_names_to_ids"].items():
-                        batch_table.files.add(
-                            session.merge(
-                                FileTable(
-                                    id=uuid.UUID(file_id),
-                                    inst_id=uuid.UUID(inst["inst_id"]),
-                                    name=file_name,
-                                    schemas=schemas_by_file_id.get(file_id, []),
-                                )
-                            )  # type: ignore
-                        )
-                    session.merge(batch_table)
 
 
 @event.listens_for(Mapper, "before_insert")
@@ -164,52 +118,6 @@ def init_db(env: str) -> None:
                     valid=True,
                 )
             )
-            # Create test files and batches for LOCAL environment
-            if env == "LOCAL":
-                _setup_test_institutions(session)
-                # Create test files
-                test_file_1 = FileTable(
-                    id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a"),
-                    inst_id=LOCAL_INST_UUID,
-                    name="test_course_file.csv",
-                    source="MANUAL_UPLOAD",
-                    uploader=LOCAL_USER_UUID,
-                    sst_generated=False,
-                    valid=True,
-                    schemas=["COURSE"],  # Using string literal to avoid circular import
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-                test_file_2 = FileTable(
-                    id=uuid.UUID("cb02d06c-2a59-486a-9bdd-d394a4fcb833"),
-                    inst_id=LOCAL_INST_UUID,
-                    name="test_cohort_file.csv",
-                    source="MANUAL_UPLOAD",
-                    uploader=LOCAL_USER_UUID,
-                    sst_generated=False,
-                    valid=True,
-                    schemas=[
-                        "STUDENT"
-                    ],  # Using string literal to avoid circular import
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-                # Create test batch for LOCAL_INST_UUID (using a different ID)
-                test_batch = BatchTable(
-                    id=uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562b"),
-                    inst_id=LOCAL_INST_UUID,
-                    name="test_batch_1",
-                    created_by=LOCAL_USER_UUID,
-                    created_at=DATETIME_TESTING,
-                    updated_at=DATETIME_TESTING,
-                )
-                # Associate files with batch
-                test_batch.files.add(test_file_1)
-                test_batch.files.add(test_file_2)
-                session.merge(test_file_1)
-                session.merge(test_file_2)
-                session.merge(test_batch)
-
             session.commit()
     except Exception as e:
         session.rollback()
@@ -260,14 +168,6 @@ class InstTable(Base):
     state: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
     # Only populated for PDP schools.
     pdp_id: Mapped[str | None] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
-    # Only populated for Edvise schools.
-    edvise_id: Mapped[str | None] = mapped_column(
-        String(VAR_CHAR_LENGTH), nullable=True
-    )
-    # Only populated for Legacy schools (any-format uploads).
-    legacy_id: Mapped[str | None] = mapped_column(
-        String(VAR_CHAR_LENGTH), nullable=True
-    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -583,10 +483,7 @@ class ModelTable(Base):
     )
     inst: Mapped["InstTable"] = relationship(back_populates="models")
 
-    jobs: Mapped[Set["JobTable"]] = relationship(
-        back_populates="model",
-        passive_deletes=True,
-    )
+    jobs: Mapped[Set["JobTable"]] = relationship(back_populates="model")
 
     name: Mapped[str] = mapped_column(String(VAR_CHAR_STANDARD_LENGTH), nullable=False)
     # What configuration of schemas are allowed (list of maps e.g. [PDP Course : 1 + PDP Cohort : 1, X_schema :1 + Y_schema: 2])
@@ -651,12 +548,6 @@ class JobTable(Base):
         String(VAR_CHAR_STANDARD_LENGTH), nullable=True
     )
     completed: Mapped[bool] = mapped_column(nullable=True)
-    model_version: Mapped[str | None] = mapped_column(
-        String(VAR_CHAR_STANDARD_LENGTH), nullable=True
-    )
-    model_run_id: Mapped[str | None] = mapped_column(
-        String(VAR_CHAR_STANDARD_LENGTH), nullable=True
-    )
 
 
 class DocType(enum.Enum):
@@ -667,10 +558,9 @@ class DocType(enum.Enum):
 class SchemaRegistryTable(Base):
     """
     Stores versioned schema documents:
-      - Base schema (doc_type=base, is_pdp=False, is_edvise=False, inst_id NULL)
-      - PDP shared extension (doc_type=extension, is_pdp=True, is_edvise=False, inst_id NULL)
-      - Edvise shared extension (doc_type=extension, is_pdp=False, is_edvise=True, inst_id NULL)
-      - Custom institution extension (doc_type=extension, is_pdp=False, is_edvise=False, inst_id=<UUID>)
+      - Base schema (doc_type=base, is_pdp=False, inst_id NULL)
+      - PDP shared extension (doc_type=extension, is_pdp=True, inst_id NULL)
+      - Custom institution extension (doc_type=extension, is_pdp=False, inst_id=<UUID>)
     Layers can reference a parent (extends_schema_id) that they extend.
     """
 
@@ -681,12 +571,11 @@ class SchemaRegistryTable(Base):
     doc_type: Mapped[DocType] = mapped_column(
         Enum(DocType, native_enum=False), nullable=False
     )
-    # Nullable: NULL for base, PDP shared extension, and Edvise shared extension
+    # Nullable: NULL for base and PDP shared extension
     inst_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("inst.id", ondelete="RESTRICT", onupdate="CASCADE"), nullable=True
     )
     is_pdp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_edvise: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     version_label: Mapped[str] = mapped_column(
         String(VAR_CHAR_STANDARD_LENGTH), nullable=False
     )
@@ -731,12 +620,8 @@ class SchemaRegistryTable(Base):
         UniqueConstraint("doc_type", "version_label", name="uq_base_version"),
         UniqueConstraint("is_pdp", "version_label", name="uq_pdp_version"),
         UniqueConstraint("inst_id", "version_label", name="uq_inst_version"),
-        CheckConstraint(
-            "NOT (is_pdp = 1 AND is_edvise = 1)", name="ck_no_pdp_and_edvise"
-        ),
         Index("idx_schema_active_base", "doc_type", "is_active"),
         Index("idx_schema_active_pdp", "is_pdp", "is_active"),
-        Index("idx_schema_active_edvise", "is_edvise", "is_active"),
         Index("idx_schema_active_inst", "inst_id", "is_active"),
     )
 
@@ -747,8 +632,6 @@ class SchemaRegistryTable(Base):
             return "base"
         if self.is_pdp:
             return "pdp"
-        if self.is_edvise:
-            return "edvise"
         if self.inst_id:
             return f"inst:{self.inst_id}"
         return "unknown"
@@ -771,6 +654,7 @@ def init_connection_pool_local() -> sqlalchemy.engine.base.Engine:
     """Creates a local sqlite db for local env testing."""
     return sqlalchemy.create_engine(
         "sqlite://",
+        echo=True,
         echo_pool="debug",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,

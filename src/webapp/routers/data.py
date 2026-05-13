@@ -2,24 +2,23 @@
 
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
+from databricks.sdk import WorkspaceClient
+from typing import Annotated, Any, Dict, List, cast, IO, Optional
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 import os
 import logging
 from sqlalchemy.exc import IntegrityError
-import re
-from ..validation import HardValidationError
-from ..validation_error_formatter import format_validation_error
-import pandas as pd
-from cachetools import TTLCache
+from ..config import databricks_vars, env_vars, gcs_vars
+import tempfile
+import pathlib
 
 from ..utilities import (
     has_access_to_inst_or_err,
-    has_at_most_one_school_type,
     has_full_data_access_or_err,
     BaseUser,
     model_owner_and_higher_or_err,
@@ -29,6 +28,7 @@ from ..utilities import (
     DataSource,
     get_external_bucket_name,
     decode_url_piece,
+    databricksify_inst_name,
 )
 
 from ..database import (
@@ -37,8 +37,6 @@ from ..database import (
     BatchTable,
     FileTable,
     InstTable,
-    JobTable,
-    ModelTable,
     SchemaRegistryTable,
     DocType,
 )
@@ -47,18 +45,11 @@ from ..databricks import DatabricksControl
 from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
-from ..config import env_vars
-from edvise.data_audit.eda import EdaSummary
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
-# Cache for EDA data - TTL of 10 minutes (600 seconds)
-# Cache key format: f"{inst_id}:{batch_id}"
-EDA_CACHE_TTL = int(os.getenv("EDA_CACHE_TTL", "600"))  # Default 10 minutes
-EDA_CACHE: Any = TTLCache(maxsize=64, ttl=EDA_CACHE_TTL)
 
 router = APIRouter(
     prefix="/institutions",
@@ -480,246 +471,6 @@ def read_batch_info(
     return {"batches": [batch_info], "files": data_infos}
 
 
-## EDA (Exploratory Data Analysis) Endpoints
-class SummaryStats(BaseModel):
-    """Summary statistics for the EDA dashboard."""
-
-    total_students: int
-    transfer_students: int
-    avg_year1_gpa_all_students: float
-
-
-class SummaryMetric(BaseModel):
-    """A named metric with a single value (e.g. for EDA summary stats)."""
-
-    name: str
-    value: Union[int, float]
-
-
-class GpaSeriesData(BaseModel):
-    """GPA data series for a chart."""
-
-    name: str
-    data: List[Optional[float]]
-
-
-class GpaChartData(BaseModel):
-    """GPA chart data with cohort years and series."""
-
-    cohort_years: List[str]
-    series: List[GpaSeriesData]
-    min_gpa: Optional[float] = None
-
-
-class TermCountPct(BaseModel):
-    count: int
-    percentage: float
-    name: str
-
-
-class YearTermSummary(BaseModel):
-    year: str
-    total: int
-    terms: List[TermCountPct]
-
-
-class StudentsByCohortTerm(BaseModel):
-    years: List[str]
-    by_year: List[YearTermSummary]
-
-
-class TermChartData(BaseModel):
-    """Chart-ready term data: cohort_years, terms."""
-
-    cohort_years: List[str]
-    terms: List[Dict[str, Any]]
-
-
-class EdaDataResponse(BaseModel):
-    """EDA API response: summary metrics, GPA/time-series data, and category+series blobs."""
-
-    total_students: Optional[SummaryMetric] = None
-    transfer_students: Optional[SummaryMetric] = None
-    avg_year1_gpa_all_students: Optional[SummaryMetric] = None
-    gpa_by_enrollment_type: Optional[GpaChartData] = None
-    gpa_by_enrollment_intensity: Optional[GpaChartData] = None
-    students_by_cohort_term: Optional[StudentsByCohortTerm] = None
-    course_enrollments: Optional[StudentsByCohortTerm] = None
-    degree_types: Optional[Dict[str, Any]] = (
-        None  # { "total": int, "degrees": [{ "count", "percentage", "name" }, ...] }
-    )
-    enrollment_type_by_intensity: Optional[Dict[str, Any]] = None
-    pell_recipient_status: Optional[Dict[str, Any]] = None
-    pell_recipient_by_first_gen: Optional[Dict[str, Any]] = None
-    student_age_by_gender: Optional[Dict[str, Any]] = None
-    race_by_pell_status: Optional[Dict[str, Any]] = None
-
-    @classmethod
-    def from_eda_summary(cls, eda: Any) -> "EdaDataResponse":
-        return cls(
-            total_students=eda.total_students,
-            transfer_students=eda.transfer_students,
-            avg_year1_gpa_all_students=eda.avg_year1_gpa_all_students,
-            gpa_by_enrollment_type=eda.gpa_by_enrollment_type,
-            gpa_by_enrollment_intensity=eda.gpa_by_enrollment_intensity,
-            students_by_cohort_term=eda.students_by_cohort_term,
-            course_enrollments=eda.course_enrollments,
-            degree_types=eda.degree_types,
-            enrollment_type_by_intensity=eda.enrollment_type_by_intensity,
-            pell_recipient_status=eda.pell_recipient_status,
-            pell_recipient_by_first_gen=eda.pell_recipient_by_first_gen,
-            student_age_by_gender=eda.student_age_by_gender,
-            race_by_pell_status=eda.race_by_pell_status,
-        )
-
-
-def read_batch_files_as_dataframes(
-    inst_id: str,
-    batch_files: Any,  # Set[FileTable]
-    storage_control: StorageControl,
-) -> Dict[str, pd.DataFrame]:
-    """Read CSV files from a batch and return as DataFrames.
-
-    Args:
-        inst_id: Institution ID
-        batch_files: Set of FileTable objects from the batch
-        storage_control: StorageControl instance for GCS access
-
-    Returns:
-        Dictionary mapping schema_type -> pandas.DataFrame
-
-    Raises:
-        HTTPException: If no valid files found
-    """
-    bucket_name = get_external_bucket_name(inst_id)
-
-    # Temporary storage: file_record -> DataFrame
-    loaded_files: Dict[Any, pd.DataFrame] = {}
-    missing_files: List[str] = []
-
-    for file_record in batch_files:
-        file_name = file_record.name
-
-        # Skip SST-generated output files (only process input files)
-        if file_record.sst_generated:
-            logger.debug(f"Skipping SST-generated file: {file_name}")
-            continue
-
-        df = None
-
-        # Read from GCS
-        try:
-            blob_path = f"validated/{file_name}"
-            df = storage_control.read_csv_as_dataframe(bucket_name, blob_path)
-            logger.info(f"Loaded {file_name} from GCS ({len(df)} rows)")
-        except ValueError as e:
-            logger.warning(f"File not found in GCS: {e}")
-            missing_files.append(file_name)
-        except Exception as e:
-            logger.error(f"Failed to read from GCS: {e}")
-            missing_files.append(file_name)
-
-        if df is not None:
-            loaded_files[file_record] = df
-
-    if not loaded_files:
-        error_msg = f"No valid input files found in batch (checked GCS: {bucket_name}/validated/)"
-        if missing_files:
-            error_msg += f". Expected files not found: {', '.join(missing_files[:5])}"
-            if len(missing_files) > 5:
-                error_msg += f" (and {len(missing_files) - 5} more)"
-        error_msg += (
-            ". Files must be uploaded and validated before they can be used for EDA."
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=error_msg,
-        )
-
-    # Group by schema type and combine DataFrames
-    schema_dataframes: Dict[str, List[pd.DataFrame]] = {}
-    for file_record, df in loaded_files.items():
-        for schema in file_record.schemas:
-            if schema not in schema_dataframes:
-                schema_dataframes[schema] = []
-            schema_dataframes[schema].append(df)
-
-    result = {}
-    for schema, dfs in schema_dataframes.items():
-        if len(dfs) == 1:
-            result[schema] = dfs[0]
-        else:
-            result[schema] = pd.concat(dfs, ignore_index=True)
-            logger.info(
-                f"Combined {len(dfs)} files for schema {schema} ({len(result[schema])} total rows)"
-            )
-
-    return result
-
-
-@router.get("/{inst_id}/batch/{batch_id}/eda", response_model=EdaDataResponse)
-def get_eda_data(
-    inst_id: str,
-    batch_id: str,
-    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    sql_session: Annotated[Session, Depends(get_session)],
-    storage_control: Annotated[StorageControl, Depends(StorageControl)],
-) -> Any:
-    """Returns EDA (Exploratory Data Analysis) data for a specific batch.
-
-    This endpoint provides all the data needed to populate the EDA dashboard,
-    including summary statistics, GPA charts, enrollment data, and demographic breakdowns.
-    Analyzes all files in the batch together to provide comprehensive insights.
-    """
-    has_access_to_inst_or_err(inst_id, current_user)
-    has_full_data_access_or_err(current_user, "EDA data")
-    local_session.set(sql_session)
-
-    batch_result = (
-        local_session.get()
-        .execute(
-            select(BatchTable).where(
-                and_(
-                    BatchTable.id == str_to_uuid(batch_id),
-                    BatchTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
-        .scalar_one_or_none()
-    )
-    if batch_result is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Batch not found.",
-        )
-
-    cache_key = f"{inst_id}:{batch_id}"
-    cached_result = EDA_CACHE.get(cache_key)
-    if cached_result is not None:
-        logger.debug(f"EDA cache hit for {cache_key}")
-        return cached_result
-    logger.debug(f"EDA cache miss for {cache_key}, computing...")
-
-    file_dataframes = read_batch_files_as_dataframes(
-        inst_id, batch_result.files, storage_control
-    )
-    df_cohort = file_dataframes.get("STUDENT")
-    if df_cohort is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No STUDENT schema files found in batch for EDA.",
-        )
-
-    eda = EdaSummary(
-        df_cohort=df_cohort,
-        df_course=file_dataframes.get("COURSE"),
-    )
-    result = EdaDataResponse.from_eda_summary(eda)
-    EDA_CACHE[cache_key] = result
-
-    return result
-
-
 @router.post("/{inst_id}/batch", response_model=BatchInfo)
 def create_batch(
     inst_id: str,
@@ -751,7 +502,6 @@ def create_batch(
         )
         f_names = [] if not req.file_names else req.file_names
         f_ids = [] if not req.file_ids else strs_to_uuids(req.file_ids)
-        print(f"File names: {f_names}, File Ids: {f_ids}")
         # Check that the files requested for this batch exists.
         # Only valid non-sst generated files can be added to a batch at creation time.
         query_result_files = (
@@ -1245,257 +995,184 @@ def download_url_inst_file(
     )
 
 
-class _ValidationState:
-    _ar_re = re.compile(r"(?<![A-Za-z0-9])ar(?![A-Za-z0-9])", re.IGNORECASE)
-    _base_cache: Dict[str, Any] = {"exp": 0.0, "val": None}
-    _ext_cache: Dict[str, Tuple[float, Any]] = {}
-    _pdp_cache: Tuple[float, Optional[dict]] = (0.0, None)
-    _edvise_cache: Tuple[float, Optional[dict]] = (0.0, None)
+def infer_models_from_filename(file_path: str, institution_id: str) -> List[str]:
+    name = os.path.basename(file_path).lower()
 
+    inferred = set()
+    if "course" in name:
+        inferred.add("COURSE")
+    if "student" in name:
+        inferred.add("STUDENT")
+    if "semester" in name:
+        inferred.add("SEMESTER")
+    if "cohort" in name:
+        inferred.add("STUDENT")
+    if "course" not in name and ("ar" in name or "deidentified" in name):
+        inferred.add("STUDENT")
 
-STATE = _ValidationState()
-
-BASE_TTL = 300  # seconds; base schema cache TTL
-EXT_TTL = 120  # seconds; extension schema cache TTL
-
-
-def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]:
-    """Infer allowed schema names from file name; legacy may use any name (UNKNOWN).
-
-    Args:
-        file_name: Name of the file (used for keyword inference).
-        inst: Institution row (must have legacy_id attr for legacy fallback).
-
-    Returns:
-        Sorted list of allowed schema names (e.g. ["COURSE"], ["STUDENT"], ["UNKNOWN"]).
-
-    Raises:
-        HTTPException: 422 if name is non-descriptive and institution is not legacy.
-    """
-    name = os.path.basename(file_name).lower()
-    has_course = "course" in name
-    has_semester = "semester" in name
-    has_student = (
-        ("student" in name)
-        or ("cohort" in name)
-        or (
-            (not has_course)
-            and (STATE._ar_re.search(name) is not None or "deidentified" in name)
+    if not inferred:
+        logging.error(
+            ValueError(
+                f"Could not infer model(s) from file name: {name}, filenames sould be descriptive of the kind of data it contains e.g. course, cohort"
+            )
         )
-    )
-    inferred_from_name: set[str] = set()
-    if has_course:
-        inferred_from_name.add("COURSE")
-    if has_student:
-        inferred_from_name.add("STUDENT")
-    if has_semester:
-        inferred_from_name.add("SEMESTER")
-    if not inferred_from_name:
-        if getattr(inst, "legacy_id", None):
-            return ["UNKNOWN"]
+        inferred.add("UNKNOWN")
+
+    return sorted(inferred)
+
+
+def validation_helper(
+    source_str: str,
+    inst_id: str,
+    file_name: str,
+    current_user: BaseUser,
+    storage_control: StorageControl,
+    sql_session: Session,
+) -> Any:
+    """Helper function for file validation."""
+    has_access_to_inst_or_err(inst_id, current_user)
+    if file_name.find("/") != -1:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Could not infer model(s) from file name: {name}. "
-                "Filenames should be descriptive (e.g., include 'course', 'cohort', "
-                "'student', or 'semester')."
-            ),
+            status_code=422,
+            detail="File name can't contain '/'.",
         )
-    return sorted(inferred_from_name)
+    local_session.set(sql_session)
 
+    allowed_schemas = None
+    if not allowed_schemas:
+        allowed_schemas = infer_models_from_filename(file_name, "pdp")
 
-def _get_validation_base_schema(sess: Session) -> Tuple[Any, Any, float]:
-    """Return (base_schema_id, base_schema, now) using cache.
-
-    Args:
-        sess: DB session for schema registry query.
-
-    Returns:
-        Tuple of (base_schema_id, base_schema dict, current time.monotonic()).
-
-    Raises:
-        RuntimeError: If no active base schema is registered.
-    """
-    import time
-
-    now = time.monotonic()
-    base_cache = STATE._base_cache
-    if now < base_cache["exp"] and base_cache["val"] is not None:
-        cached = base_cache["val"]
-        base_schema_id, base_schema = cached  # pylint: disable=unpacking-non-sequence
-        return (base_schema_id, base_schema, now)
-    row = sess.execute(
-        select(SchemaRegistryTable.schema_id, SchemaRegistryTable.json_doc)
-        .where(
-            SchemaRegistryTable.doc_type == DocType.base,
-            SchemaRegistryTable.is_active.is_(True),
-        )
-        .limit(1)
-    ).first()
-    if row is None:
-        raise RuntimeError("No active base schema found")
-    base_schema_id, base_schema = row
-    base_cache["exp"] = now + BASE_TTL
-    base_cache["val"] = (base_schema_id, base_schema)
-    return (base_schema_id, base_schema, now)
-
-
-def _resolve_edvise_schema(
-    sess: Session, now: float
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for Edvise Schema (ES) institutions."""
-    schema_namespace = "edvise"
-    edvise_exp, edvise_doc = STATE._edvise_cache
-    if now < edvise_exp and edvise_doc is not None:
-        inst_schema: Optional[Dict[str, Any]] = edvise_doc
-    else:
-        inst_schema = sess.execute(
-            select(SchemaRegistryTable.json_doc)
+    inferred_schemas: list[str] = []
+    # ----------------------- Fetch base schema from DB -------------------------------
+    base_schema = (
+        local_session.get()
+        .execute(
+            select(SchemaRegistryTable.schema_id, SchemaRegistryTable.json_doc)
             .where(
-                SchemaRegistryTable.is_edvise.is_(True),
+                SchemaRegistryTable.doc_type == DocType.base,
                 SchemaRegistryTable.is_active.is_(True),
             )
             .limit(1)
-        ).scalar_one_or_none()
-        STATE._edvise_cache = (now + EXT_TTL, inst_schema)
-    if inst_schema is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Edvise Schema (ES) not found for institution with edvise_id. "
-            "Please ensure an active Edvise Schema (ES) extension is registered.",
         )
-    return (schema_namespace, inst_schema)
+        .first()
+    )
+    if base_schema is None:
+        raise RuntimeError("No active base schema found")
 
+    base_schema_id, base_schema = base_schema
+    # ----------------------- Fetch inst specific extension schema from DB ---------------------
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is None:
+        raise ValueError(f"Institution {inst_id} not found")
 
-def _resolve_pdp_schema(
-    sess: Session, now: float
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for PDP institutions."""
-    schema_namespace = "pdp"
-    pdp_exp, pdp_doc = STATE._pdp_cache
-    if now < pdp_exp and pdp_doc is not None:
-        inst_schema: Optional[Dict[str, Any]] = pdp_doc
-    else:
-        inst_schema = cast(
-            Optional[Dict[str, Any]],
-            sess.execute(
+    if inst.pdp_id:  # institution is PDP
+        inst_schema = (
+            local_session.get()
+            .execute(
                 select(SchemaRegistryTable.json_doc)
                 .where(
                     SchemaRegistryTable.is_pdp.is_(True),
                     SchemaRegistryTable.is_active.is_(True),
                 )
                 .limit(1)
-            ).scalar_one_or_none(),
+            )
+            .scalar_one_or_none()
         )
-        STATE._pdp_cache = (now + EXT_TTL, inst_schema)
-    if inst_schema is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="PDP schema not found for institution with pdp_id. "
-            "Please ensure an active PDP schema extension is registered.",
+        updated_inst_schema: dict | None = inst_schema
+    else:  # custom (or none)
+        inst_schema = (
+            local_session.get()
+            .execute(
+                select(SchemaRegistryTable.json_doc)
+                .where(
+                    SchemaRegistryTable.inst_id == inst.id,
+                    SchemaRegistryTable.is_active.is_(True),
+                    SchemaRegistryTable.doc_type == DocType.extension,  # be explicit
+                )
+                .limit(1)
+            )
+            .scalar_one_or_none()
         )
-    return (schema_namespace, inst_schema)
 
-
-def _resolve_schema_namespace_and_extension(
-    sess: Session,
-    inst: Any,
-    inst_id: str,
-    now: float,
-    allowed_schemas: List[str],
-    bucket: str,
-    base_schema: dict,
-    base_schema_id: Any,
-    file_name: str,
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy)."""
-    pdp_id = getattr(inst, "pdp_id", None)
-    edvise_id = getattr(inst, "edvise_id", None)
-    legacy_id = getattr(inst, "legacy_id", None)
-    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution configuration error: cannot have more than one of "
-            "pdp_id, edvise_id, or legacy_id set",
+        dbc = DatabricksControl()
+        schema_extension = dbc.create_custom_schema_extension(
+            bucket_name=get_external_bucket_name(inst_id),
+            inst_query=inst,
+            file_name=file_name,
+            base_schema=base_schema,
+            extension_schema=inst_schema,
         )
-    if edvise_id:
-        return _resolve_edvise_schema(sess, now)
-    if pdp_id:
-        return _resolve_pdp_schema(sess, now)
-    if legacy_id:
-        return ("legacy", None)
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail=(
-            "Institution configuration error: institution has no pdp_id, edvise_id, "
-            "or legacy_id; cannot resolve validation schema."
-        ),
-    )
 
+        if schema_extension is not None:
+            updated_inst_schema = schema_extension
+            try:
+                new_schema_extension_record = SchemaRegistryTable(
+                    doc_type=DocType.extension,
+                    inst_id=str_to_uuid(inst_id),
+                    is_pdp=False,  # type: ignore
+                    version_label="1.0.0",
+                    extends_schema_id=base_schema_id,
+                    json_doc=schema_extension,
+                    is_active=True,
+                )
+                sess = local_session.get()
+                sess.add(new_schema_extension_record)
+                sess.flush()
+                logging.info("Schema record inserted for '%s'", inst_id)
+            except IntegrityError as e:
+                sess = local_session.get()
+                sess.rollback()
+                logging.warning("IntegrityError: %s", e)
+            except Exception as e:
+                sess = local_session.get()
+                sess.rollback()
+                logging.error("Unexpected DB error: %s", e)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Unexpected database error while inserting file record: {e}",
+                )
+        else:
+            logging.info(
+                "No-op: extension already contains this model for inst %s", inst_id
+            )
+            updated_inst_schema = inst_schema
 
-def _run_validation_and_upsert_file_record(
-    bucket: str,
-    file_name: str,
-    allowed_schemas: List[str],
-    base_schema: dict,
-    updated_inst_schema: Optional[Dict[str, Any]],
-    schema_namespace: str,
-    inst_id: str,
-    source_str: str,
-    current_user: BaseUser,
-    storage_control: StorageControl,
-    sess: Session,
-) -> Dict[str, Any]:
-    """Run storage validate_file, then upsert file record and return response dict."""
+    # ----------------------- File validation logic logic --------------------------------------
     try:
         inferred_schemas = storage_control.validate_file(
-            bucket,
+            get_external_bucket_name(inst_id),
             file_name,
             allowed_schemas,
             base_schema,
             updated_inst_schema,
-            institution_id=schema_namespace,
-            institution_identifier=inst_id if schema_namespace == "edvise" else None,
         )
-    except HardValidationError as e:
-        logging.debug("Inferred Schemas FAILED (hard) %s", e)
-        try:
-            formatted_msg = format_validation_error(e)
-        except Exception as format_err:
-            logging.warning("Error formatting validation message: %s", format_err)
-            parts = ["VALIDATION_FAILED"]
-            if e.missing_required:
-                parts.append(f"missing_required={e.missing_required}")
-            if e.extra_columns:
-                parts.append(f"extra_columns={e.extra_columns}")
-            if e.schema_errors is not None:
-                parts.append(f"schema_errors={e.schema_errors}")
-            formatted_msg = "; ".join(parts)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=formatted_msg
+        logging.debug(
+            f"!!!!!!!!!!Inferred Schemas was successful {list(inferred_schemas)}"
         )
     except Exception as e:
-        logging.debug("Inferred Schemas FAILED (other) %s", e)
+        logging.debug(f"!!!!!!!!!!Inferred Schemas FAILED {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"VALIDATION_ERROR: {type(e).__name__}: {e}",
-        )
-    logging.debug("Inferred Schemas success %s", list(inferred_schemas))
+            detail="File type is not valid and/or not accepted by this institution: "
+            + str(e),
+        ) from e
+
     existing_file = (
-        sess.query(FileTable)
-        .filter_by(name=file_name, inst_id=str_to_uuid(inst_id))
+        local_session.get()
+        .query(FileTable)
+        .filter_by(
+            name=file_name,
+            inst_id=str_to_uuid(inst_id),
+        )
         .first()
     )
-    if set(inferred_schemas) != set(allowed_schemas):
-        logging.info(
-            "Filename inference %s differs from validator result %s for %s; "
-            "returning filename-based types to preserve API contract.",
-            allowed_schemas,
-            inferred_schemas,
-            file_name,
-        )
+
     if existing_file:
-        logging.info("File '%s' already exists for institution %s.", file_name, inst_id)
+        logging.info(f"File '{file_name}' already exists for institution {inst_id}.")
         db_status = f"File '{file_name}' already exists for institution {inst_id}."
     else:
         try:
@@ -1508,21 +1185,22 @@ def _run_validation_and_upsert_file_record(
                 schemas=list(allowed_schemas),
                 valid=True,
             )
-            sess.add(new_file_record)
-            sess.flush()
-            logging.info("File record inserted for '%s'", file_name)
+            local_session.get().add(new_file_record)
+            local_session.get().flush()
+            logging.info(f"File record inserted for '{file_name}'")
             db_status = f"File record inserted for '{file_name}'"
         except IntegrityError as e:
-            sess.rollback()
-            logging.warning("IntegrityError: %s", e)
+            local_session.get().rollback()
+            logging.warning(f"IntegrityError: {e}")
             db_status = "Already exists"
         except Exception as e:
-            sess.rollback()
-            logging.error("Unexpected DB error: %s", e)
+            local_session.get().rollback()
+            logging.error(f"Unexpected DB error: {e}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Unexpected database error while inserting file record: {e}",
             )
+
     return {
         "name": file_name,
         "inst_id": inst_id,
@@ -1530,92 +1208,6 @@ def _run_validation_and_upsert_file_record(
         "source": source_str,
         "status": db_status,
     }
-
-
-def validation_helper(
-    source_str: str,
-    inst_id: str,
-    file_name: str,
-    current_user: BaseUser,
-    storage_control: StorageControl,
-    sql_session: Session,
-) -> Any:
-    """Run file validation for an institution and upsert the file record.
-
-    Validates file name and institution, infers allowed schemas from filename
-    (or UNKNOWN for legacy when inference fails), resolves extension schema,
-    runs storage validation, then upserts the file record.
-
-    Args:
-        source_str: Source label for the upload (e.g. MANUAL_UPLOAD).
-        inst_id: Institution UUID (hex string).
-        file_name: Name of the file (no path separators).
-        current_user: Authenticated user; must have access to inst_id.
-        storage_control: StorageControl instance for GCS and validate_file.
-        sql_session: DB session for institution, schema, and file record.
-
-    Returns:
-        Dict with name, inst_id, file_types, source, status.
-
-    Raises:
-        HTTPException: 401 if no access, 404 if institution not found or invalid id,
-            422 if file name invalid or non-descriptive (non-legacy), 400 on validation failure.
-    """
-    has_access_to_inst_or_err(inst_id, current_user)
-    if not file_name or not file_name.strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="File name is required and must be non-empty.",
-        )
-    if "/" in file_name:
-        raise HTTPException(status_code=422, detail="File name can't contain '/'.")
-
-    local_session.set(sql_session)
-    sess = local_session.get()
-
-    try:
-        inst = sess.execute(
-            select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
-        ).scalar_one_or_none()
-    except (ValueError, TypeError):
-        logging.warning("Invalid institution id for validation: %s", inst_id)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution not found or invalid identifier.",
-        )
-    if inst is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Institution {inst_id} not found",
-        )
-
-    allowed_schemas = _infer_allowed_schemas_from_filename(file_name, inst)
-    base_schema_id, base_schema, now = _get_validation_base_schema(sess)
-    bucket = get_external_bucket_name(inst_id)
-    schema_namespace, updated_inst_schema = _resolve_schema_namespace_and_extension(
-        sess,
-        inst,
-        inst_id,
-        now,
-        allowed_schemas,
-        bucket,
-        base_schema,
-        base_schema_id,
-        file_name,
-    )
-    return _run_validation_and_upsert_file_record(
-        bucket,
-        file_name,
-        allowed_schemas,
-        base_schema,
-        updated_inst_schema,
-        schema_namespace,
-        inst_id,
-        source_str,
-        current_user,
-        storage_control,
-        sess,
-    )
 
 
 @router.post(
@@ -1680,85 +1272,442 @@ def get_upload_url(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
 
-@router.post("/{inst_id}/add-custom-school-job/{job_run_id}")
-def add_custom_school_job(
+## FE Inference Tables
+
+
+# Get SHAP Values for Inference
+@router.get("/{inst_id}/inference/top-features/{run_id}")
+def get_inference_top_features(
     inst_id: str,
-    job_run_id: str,
-    model_name: str,
-    sql_session: Annotated[Session, Depends(get_session)],
+    run_id: str,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
-    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
-) -> Any:
-    """Fill in a JobTable ."""
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns data for a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
     has_access_to_inst_or_err(inst_id, current_user)
-    has_full_data_access_or_err(current_user, "this model")
     local_session.set(sql_session)
-
-    model_name = decode_url_piece(model_name)
-    inst_result = (
-        local_session.get()
-        .execute(
-            select(InstTable).where(
-                and_(
-                    InstTable.id == str_to_uuid(inst_id),
-                )
-            )
-        )
-        .all()
-    )
-
     query_result = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == model_name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
         .all()
     )
-
-    if not inst_result or not query_result:
+    if not query_result or len(query_result) == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Institution or model does not exist.",
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
         )
 
     try:
-        triggered_timestamp = datetime.now()
-
-        latest_model_version = databricks_control.fetch_model_version(
-            catalog_name=str(env_vars["CATALOG_NAME"]),
-            inst_name=inst_result[0][0].name,
-            model_name=model_name,
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"inference_{run_id}_features_with_most_impact",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
         )
 
-        job = JobTable(
-            id=job_run_id,
-            triggered_at=triggered_timestamp,
-            created_by=str_to_uuid(current_user.user_id),
-            batch_name=f"{model_name}_{triggered_timestamp}",  # update later when we figure out how to add batches to custom jobs
-            output_filename=f"{job_run_id}/inference_output.csv",
-            model_id=query_result[0][0].id,
-            output_valid=True,
-            completed=True,
-            model_version=latest_model_version.version,
-            model_run_id=latest_model_version.run_id,
-        )
-        local_session.get().add(job)
-
-        return {
-            "inst_id": inst_id,
-            "m_name": model_name,
-            "run_id": job_run_id,
-            "output_filename": f"{job_run_id}/inference_output.csv",
-            "model_version": latest_model_version.version,
-            "model_run_id": latest_model_version.run_id,
-            "created_by": current_user.user_id,
-            "triggered_at": triggered_timestamp,
-        }
+        return rows
     except ValueError as ve:
         # Return a 400 error with the specific message from ValueError
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+# Get Box plot values
+@router.get("/{inst_id}/inference/features-boxplot-stat/{run_id}")
+def get_inference_feature_boxstats(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    feature_name: Optional[str] = Query(
+        None, description="If provided, filter by this feature name"
+    ),
+) -> List[dict[str, Any]]:
+    """Returns box-plot stats for an institution/run. If `feature_name` is supplied,
+    only rows for that feature are returned."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"inference_{run_id}_box_plot_table",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+        if not feature_name:
+            return rows
+
+        # Helper: extract feature_name from various shapes (top-level or JSON column)
+        def row_feature_name(row: dict[str, Any]) -> Optional[str]:
+            # common case: it's a top-level column
+            if "feature_name" in row and row["feature_name"] is not None:
+                return str(row["feature_name"])
+            # fallback: search any dict-valued column for a 'feature_name' key
+            for v in row.values():
+                if (
+                    isinstance(v, dict)
+                    and "feature_name" in v
+                    and v["feature_name"] is not None
+                ):
+                    return str(v["feature_name"])
+            return None
+
+        filtered = [r for r in rows if row_feature_name(r) == feature_name]
+
+        if not filtered:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Feature '{feature_name}' not found for run_id '{run_id}'.",
+            )
+
+        return filtered
+
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+# Get SHAP Values for Inference
+@router.get("/{inst_id}/inference/support-overview/{run_id}")
+def get_inference_support_overview(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns a signed URL for uploading data to a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"inference_{run_id}_support_overview",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+
+        return rows
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/inference/feature_importance/{run_id}")
+def get_inference_feature_importance(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns a signed URL for uploading data to a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"inference_{run_id}_shap_feature_importance",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+
+        return rows
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+## FE Training Tables
+
+
+@router.get("/{inst_id}/training/feature_importance/{run_id}")
+def get_training_feature_importance(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns a signed URL for uploading data to a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"training_{run_id}_shap_feature_importance",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+
+        return rows
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/training/confusion_matrix/{run_id}")
+def get_training_confusion_matrix(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns a signed URL for uploading data to a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"training_{run_id}_confusion_matrix",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+
+        return rows
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/training/roc_curve/{run_id}")
+def get_training_roc_curve(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns a signed URL for uploading data to a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"training_{run_id}_roc_curve",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+
+        return rows
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/training/support-overview/{run_id}")
+def get_training_support_overview(
+    inst_id: str,
+    run_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> List[dict[str, Any]]:
+    """Returns a signed URL for uploading data to a specific institution."""
+    # raise error at this level instead bc otherwise it's getting wrapped as a 200
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        dbc = DatabricksControl()
+        rows = dbc.fetch_table_data(
+            catalog_name=env_vars["CATALOG_NAME"],  # type: ignore
+            inst_name=f"{query_result[0][0].name}",
+            table_name=f"training_{run_id}_support_overview",
+            warehouse_id=env_vars["SQL_WAREHOUSE_ID"],  # type: ignore
+        )
+
+        return rows
+    except ValueError as ve:
+        # Return a 400 error with the specific message from ValueError
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/training/model-cards/{model_name}")
+def get_model_cards(
+    inst_id: str,
+    model_name: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> FileResponse:
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    query_result = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .all()
+    )
+    if not query_result or len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Institution duplicates found.",
+        )
+
+    try:
+        w = WorkspaceClient(
+            host=databricks_vars["DATABRICKS_HOST_URL"],
+            google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        )
+
+        LOGGER.info("Successfully created Databricks WorkspaceClient.")
+    except Exception as e:
+        LOGGER.exception(
+            "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+            databricks_vars["DATABRICKS_HOST_URL"],
+            gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        )
+        raise ValueError(
+            f"get_model_cards(): Workspace client initialization failed: {e}"
+        )
+
+    try:
+        volume_path = f"/Volumes/staging_sst_01/{databricksify_inst_name(query_result[0][0].name)}_gold/gold_volume/model_cards/model-card-{model_name}.pdf"
+        LOGGER.info(f"Attempting to download from {volume_path}")
+        response = w.files.download(volume_path)
+        stream = cast(IO[bytes], response.contents)
+        pdf_bytes = stream.read()
+
+        LOGGER.info("Download successful, received %d bytes", len(pdf_bytes))
+    except Exception as e:
+        LOGGER.exception(f"Failed to fetch model card: {e}")
+        raise HTTPException(500, detail=f"Failed to fetch model card: {e}")
+
+    # Stream back as FileResponse
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    tmp.write(pdf_bytes)
+    tmp.flush()
+
+    return FileResponse(
+        tmp.name,
+        filename=pathlib.Path(tmp.name).name,
+        media_type="application/pdf",
+    )

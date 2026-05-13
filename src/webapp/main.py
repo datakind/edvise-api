@@ -1,7 +1,7 @@
 """Main file for the SST API."""
 
 import logging
-from typing import Any, Annotated, Optional, cast
+from typing import Any, Annotated
 from datetime import timedelta
 import secrets
 from fastapi import FastAPI, Depends, HTTPException, status, Security
@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.future import select
 from sqlalchemy import update
-from .routers import models, users, data, institutions, front_end_tables
+from .routers import models, users, data, institutions
 from .database import (
     setup_db,
     db_engine,
@@ -58,7 +58,6 @@ app.include_router(institutions.router)
 app.include_router(models.router)
 app.include_router(users.router)
 app.include_router(data.router)
-app.include_router(front_end_tables.router)
 
 
 class SelfInfo(BaseModel):
@@ -96,9 +95,7 @@ def read_root() -> Any:
 @app.post("/token-from-api-key")
 async def access_token_from_api_key(
     sql_session: Annotated[Session, Depends(get_session)],
-    api_key_enduser_tuple: tuple[str, Optional[str], Optional[str]] = Security(
-        get_api_key
-    ),
+    api_key_enduser_tuple: str = Security(get_api_key),
 ) -> Token:
     """Generate a token from an API key."""
     local_session.set(sql_session)
@@ -113,11 +110,10 @@ async def access_token_from_api_key(
         )
 
     access_token_expires = timedelta(
-        minutes=int(cast(str, env_vars["ACCESS_TOKEN_EXPIRE_MINUTES"]))
+        minutes=int(env_vars["ACCESS_TOKEN_EXPIRE_MINUTES"])
     )
     access_token = create_access_token(
-        data={"sub": user.email},  # type: ignore
-        expires_delta=access_token_expires,  # type: ignore
+        data={"sub": user.email}, expires_delta=access_token_expires
     )
     return Token(access_token=access_token, token_type="bearer")
 
@@ -126,7 +122,7 @@ async def access_token_from_api_key(
 async def read_cross_inst_users(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
-) -> Any:
+):
     """Get users that don't have institution specifications.
     (datakinders or people who haven't set their institution yet)."""
     if not current_user.is_datakinder():
@@ -144,7 +140,7 @@ async def read_cross_inst_users(
         )
         .all()
     )
-    res: list = []
+    res = []
     if not query_result or len(query_result) == 0:
         return res
 
@@ -190,7 +186,7 @@ async def set_datakinders(
         .all()
     )
 
-    res: list = []
+    res = []
     if not query_result:
         return res
     for elem in query_result:
@@ -255,7 +251,7 @@ async def generate_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Database write of the API key duplicate entries.",
         )
-    return {  # type: ignore
+    return {
         "access_type": query_result[0][0].access_type,
         "key": generated_key_value,
         "inst_id": (

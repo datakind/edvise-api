@@ -51,7 +51,7 @@ In the long-term, look into a way to have the API key --> token conversion be ha
 
 ## Databases
 
-All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/edvise-api/blob/develop/src/webapp/database.py).
+All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/sst-app-api/blob/develop/src/webapp/database.py).
 
 At time of writing, the databases the API cares about and tracks, are as follows:
 
@@ -112,7 +112,7 @@ Enter into the root directory of the repo.
 
 You're now in your virtual env with all your dependencies added.
 
-For all of the following, the steps above are pre-requisites and you should be in the root folder of `edvise-api/`.
+For all of the following, the steps above are pre-requisites and you should be in the root folder of `sst-app-api/`.
 
 ### Spin up the app locally:
 
@@ -168,25 +168,3 @@ The process to upload a file involves three API calls:
 ## Local VSCode Debugging
 
 From the Run & Debug panel (⇧⌘D on 🍎) you can run the [debug launch config](../../.vscode/launch.json) for the webapp or worker modules. This will allow you to set breakpoints within the source code while the applications are running.
-
-## Local edvise development override
-
-Production uses a pinned Git reference for `edvise`. For local development, use an
-editable install after syncing the environment.
-
-1. Clone `edvise` alongside `edvise-api` (so `../edvise` exists).
-2. Run `uv sync`.
-3. Override locally: `uv pip install -e ../edvise`
-
-To revert back to the pinned Git dependency, run `uv sync --reinstall-package edvise`.
-
-## Local institutions (optional)
-
-You can seed the local database with institution, batch, and file metadata that matches dev or staging (names, UUIDs, batch membership) without checking secrets into Git.
-
-1. Copy `config/local_inst_data.example.json` to `config/local_inst_data.json`. The latter is gitignored.
-2. Edit `local_inst_data.json` to match your needs. Use the example file as the schema: one array element per institution, with `inst_id`, `name`, and optionally `state`, `pdp_id`, `batches`, and `files`.
-
-If the file is missing, startup skips this step and the default local seed in code still applies.
-
-**Limitation:** Endpoints that read uploaded CSV (for example EDA) load blobs from GCS under the bucket name `dev_<institution_uuid_hex>`, not from this JSON. To exercise those flows locally you still need GCP credentials and the corresponding objects in that bucket, or you rely on tests/mocks instead.

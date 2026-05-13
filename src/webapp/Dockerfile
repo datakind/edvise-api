@@ -13,11 +13,6 @@ WORKDIR /app
 # Add project files
 ADD uv.lock pyproject.toml /app/
 
-# Install git and ca-certificates
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
 # Install dependencies
 RUN uv sync --frozen --no-install-project
 

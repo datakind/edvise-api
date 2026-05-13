@@ -10,8 +10,8 @@ To get an overview of the project, please read the [README](README.md) and our [
 ## Getting started
 ### Creating Issues
 
-If you spot a problem, [search if an issue already exists](https://github.com/datakind/edvise-api/issues). If a related issue doesn't exist,
-you can open a new issue using a relevant [issue form](https://github.com/datakind/edvise-api/issues/new).
+If you spot a problem, [search if an issue already exists](https://github.com/datakind/sst-app-api/issues). If a related issue doesn't exist,
+you can open a new issue using a relevant [issue form](https://github.com/datakind/sst-app-api/issues/new).
 
 As a general rule, we don’t assign issues to anyone. If you find an issue to work on, you are welcome to open a PR with a fix.
 
@@ -28,7 +28,7 @@ poetry install --no-interaction
 As many other open source projects, we use the famous [gitflow](https://nvie.com/posts/a-successful-git-branching-model/) to manage our branches.
 
 Summary of our git branching model:
-- Get all the latest work from the upstream `datakind/edvise-api` repository
+- Get all the latest work from the upstream `datakind/sst-app-api` repository
   (`git checkout main`)
 - Create a new branch off with a descriptive name (for example:
   `feature/new-test-macro`, `bugfix/bug-when-uploading-results`). You can
@@ -107,7 +107,7 @@ You can type `pytest` to run your tests, no matter which type of test it is.
 
 ## Continuous Integration
 
-We use [GitHub Actions](https://github.com/datakind/edvise-api/actions)
+We use [GitHub Actions](https://github.com/datakind/sst-app-api/actions)
 for continuous integration.
 See [here](https://docs.github.com/en/actions) for GitHub's documentation.
 

@@ -12,16 +12,18 @@ from databricks.sdk.service.sql import (
     StatementState,
 )
 from google.cloud import storage
-from google.api_core import exceptions as gcs_errors
+from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
-from typing import List, Any, Dict, Optional
-import requests
-import hashlib
-import json
-import gzip
-from cachetools import TTLCache
-import threading
+from typing import List, Any, Dict, IO, cast, Optional
+from databricks.sdk.errors import DatabricksError
+from fastapi import HTTPException
+
+try:
+    import tomllib as _toml  # Py 3.11+
+except ModuleNotFoundError:
+    import tomli as _toml  # Py ≤ 3.10
+import pandas as pd
 import re
 
 # Setting up logger
@@ -32,7 +34,7 @@ LOGGER = logging.getLogger(__name__)
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match directly.
-PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+PDP_INFERENCE_JOB_NAME = "github_sourced_pdp_inference_pipeline"
 
 
 class DatabricksInferenceRunRequest(BaseModel):
@@ -42,6 +44,7 @@ class DatabricksInferenceRunRequest(BaseModel):
     # Note that the following should be the filepath.
     filepath_to_type: dict[str, list[SchemaType]]
     model_name: str
+    model_type: str = "sklearn"
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
@@ -72,21 +75,6 @@ def check_types(dict_values: list[list[SchemaType]], file_type: SchemaType) -> b
     return False
 
 
-def _sha256_json(obj: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-L1_RESP_CACHE_TTL = int("600")  # seconds
-L1_VER_CACHE_TTL = int("3600")  # seconds
-L1_RESP_CACHE: Any = TTLCache(maxsize=128, ttl=L1_RESP_CACHE_TTL)
-L1_VER_CACHE: Any = TTLCache(maxsize=256, ttl=L1_VER_CACHE_TTL)
-_L1_LOCK = threading.RLock()
-
-
 # Wrapping the usages in a class makes it easier to unit test via mocks.
 class DatabricksControl(BaseModel):
     """Object to manage interfacing with GCS."""
@@ -110,17 +98,7 @@ class DatabricksControl(BaseModel):
         db_inst_name = databricksify_inst_name(inst_name)
         cat_name = databricks_vars["CATALOG_NAME"]
         for medallion in MEDALLION_LEVELS:
-            try:
-                w.schemas.create(
-                    name=f"{db_inst_name}_{medallion}", catalog_name=cat_name
-                )
-            except Exception as e:
-                LOGGER.exception(
-                    f"Failed to provision schemas in databricks for {db_inst_name}_{medallion}: {e}"
-                )
-                raise ValueError(
-                    f"setup_new_inst(): Failed to provision schemas in databricks for {db_inst_name}_{medallion}: {e}"
-                )
+            w.schemas.create(name=f"{db_inst_name}_{medallion}", catalog_name=cat_name)
             LOGGER.info(
                 f"Creating medallion level schemas for {db_inst_name} & {medallion}."
             )
@@ -213,18 +191,17 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-        pipeline_type = PDP_INFERENCE_JOB_NAME
 
         try:
-            job = next(w.jobs.list(name=pipeline_type), None)
+            job = next(w.jobs.list(name=PDP_INFERENCE_JOB_NAME), None)
             if not job or job.job_id is None:
                 raise ValueError(
-                    f"run_pdp_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
+                    f"run_pdp_inference(): Job '{PDP_INFERENCE_JOB_NAME}' was not found or has no job_id."
                 )
             job_id = job.job_id
-            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+            LOGGER.info(f"Resolved job ID for '{PDP_INFERENCE_JOB_NAME}': {job_id}")
         except Exception as e:
-            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            LOGGER.exception(f"Job lookup failed for '{PDP_INFERENCE_JOB_NAME}'.")
             raise ValueError(f"run_pdp_inference(): Failed to find job: {e}")
 
         try:
@@ -243,6 +220,7 @@ class DatabricksControl(BaseModel):
                     ],  # is this value the same PER environ? dev/staging/prod
                     "gcp_bucket_name": req.gcp_external_bucket_name,
                     "model_name": req.model_name,
+                    "model_type": req.model_type,
                     "notification_email": req.email,
                 },
             )
@@ -324,232 +302,80 @@ class DatabricksControl(BaseModel):
         inst_name: str,
         table_name: str,
         warehouse_id: str,
-    ) -> Any:
+    ) -> List[Dict[str, Any]]:
         """
-        Execute SELECT * via Databricks SQL Statement Execution API using EXTERNAL_LINKS.
-        Blocks server-side for up to 30s; if not SUCCEEDED, raises. Downloads presigned
-        URLs in-memory and returns rows as List[Dict[str, Any]].
+        Executes a SELECT * query on the specified table within the given catalog and schema,
+        using the provided SQL warehouse. Returns the result as a list of dictionaries.
         """
-        w = WorkspaceClient(
-            host=databricks_vars["DATABRICKS_HOST_URL"],
-            google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"fetch_table_data(): Workspace client initialization failed: {e}"
+            )
+
+        # Construct the fully qualified table name
+        schema_name = databricksify_inst_name(inst_name)
+        fully_qualified_table = (
+            f"`{catalog_name}`.`{schema_name}_silver`.`{table_name}`"
         )
+        sql_query = f"SELECT * FROM {fully_qualified_table}"
+        LOGGER.info(f"Executing SQL: {sql_query}")
 
-        bucket_name = databricks_vars["GCP_CACHE_BUCKET"]
-        schema = databricksify_inst_name(inst_name)
-        table_fqn = f"`{catalog_name}`.`{schema}_silver`.`{table_name}`"
-        sql = f"SELECT * FROM {table_fqn}"
-
-        ver_cache_key = f"ver:{table_fqn}"
-        with _L1_LOCK:
-            table_version = L1_VER_CACHE.get(ver_cache_key)
-
-        if table_version is None:
-            ver_sql = f"DESCRIBE HISTORY {table_fqn} LIMIT 1"
-            ver_resp = w.statement_execution.execute_statement(
+        try:
+            # Execute the SQL statement
+            response = w.statement_execution.execute_statement(
                 warehouse_id=warehouse_id,
-                statement=ver_sql,
-                disposition=Disposition.INLINE,
-                format=Format.JSON_ARRAY,
-                wait_timeout="30s",
-                on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+                statement=sql_query,
+                disposition=Disposition.INLINE,  # Use Enum member
+                format=Format.JSON_ARRAY,  # Use Enum member
+                wait_timeout="30s",  # Wait up to 30 seconds for execution
+                on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CANCEL,  # Use Enum member
+            )
+            LOGGER.info("Databricks SQL execution successful.")
+        except DatabricksError as e:
+            LOGGER.exception("Databricks API call failed.")
+            raise ValueError(f"Databricks API call failed: {e}")
+
+        # Check if the query execution was successful
+        status = response.status
+        if not status or status.state != StatementState.SUCCEEDED:
+            error_message = (
+                status.error.message
+                if status and status.error
+                else "No additional error info."
+            )
+            raise ValueError(
+                f"Query did not succeed (state={status.state if status else 'None'}): {error_message}"
             )
 
-            if not ver_resp.status or ver_resp.status.state != StatementState.SUCCEEDED:
-                raise TimeoutError("DESCRIBE HISTORY did not finish within 30s")
-            cols = [c.name for c in ver_resp.manifest.schema.columns]  # type: ignore
-            idx = {n: i for i, n in enumerate(cols)}
-            rows = ver_resp.result.data_array or []  # type: ignore
-            if not rows or "version" not in idx:
-                raise ValueError("DESCRIBE HISTORY returned no version")
-            table_version = str(rows[0][idx["version"]])
-
-            with _L1_LOCK:
-                L1_VER_CACHE[ver_cache_key] = table_version
-
-        sql_h = _sha256_json({"sql": sql})
-        l1_key = f"v1:{warehouse_id}:{catalog_name}.{schema}.{table_name}:{sql_h}:{table_version}"
-
-        with _L1_LOCK:
-            cached_records = L1_RESP_CACHE.get(l1_key)
-        if cached_records is not None:
-            return cached_records
-
-        try:
-            object_name = f"{warehouse_id}/{catalog_name}.{schema}.{table_name}/{sql_h}/{table_version}.json.gz"
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(object_name)
-            try:
-                blob.reload()  # HEAD for metadata (ETag, etc.)
-                body = blob.download_as_bytes(raw_download=False)
-                data = json.loads(body)
-                if isinstance(data, list):
-                    with _L1_LOCK:
-                        L1_RESP_CACHE[l1_key] = data
-                    return data  # cache hit
-            except gcs_errors.NotFound:
-                pass
-        except Exception:
-            pass
-
-        resp = w.statement_execution.execute_statement(
-            warehouse_id=warehouse_id,
-            statement=sql,
-            disposition=Disposition.EXTERNAL_LINKS,
-            format=Format.JSON_ARRAY,
-            wait_timeout="30s",
-            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
-        )
-
-        stmt_id = resp.statement_id
-        if stmt_id is None:
-            raise ValueError("Databricks returned a null statement_id")
-
-        # No client-side polling; require SUCCEEDED within 30s.
-        if (resp.status is None) or (resp.status.state != StatementState.SUCCEEDED):
-            state = resp.status.state if resp.status else "UNKNOWN"
-            msg = (
-                resp.status.error.message
-                if (resp.status and resp.status.error)
-                else "Query not finished within wait_timeout"
-            )
-            raise TimeoutError(
-                f"Statement {stmt_id} not finished (state={state}): {msg}"
-            )
-
-        # Columns (ensure List[str] for type-checkers)
-        if not (
-            resp.manifest and resp.manifest.schema and resp.manifest.schema.columns
+        if (
+            not response.manifest
+            or not response.manifest.schema
+            or not response.manifest.schema.columns
+            or not response.result
+            or not response.result.data_array
         ):
-            raise ValueError("Schema/columns missing (EXTERNAL_LINKS).")
-        cols: List[str] = []  # type: ignore
-        for c in resp.manifest.schema.columns:
-            if c.name is None:
-                raise ValueError("Encountered a column without a name.")
-            cols.append(c.name)
+            raise ValueError("Query succeeded but schema or result data is missing.")
 
-        records: Any = []
+        column_names = [str(column.name) for column in response.manifest.schema.columns]
+        data_rows = response.result.data_array
 
-        # Helper: consume one chunk-like object (first result or subsequent chunk)
-        def _consume_chunk(chunk_obj: Any) -> int | None:
-            links = getattr(chunk_obj, "external_links", None) or []
-            for link_obj in links:
-                url = getattr(link_obj, "external_link", None)
-                if url is None and isinstance(link_obj, dict):
-                    url = link_obj.get("external_link")
-                if not url:
-                    continue
-                # IMPORTANT: do not send Databricks auth header to presigned URLs.
-                r = requests.get(url, timeout=120)
-                r.raise_for_status()
-                rows = r.json()
-                if not isinstance(rows, list):
-                    raise ValueError(
-                        "Unexpected external link payload (expected JSON array)."
-                    )
-                for row in rows:
-                    if not isinstance(row, list):
-                        raise ValueError("Unexpected row shape (expected list).")
-                    records.append(dict(zip(cols, row)))
-            return getattr(chunk_obj, "next_chunk_index", None)
-
-        # First batch is in resp.result
-        if not resp.result:
-            return records
-        next_idx = _consume_chunk(resp.result)
-
-        # Remaining batches by chunk index
-        while next_idx is not None:
-            chunk = w.statement_execution.get_statement_result_chunk_n(
-                statement_id=stmt_id,
-                chunk_index=next_idx,
-            )
-            next_idx = _consume_chunk(chunk)
-
-        with _L1_LOCK:
-            if records:
-                L1_RESP_CACHE[l1_key] = records
-
-        if bucket_name and object_name and records:
-            try:
-                raw = json.dumps(
-                    records, ensure_ascii=False, separators=(",", ":")
-                ).encode("utf-8")
-                gz = gzip.compress(raw, compresslevel=6)
-                storage_client = storage.Client()
-                bucket = storage_client.bucket(bucket_name)
-                blob = bucket.blob(object_name)
-                blob.content_encoding = "gzip"
-                try:
-                    blob.upload_from_string(
-                        gz,
-                        content_type="application/json",
-                        if_generation_match=0,  # write-once; 412 if someone beat us
-                    )
-                except gcs_errors.PreconditionFailed:
-                    # Another writer won; fine—object exists now.
-                    pass
-            except Exception:
-                # Cache write failures must not impact the request
-                pass
-        return records
-
-    def fetch_model_version(
-        self, catalog_name: str, inst_name: str, model_name: str
-    ) -> Any:
-        schema = databricksify_inst_name(inst_name)
-        model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
-
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-        except Exception as e:
-            LOGGER.exception(
-                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
-                databricks_vars["DATABRICKS_HOST_URL"],
-                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
-
-        model_versions: Any = list(
-            w.model_versions.list(
-                full_name=model_name_path,
-            )
+        LOGGER.info(
+            f"Fetched {len(data_rows)} rows from table: {fully_qualified_table}"
         )
 
-        if not model_versions:
-            raise ValueError(f"No versions found for model: {model_name_path}")
-
-        latest_version = max(model_versions, key=lambda v: int(v.version))
-
-        return latest_version
-
-    def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:
-        schema = databricksify_inst_name(inst_name)
-        model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
-
-        try:
-            w = WorkspaceClient(
-                host=databricks_vars["DATABRICKS_HOST_URL"],
-                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-        except Exception as e:
-            LOGGER.exception(
-                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
-                databricks_vars["DATABRICKS_HOST_URL"],
-                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
-            )
-            raise ValueError(f"setup_new_inst(): Workspace client creation failed: {e}")
-
-        try:
-            w.registered_models.delete(full_name=model_name_path)
-            LOGGER.info("Deleted registration model: %s", model_name_path)
-        except Exception:
-            LOGGER.exception("Failed to delete registered model: %s", model_name_path)
-            raise
+        # Combine column names with corresponding row values
+        return [dict(zip(column_names, row)) for row in data_rows]
 
     def get_key_for_file(
         self, mapping: Dict[str, Any], file_name: str
@@ -558,7 +384,7 @@ class DatabricksControl(BaseModel):
         Case-insensitive match of file_name against mapping values.
         Values may be:
         - str literal (e.g., "student.csv") → allow optional base suffixes before the ext.
-        - str regex (e.g., r"^course_.*\\.csv$") → re.IGNORECASE fullmatch.
+        - str regex (e.g., r"^course_.*\.csv$") → re.IGNORECASE fullmatch.
         - compiled regex (re.Pattern) → fullmatch, adding IGNORECASE if missing.
         - list of any of the above.
         """
@@ -620,3 +446,110 @@ class DatabricksControl(BaseModel):
                     return key
 
         return None
+
+    def create_custom_schema_extension(
+        self,
+        bucket_name: str,
+        inst_query: Any,
+        file_name: str,
+        base_schema: Dict[str, Any],  # pass base schema dict in
+        extension_schema: Optional[dict] = None,  # existing extension or None
+    ) -> Any:
+        if (
+            os.getenv("SST_SKIP_EXT_GEN") == "1"
+        ):  # skip using workspace client for tests
+            LOGGER.info("SST_SKIP_EXT_GEN=1; skipping Databricks extension generation.")
+            return None
+
+        # 1) Databricks client
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception("WorkspaceClient init failed")
+            raise ValueError(f"Workspace client initialization failed: {e}")
+
+        # 2) Fetch & parse config.toml to get validation_mapping
+        try:
+            inst_name = inst_query[0][0].name
+            inst_id_raw = inst_query[0][0].id
+            inst_id = str(inst_id_raw)  # be robust if id is not a string
+            config_volume_path = (
+                f"/Volumes/staging_sst_01/"
+                f"{databricksify_inst_name(inst_name)}_bronze/bronze_volume/config.toml"
+            )
+            LOGGER.info("Attempting to download from %s", config_volume_path)
+            response = w.files.download(config_volume_path)
+            stream = cast(IO[bytes], response.contents)
+            file_bytes = stream.read()
+            LOGGER.info("Download successful, received %d bytes", len(file_bytes))
+        except Exception as e:
+            LOGGER.exception("Failed to fetch config.toml")
+            raise HTTPException(500, detail=f"Failed to fetch config: {e}")
+
+        try:
+            cfg = _toml.loads(file_bytes.decode("utf-8"))
+            mapping = cfg["webapp"]["validation_mapping"]
+        except KeyError:
+            raise HTTPException(
+                404, detail="Missing [webapp].validation_mapping in config.toml"
+            )
+        except Exception as e:
+            LOGGER.exception("Invalid TOML")
+            raise HTTPException(400, detail=f"Invalid TOML in {file_name}: {e}")
+
+        if not isinstance(mapping, dict):
+            raise HTTPException(
+                400, detail="validation_mapping must be a TOML table (dictionary)"
+            )
+
+        key = self.get_key_for_file(mapping, file_name)  # e.g., "student"
+        if key is None:
+            raise HTTPException(
+                404, detail=f"{file_name} not found in {inst_name} validation_mapping"
+            )
+
+        key_lc = key.lower()
+
+        # 4) If this model already exists in the provided extension for this institution, skip
+        if extension_schema is not None:
+            if not isinstance(extension_schema, dict):
+                raise HTTPException(
+                    400, detail="extension_schema must be a dict if provided"
+                )
+
+            inst_block = extension_schema.get("institutions", {}).get(inst_id, {})
+            data_models = inst_block.get("data_models", {})
+            existing_keys_lc = {str(k).lower() for k in data_models.keys()}
+
+            if key_lc in existing_keys_lc:
+                LOGGER.info(
+                    "Model '%s' already present for institution '%s' — skipping (return None).",
+                    key,
+                    inst_id,
+                )
+                return None  # <-- sentinel: do not write
+
+        # 5) Read the unvalidated CSV from GCS
+        try:
+            client = storage.Client()
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(f"unvalidated/{file_name}")
+            with blob.open("r") as fh:
+                df = pd.read_csv(fh)
+        except Exception as e:
+            LOGGER.exception("Failed to read %s from GCS", file_name)
+            raise HTTPException(500, detail=f"Failed to read {file_name} from GCS: {e}")
+
+        updated_extension = generate_extension_schema(
+            df=df,
+            models=key,  # exactly one model
+            institution_id=inst_id,
+            base_schema=base_schema,  # reference only, not mutated
+            existing_extension=extension_schema,  # may be None
+        )
+
+        return updated_extension
