@@ -1264,7 +1264,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
 
     Args:
         file_name: Name of the file (used for keyword inference).
-        inst: Institution row (must have legacy_id attr for legacy fallback).
+        inst: Institution row (legacy_id or genai_id enables arbitrary-name UNKNOWN fallback).
 
     Returns:
         Sorted list of allowed schema names (e.g. ["COURSE"], ["STUDENT"], ["UNKNOWN"]).
@@ -1291,7 +1291,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
     if has_semester:
         inferred_from_name.add("SEMESTER")
     if not inferred_from_name:
-        if getattr(inst, "legacy_id", None):
+        if getattr(inst, "legacy_id", None) or getattr(inst, "genai_id", None):
             return ["UNKNOWN"]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1408,15 +1408,16 @@ def _resolve_schema_namespace_and_extension(
     base_schema_id: Any,
     file_name: str,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy)."""
+    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy/genai)."""
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
     legacy_id = getattr(inst, "legacy_id", None)
-    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
+    genai_id = getattr(inst, "genai_id", None)
+    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id, genai_id):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Institution configuration error: cannot have more than one of "
-            "pdp_id, edvise_id, or legacy_id set",
+            "pdp_id, edvise_id, legacy_id, or genai_id set",
         )
     if edvise_id:
         return _resolve_edvise_schema(sess, now)
@@ -1424,11 +1425,13 @@ def _resolve_schema_namespace_and_extension(
         return _resolve_pdp_schema(sess, now)
     if legacy_id:
         return ("legacy", None)
+    if genai_id:
+        return ("legacy", None)
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=(
             "Institution configuration error: institution has no pdp_id, edvise_id, "
-            "or legacy_id; cannot resolve validation schema."
+            "legacy_id, or genai_id; cannot resolve validation schema."
         ),
     )
 
