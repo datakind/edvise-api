@@ -1,1 +1,0 @@
-Missing required columns: 'Student ID' (Unique student identifier), 'Grade' (Student grade (A-F)), 'Age' (Student age). These columns must be present in your file.
