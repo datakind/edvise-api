@@ -65,12 +65,12 @@ INSTITUTION_REQ = {
     "retention_days": 1,
     "pdp_id": "12345",
     "is_pdp": True,
-    "allowed_schemas": ["UNKNOWN"],
     "allowed_emails": {"foo@foobar.edu": "VIEWER"},
 }
 
 INSTITUTION_REQ_BAREBONES = {
     "name": "testing school",
+    "is_legacy": True,
 }
 
 EMPTY_INSTITUTION_OBJ = {
@@ -78,6 +78,8 @@ EMPTY_INSTITUTION_OBJ = {
     "name": "",
     "state": "",
     "pdp_id": None,
+    "edvise_id": None,
+    "legacy_id": None,
     "retention_days": 0,
 }
 
@@ -86,6 +88,8 @@ INSTITUTION_OBJ = {
     "name": "valid_school",
     "state": "NY",
     "pdp_id": "12345",
+    "edvise_id": None,
+    "legacy_id": None,
     "retention_days": None,
 }
 

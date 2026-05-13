@@ -97,6 +97,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local config / dev data
+config/local_inst_data.json
+
 # mkdocs documentation
 /site
 
@@ -114,3 +117,6 @@ dmypy.json
 # terraform
 **/.terraform/*
 **/terraform.tfvars
+
+# Cursor rule files
+.cursor/
