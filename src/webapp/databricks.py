@@ -35,6 +35,61 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 # GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
 VALIDATED_BRONZE_SYNC_JOB_NAME = "edvise_validated_gcs_to_bronze_sync"
+# Optional: numeric Databricks job id. If unset, the job is resolved by name (must be unique).
+DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV = "DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID"
+
+
+def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
+    """
+    Return the job id for the GCS→bronze sync job.
+
+    Prefer ``DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID`` when set (stable across renames).
+    Otherwise resolve by ``VALIDATED_BRONZE_SYNC_JOB_NAME``; multiple matches is an error.
+    """
+    raw = (os.environ.get(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV) or "").strip()
+    if raw:
+        if not raw.isdigit():
+            raise ValueError(
+                f"{DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} must be a positive integer "
+                f"(Databricks job id) if set; got {raw!r}."
+            )
+        job_id = int(raw)
+        if job_id <= 0:
+            raise ValueError(
+                f"{DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} must be positive; got {job_id}."
+            )
+        LOGGER.info(
+            "Bronze sync job id from %s=%s",
+            DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
+            job_id,
+        )
+        return job_id
+
+    jobs = list(w.jobs.list(name=VALIDATED_BRONZE_SYNC_JOB_NAME))
+    if len(jobs) == 0:
+        raise ValueError(
+            f"Job named {VALIDATED_BRONZE_SYNC_JOB_NAME!r} not found. "
+            f"Deploy the bundle job or set {DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} "
+            "to the numeric job id from the Databricks UI / API."
+        )
+    if len(jobs) > 1:
+        ids = [j.job_id for j in jobs if j.job_id is not None]
+        raise ValueError(
+            f"Multiple ({len(jobs)}) jobs named {VALIDATED_BRONZE_SYNC_JOB_NAME!r}; "
+            f"set {DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} to the correct id. Found job_ids={ids}."
+        )
+    job = jobs[0]
+    if job.job_id is None:
+        raise ValueError(
+            f"Job named {VALIDATED_BRONZE_SYNC_JOB_NAME!r} has no job_id in list response."
+        )
+    job_id = job.job_id
+    LOGGER.info(
+        "Resolved bronze sync job by name %r: job_id=%s",
+        VALIDATED_BRONZE_SYNC_JOB_NAME,
+        job_id,
+    )
+    return job_id
 
 
 class DatabricksInferenceRunRequest(BaseModel):
@@ -307,17 +362,11 @@ class DatabricksControl(BaseModel):
             ) from e
 
         try:
-            job = next(w.jobs.list(name=VALIDATED_BRONZE_SYNC_JOB_NAME), None)
-            if not job or job.job_id is None:
-                raise ValueError(
-                    f"Job '{VALIDATED_BRONZE_SYNC_JOB_NAME}' not found or has no job_id."
-                )
-            job_id = job.job_id
-            LOGGER.info("Resolved job ID for '%s': %s", VALIDATED_BRONZE_SYNC_JOB_NAME, job_id)
+            job_id = _resolve_validated_bronze_sync_job_id(w)
         except Exception as e:
-            LOGGER.exception("Job lookup failed for '%s'.", VALIDATED_BRONZE_SYNC_JOB_NAME)
+            LOGGER.exception("Job resolution failed for GCS→bronze sync.")
             raise ValueError(
-                f"run_validated_gcs_to_bronze_sync(): Failed to find job: {e}"
+                f"run_validated_gcs_to_bronze_sync(): Failed to resolve job: {e}"
             ) from e
 
         db_inst_name = databricksify_inst_name(req.inst_name)

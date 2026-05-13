@@ -1,10 +1,11 @@
 """API functions related to data."""
 
+import json
 import uuid
 from datetime import datetime, date
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -44,6 +45,7 @@ from ..database import (
 )
 
 from ..databricks import (
+    VALIDATED_BRONZE_SYNC_JOB_NAME,
     DatabricksBronzeSyncRequest,
     DatabricksControl,
 )
@@ -58,40 +60,89 @@ logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def _qualifies_for_gcs_bronze_sync(inst: InstTable) -> bool:
+def _gcs_bronze_sync_skip_reason(
+    edvise_id: Optional[str], legacy_id: Optional[str]
+) -> Optional[str]:
     """
-    Edvise- and legacy-type schools: copy validated/ objects to Databricks bronze after
-    validation. PDP-only flows use other pipelines; opt out with env.
+    If sync should not run, return a stable reason code; otherwise None.
+
+    Used for logging (skip_reason when sync is not run).
     """
     if os.environ.get("ENABLE_GCS_BRONZE_SYNC_ON_VALIDATION", "true").lower() not in (
         "1",
         "true",
         "yes",
     ):
-        return False
-    return inst.edvise_id is not None or inst.legacy_id is not None
+        return "env_disabled"
+    if edvise_id is None and legacy_id is None:
+        return "not_edvise_or_legacy"
+    return None
+
+
+def _log_validation_trace_json(event: str, **fields: Any) -> None:
+    """Emit one JSON object per line for log aggregators (Cloud Logging, Datadog, etc.)."""
+    payload: Dict[str, Any] = {"event": event, **fields}
+    logger.info("%s", json.dumps(payload, default=str, separators=(",", ":")))
 
 
 def _trigger_gcs_bronze_sync_if_applicable(
-    inst: InstTable,
+    inst_name: str,
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+    inst_id: str,
     file_name: str,
     bucket: str,
     databricks_control: DatabricksControl,
+    correlation_id: str,
 ) -> None:
-    if not _qualifies_for_gcs_bronze_sync(inst):
+    """Fire-and-forget Databricks job to copy validated/ into bronze (runs in BackgroundTasks)."""
+    trace_base: Dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "inst_id": inst_id,
+        "bucket": bucket,
+        "file_name": file_name,
+    }
+    _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
+
+    skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id)
+    if skip_reason is not None:
+        _log_validation_trace_json(
+            "gcs_bronze_sync_background_done",
+            **trace_base,
+            outcome="skipped",
+            skip_reason=skip_reason,
+        )
         return
+
     blob = f"validated/{file_name}"
     try:
-        databricks_control.run_validated_gcs_to_bronze_sync(
+        sync_resp = databricks_control.run_validated_gcs_to_bronze_sync(
             DatabricksBronzeSyncRequest(
-                inst_name=inst.name,
+                inst_name=inst_name,
                 gcp_bucket_name=bucket,
                 validated_blob_paths=[blob],
             )
         )
+        _log_validation_trace_json(
+            "gcs_bronze_sync_background_done",
+            **trace_base,
+            outcome="success",
+            validated_blob_path=blob,
+            databricks_job_run_id=sync_resp.job_run_id,
+            databricks_job_name=VALIDATED_BRONZE_SYNC_JOB_NAME,
+        )
     except Exception:
+        _log_validation_trace_json(
+            "gcs_bronze_sync_background_done",
+            **trace_base,
+            outcome="trigger_failed",
+            validated_blob_path=blob,
+            databricks_job_name=VALIDATED_BRONZE_SYNC_JOB_NAME,
+        )
         logger.exception(
-            "Failed to trigger GCS→bronze Databricks job after validation (non-fatal)."
+            "Failed to trigger GCS→bronze Databricks job after validation (non-fatal). "
+            "correlation_id=%s",
+            correlation_id,
         )
 logger.setLevel(logging.DEBUG)
 
@@ -1580,6 +1631,7 @@ def validation_helper(
     storage_control: StorageControl,
     sql_session: Session,
     databricks_control: DatabricksControl,
+    background_tasks: BackgroundTasks,
 ) -> Any:
     """Run file validation for an institution and upsert the file record.
 
@@ -1594,6 +1646,7 @@ def validation_helper(
         current_user: Authenticated user; must have access to inst_id.
         storage_control: StorageControl instance for GCS and validate_file.
         sql_session: DB session for institution, schema, and file record.
+        background_tasks: Schedules GCS→Databricks bronze sync after the response.
 
     Returns:
         Dict with name, inst_id, file_types, source, status.
@@ -1633,6 +1686,15 @@ def validation_helper(
     allowed_schemas = _infer_allowed_schemas_from_filename(file_name, inst)
     base_schema_id, base_schema, now = _get_validation_base_schema(sess)
     bucket = get_external_bucket_name(inst_id)
+    correlation_id = str(uuid.uuid4())
+    _log_validation_trace_json(
+        "validation_request",
+        correlation_id=correlation_id,
+        inst_id=inst_id,
+        bucket=bucket,
+        file_name=file_name,
+        validation_source=source_str,
+    )
     schema_namespace, updated_inst_schema = _resolve_schema_namespace_and_extension(
         sess,
         inst,
@@ -1657,8 +1719,18 @@ def validation_helper(
         storage_control,
         sess,
     )
-    _trigger_gcs_bronze_sync_if_applicable(
-        inst, file_name, bucket, databricks_control
+    # GCS validated/ write is complete; schedule Databricks bronze sync so the client
+    # does not wait on job lookup / run_now (Databricks copy runs asynchronously there).
+    background_tasks.add_task(
+        _trigger_gcs_bronze_sync_if_applicable,
+        inst.name,
+        inst.edvise_id,
+        inst.legacy_id,
+        inst_id,
+        file_name,
+        bucket,
+        databricks_control,
+        correlation_id,
     )
     return result
 
@@ -1673,6 +1745,7 @@ def validate_file_sftp(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    background_tasks: BackgroundTasks,
 ) -> Any:
     """Validate a given file pulled from SFTP. The file_name should be url encoded."""
     file_name = decode_url_piece(file_name)
@@ -1689,6 +1762,7 @@ def validate_file_sftp(
         storage_control,
         sql_session,
         databricks_control,
+        background_tasks,
     )
 
 
@@ -1702,6 +1776,7 @@ def validate_file_manual_upload(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    background_tasks: BackgroundTasks,
 ) -> Any:
     """Validate a given file. The file_name should be url encoded."""
 
@@ -1715,6 +1790,7 @@ def validate_file_manual_upload(
         storage_control,
         sql_session,
         databricks_control,
+        background_tasks,
     )
 
 
