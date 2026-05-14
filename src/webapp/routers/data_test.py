@@ -1,5 +1,6 @@
 """Test file for the data.py file and constituent API functions."""
 
+import io
 import uuid
 import time
 from unittest import mock
@@ -28,7 +29,12 @@ from ..database import (
     Base,
     get_session,
 )
-from ..utilities import uuid_to_str, get_current_active_user, SchemaType
+from ..utilities import (
+    uuid_to_str,
+    get_current_active_user,
+    SchemaType,
+    get_external_bucket_name,
+)
 from .data import (
     router,
     DataOverview,
@@ -37,8 +43,10 @@ from .data import (
 )
 from fastapi import HTTPException
 from ..gcsutil import StorageControl
+from ..databricks import DatabricksControl
 
 MOCK_STORAGE = mock.Mock()
+MOCK_DATABRICKS = mock.Mock()
 
 UUID_2 = uuid.UUID("9bcbc782-2e71-4441-afa2-7a311024a5ec")
 FILE_UUID_1 = uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a")
@@ -214,10 +222,14 @@ def client_fixture(session: sqlalchemy.orm.Session, monkeypatch: Any) -> Any:
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -288,6 +300,73 @@ def test_read_inst_all_input_files(client: TestClient) -> Any:
                 },
             ],
         },
+    )
+
+
+def test_list_bronze_datasets(client: TestClient) -> Any:
+    """Test GET /institutions/<uuid>/input/bronze-datasets."""
+    MOCK_DATABRICKS.reset_mock()
+    MOCK_DATABRICKS.list_bronze_volume_csvs.return_value = ["a.csv", "b.csv"]
+
+    response = client.get(
+        "/institutions/" + uuid_to_str(UUID_INVALID) + "/input/bronze-datasets"
+    )
+    assert response.status_code == 401
+
+    response = client.get(
+        "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/input/bronze-datasets"
+    )
+    assert response.status_code == 200
+    assert response.json() == ["a.csv", "b.csv"]
+    MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
+
+
+def test_upload_from_volume_to_gcs_bucket(client: TestClient) -> Any:
+    """Test POST /institutions/<uuid>/input/upload-from-volume-to-gcs-bucket."""
+    MOCK_DATABRICKS.reset_mock()
+    MOCK_STORAGE.reset_mock()
+
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(UUID_INVALID)
+        + "/input/upload-from-volume-to-gcs-bucket",
+        json={"name": "file.csv"},
+    )
+    assert response.status_code == 401
+
+    MOCK_DATABRICKS.list_bronze_volume_csvs.return_value = ["file.csv"]
+    MOCK_DATABRICKS.download_bronze_volume_file.return_value = io.BytesIO(
+        b"col1,col2\n1,2\n"
+    )
+    MOCK_STORAGE.generate_upload_signed_url.return_value = "https://signed.example"
+
+    with mock.patch("src.webapp.routers.data.requests.put") as mock_put:
+        mock_put.return_value.status_code = 200
+        mock_put.return_value.text = ""
+        response = client.post(
+            "/institutions/"
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/input/upload-from-volume-to-gcs-bucket",
+            json={"name": "file.csv"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "file_name": "file.csv",
+            "message": "Upload successful.",
+        }
+
+    MOCK_DATABRICKS.list_bronze_volume_csvs.assert_called_with("school_1")
+    MOCK_DATABRICKS.download_bronze_volume_file.assert_called_with(
+        "school_1", "file.csv"
+    )
+    MOCK_STORAGE.generate_upload_signed_url.assert_called_with(
+        get_external_bucket_name(uuid_to_str(USER_VALID_INST_UUID)), "file.csv"
+    )
+    mock_put.assert_called_with(
+        "https://signed.example",
+        data=b"col1,col2\n1,2\n",
+        headers={"Content-Type": "text/csv"},
+        timeout=600,
     )
 
 
