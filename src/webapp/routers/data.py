@@ -190,6 +190,7 @@ def _trigger_gcs_bronze_sync_if_applicable(
     except ValueError:
         _log_bronze_sync_trigger_failed(trace_base, validated_blob_path, correlation_id)
 
+
 # Cache for EDA data - TTL of 10 minutes (600 seconds)
 # Cache key format: f"{inst_id}:{batch_id}"
 EDA_CACHE_TTL = int(os.getenv("EDA_CACHE_TTL", "600"))  # Default 10 minutes

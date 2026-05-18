@@ -82,7 +82,9 @@ def test_resolve_bronze_sync_job_id_env_invalid_raises(
         _resolve_validated_bronze_sync_job_id(w)
 
 
-def test_resolve_bronze_sync_job_id_by_name_single(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_bronze_sync_job_id_by_name_single(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
     job = mock.Mock(job_id=99)
     w = mock.Mock()
@@ -137,9 +139,7 @@ def test_run_validated_gcs_to_bronze_sync_calls_run_now_with_bundle_params(
     run_response.response.run_id = 9001
     workspace.jobs.run_now.return_value = run_response
 
-    with mock.patch(
-        "src.webapp.databricks.WorkspaceClient", return_value=workspace
-    ):
+    with mock.patch("src.webapp.databricks.WorkspaceClient", return_value=workspace):
         ctrl = DatabricksControl()
         req = DatabricksBronzeSyncRequest(
             inst_name="My Inst",

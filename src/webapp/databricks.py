@@ -90,7 +90,9 @@ def _run_databricks_job_now(
     try:
         run_job: Any = workspace.jobs.run_now(job_id, job_parameters=job_parameters)
     except DatabricksError as exc:
-        LOGGER.exception("Databricks job run failed for %s (job_id=%s).", operation, job_id)
+        LOGGER.exception(
+            "Databricks job run failed for %s (job_id=%s).", operation, job_id
+        )
         raise ValueError(f"{operation}(): Job could not be run: {exc}") from exc
 
     if not run_job.response or run_job.response.run_id is None:
