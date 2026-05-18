@@ -3,8 +3,15 @@ from unittest import mock
 import pytest
 
 from .databricks import (
+    BRONZE_SYNC_BRONZE_SUBDIR,
+    BRONZE_SYNC_GCS_SOURCE_PREFIX,
+    BRONZE_SYNC_MAX_OBJECTS,
+    BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE,
+    BRONZE_SYNC_STRICT_MODE,
     DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
+    DatabricksBronzeSyncRequest,
     DatabricksControl,
+    _build_validated_bronze_sync_job_parameters,
     _resolve_validated_bronze_sync_job_id,
 )
 
@@ -101,3 +108,50 @@ def test_resolve_bronze_sync_job_id_by_name_missing_raises(
     w.jobs.list.return_value = []
     with pytest.raises(ValueError, match="not found"):
         _resolve_validated_bronze_sync_job_id(w)
+
+
+def test_build_validated_bronze_sync_job_parameters_shape() -> None:
+    req = DatabricksBronzeSyncRequest(
+        inst_name="Test School",
+        gcp_bucket_name="bucket-a",
+        validated_blob_paths=["validated/student.csv"],
+    )
+    params = _build_validated_bronze_sync_job_parameters(req, "test_school")
+    assert params["gcp_bucket_name"] == "bucket-a"
+    assert params["databricks_institution_name"] == "test_school"
+    assert params["gcs_source_prefix"] == BRONZE_SYNC_GCS_SOURCE_PREFIX
+    assert params["bronze_subdir"] == BRONZE_SYNC_BRONZE_SUBDIR
+    assert params["max_objects"] == BRONZE_SYNC_MAX_OBJECTS
+    assert params["require_at_least_one_file"] == BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE
+    assert params["strict_mode"] == BRONZE_SYNC_STRICT_MODE
+    assert params["sync_run_id"] == ""
+    assert params["include_blob_paths_json"] == '["validated/student.csv"]'
+
+
+def test_run_validated_gcs_to_bronze_sync_calls_run_now_with_bundle_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, "42")
+    workspace = mock.Mock()
+    run_response = mock.Mock()
+    run_response.response.run_id = 9001
+    workspace.jobs.run_now.return_value = run_response
+
+    with mock.patch(
+        "src.webapp.databricks.WorkspaceClient", return_value=workspace
+    ):
+        ctrl = DatabricksControl()
+        req = DatabricksBronzeSyncRequest(
+            inst_name="My Inst",
+            gcp_bucket_name="my-bucket",
+            validated_blob_paths=["validated/foo.csv"],
+        )
+        resp = ctrl.run_validated_gcs_to_bronze_sync(req)
+
+    assert resp.job_run_id == 9001
+    workspace.jobs.run_now.assert_called_once()
+    run_args, run_kwargs = workspace.jobs.run_now.call_args
+    assert run_args[0] == 42
+    params = run_kwargs["job_parameters"]
+    assert params["include_blob_paths_json"] == '["validated/foo.csv"]'
+    assert params["gcs_source_prefix"] == BRONZE_SYNC_GCS_SOURCE_PREFIX

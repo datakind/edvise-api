@@ -905,6 +905,97 @@ EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EDVISE_INST_2_UUID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 EDVISE_SCHEMA_UUID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 LEGACY_INST_UUID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+PDP_ONLY_INST_UUID = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+
+
+@pytest.fixture(name="pdp_only_session")
+def pdp_only_session_fixture():
+    """Database setup for PDP-only institution (pdp_id set; no edvise_id or legacy_id)."""
+    engine = sqlalchemy.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    pdp_schema_doc = {
+        "version": "1.0.0",
+        "institutions": {"pdp": {"data_models": {}}},
+    }
+    try:
+        with sqlalchemy.orm.Session(engine) as session:
+            session.add_all(
+                [
+                    InstTable(
+                        id=PDP_ONLY_INST_UUID,
+                        name="pdp_only_school",
+                        pdp_id="pdp999",
+                        edvise_id=None,
+                        legacy_id=None,
+                        schemas=["STUDENT"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.base,
+                        is_pdp=False,
+                        is_edvise=False,
+                        version_label="1.0.0",
+                        json_doc={"version": "1.0.0", "base": {"data_models": {}}},
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.extension,
+                        is_pdp=True,
+                        is_edvise=False,
+                        version_label="pdp-1.0.0",
+                        json_doc=pdp_schema_doc,
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                ]
+            )
+            session.commit()
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(name="pdp_only_client")
+def pdp_only_client_fixture(
+    pdp_only_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> Any:
+    """Test client for PDP-only institution validation tests."""
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    def get_session_override():
+        return pdp_only_session
+
+    def get_current_active_user_override():
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            uuid_to_str(PDP_ONLY_INST_UUID),
+            AccessType.MODEL_OWNER,
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
+
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(name="legacy_session")
@@ -1164,6 +1255,41 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert sync_req.inst_name == "legacy_school"
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_id") == "legacy"
+
+
+def test_validate_upload_pdp_only_institution_skips_bronze_sync(
+    pdp_only_client: TestClient,
+) -> None:
+    """PDP-only schools do not trigger GCS→bronze sync (Edvise/Legacy pipeline only)."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = pdp_only_client.post(
+        "/institutions/"
+        + uuid_to_str(PDP_ONLY_INST_UUID)
+        + "/input/validate-upload/pdp_student_file.csv",
+    )
+
+    assert response.status_code == 200
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
+
+
+def test_validate_upload_skips_bronze_sync_when_env_disabled(
+    edvise_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENABLE_GCS_BRONZE_SYNC_ON_VALIDATION=false disables bronze sync for Edvise schools."""
+    monkeypatch.setenv("ENABLE_GCS_BRONZE_SYNC_ON_VALIDATION", "false")
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/edvise_student_file.csv",
+    )
+
+    assert response.status_code == 200
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
 
 
 def test_validate_upload_rejects_empty_file_name(legacy_client: TestClient) -> None:

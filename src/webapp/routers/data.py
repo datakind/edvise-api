@@ -58,6 +58,7 @@ from edvise.data_audit.eda import EdaSummary
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 def _gcs_bronze_sync_skip_reason(
@@ -85,6 +86,78 @@ def _log_validation_trace_json(event: str, **fields: Any) -> None:
     logger.info("%s", json.dumps(payload, default=str, separators=(",", ":")))
 
 
+def _bronze_sync_trace_base(
+    correlation_id: str, inst_id: str, bucket: str, file_name: str
+) -> Dict[str, Any]:
+    """Shared fields for GCS→bronze background trace log lines."""
+    return {
+        "correlation_id": correlation_id,
+        "inst_id": inst_id,
+        "bucket": bucket,
+        "file_name": file_name,
+    }
+
+
+def _log_bronze_sync_skipped(trace_base: Dict[str, Any], skip_reason: str) -> None:
+    _log_validation_trace_json(
+        "gcs_bronze_sync_background_done",
+        **trace_base,
+        outcome="skipped",
+        skip_reason=skip_reason,
+    )
+
+
+def _log_bronze_sync_success(
+    trace_base: Dict[str, Any],
+    validated_blob_path: str,
+    job_run_id: int,
+) -> None:
+    _log_validation_trace_json(
+        "gcs_bronze_sync_background_done",
+        **trace_base,
+        outcome="success",
+        validated_blob_path=validated_blob_path,
+        databricks_job_run_id=job_run_id,
+        databricks_job_name=VALIDATED_BRONZE_SYNC_JOB_NAME,
+    )
+
+
+def _log_bronze_sync_trigger_failed(
+    trace_base: Dict[str, Any], validated_blob_path: str, correlation_id: str
+) -> None:
+    _log_validation_trace_json(
+        "gcs_bronze_sync_background_done",
+        **trace_base,
+        outcome="trigger_failed",
+        validated_blob_path=validated_blob_path,
+        databricks_job_name=VALIDATED_BRONZE_SYNC_JOB_NAME,
+    )
+    logger.exception(
+        "Failed to trigger GCS→bronze Databricks job after validation (non-fatal). "
+        "correlation_id=%s",
+        correlation_id,
+    )
+
+
+def _attempt_gcs_bronze_sync_trigger(
+    inst_name: str,
+    bucket: str,
+    validated_blob_path: str,
+    databricks_control: DatabricksControl,
+    trace_base: Dict[str, Any],
+    correlation_id: str,
+) -> None:
+    """Call Databricks to start the bronze sync job and log success (raises ValueError on failure)."""
+    sync_resp = databricks_control.run_validated_gcs_to_bronze_sync(
+        DatabricksBronzeSyncRequest(
+            inst_name=inst_name,
+            gcp_bucket_name=bucket,
+            validated_blob_paths=[validated_blob_path],
+        )
+    )
+    _log_bronze_sync_success(trace_base, validated_blob_path, sync_resp.job_run_id)
+
+
 def _trigger_gcs_bronze_sync_if_applicable(
     inst_name: str,
     edvise_id: Optional[str],
@@ -96,55 +169,26 @@ def _trigger_gcs_bronze_sync_if_applicable(
     correlation_id: str,
 ) -> None:
     """Fire-and-forget Databricks job to copy validated/ into bronze (runs in BackgroundTasks)."""
-    trace_base: Dict[str, Any] = {
-        "correlation_id": correlation_id,
-        "inst_id": inst_id,
-        "bucket": bucket,
-        "file_name": file_name,
-    }
+    trace_base = _bronze_sync_trace_base(correlation_id, inst_id, bucket, file_name)
     _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
 
     skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id)
     if skip_reason is not None:
-        _log_validation_trace_json(
-            "gcs_bronze_sync_background_done",
-            **trace_base,
-            outcome="skipped",
-            skip_reason=skip_reason,
-        )
+        _log_bronze_sync_skipped(trace_base, skip_reason)
         return
 
-    blob = f"validated/{file_name}"
+    validated_blob_path = f"validated/{file_name}"
     try:
-        sync_resp = databricks_control.run_validated_gcs_to_bronze_sync(
-            DatabricksBronzeSyncRequest(
-                inst_name=inst_name,
-                gcp_bucket_name=bucket,
-                validated_blob_paths=[blob],
-            )
-        )
-        _log_validation_trace_json(
-            "gcs_bronze_sync_background_done",
-            **trace_base,
-            outcome="success",
-            validated_blob_path=blob,
-            databricks_job_run_id=sync_resp.job_run_id,
-            databricks_job_name=VALIDATED_BRONZE_SYNC_JOB_NAME,
-        )
-    except Exception:
-        _log_validation_trace_json(
-            "gcs_bronze_sync_background_done",
-            **trace_base,
-            outcome="trigger_failed",
-            validated_blob_path=blob,
-            databricks_job_name=VALIDATED_BRONZE_SYNC_JOB_NAME,
-        )
-        logger.exception(
-            "Failed to trigger GCS→bronze Databricks job after validation (non-fatal). "
-            "correlation_id=%s",
+        _attempt_gcs_bronze_sync_trigger(
+            inst_name,
+            bucket,
+            validated_blob_path,
+            databricks_control,
+            trace_base,
             correlation_id,
         )
-logger.setLevel(logging.DEBUG)
+    except ValueError:
+        _log_bronze_sync_trigger_failed(trace_base, validated_blob_path, correlation_id)
 
 # Cache for EDA data - TTL of 10 minutes (600 seconds)
 # Cache key format: f"{inst_id}:{batch_id}"
