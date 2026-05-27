@@ -1116,6 +1116,7 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     # Verify that validate_file was called with institution_identifier for Edvise Schema (ES)
     assert MOCK_STORAGE.validate_file.called
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "edvise"
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
 

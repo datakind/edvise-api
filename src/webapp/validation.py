@@ -594,7 +594,7 @@ def _try_pdp_repo_validation_and_return(
     merged_specs: Dict[str, dict],
     institution_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """If PDP single-model, run repo schema and return result dict; otherwise return None."""
+    """If a repo schema applies, run it and return result dict; otherwise return None."""
     schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
     if schema_class is None:
         return None
@@ -709,7 +709,7 @@ def _run_validation_flow(
     unknown_extra: List[str],
     institution_id: str,
 ) -> Dict[str, Any]:
-    """Run PDP path if applicable; otherwise JSON validation. Returns result dict."""
+    """Run repo-schema path if applicable; otherwise JSON validation. Returns result dict."""
     pdp_result = _try_pdp_repo_validation_and_return(
         df,
         model_list,
@@ -734,6 +734,15 @@ def _run_validation_flow(
     )
 
 
+def _model_list_from_models(models: Union[str, List[str], None]) -> List[str]:
+    """Normalize model input to a list without consulting schema documents."""
+    if models is None:
+        return []
+    if isinstance(models, str):
+        return [models]
+    return list(models)
+
+
 def _compute_model_list_and_merged_specs(
     base_schema: dict,
     ext_schema: Optional[Dict[Any, Any]],
@@ -741,12 +750,7 @@ def _compute_model_list_and_merged_specs(
     models: Union[str, List[str], None],
 ) -> Tuple[List[str], Dict[str, dict]]:
     """Compute model_list and merged_specs from models and schema."""
-    if models is None:
-        model_list = []
-    elif isinstance(models, str):
-        model_list = [models]
-    else:
-        model_list = list(models)
+    model_list = _model_list_from_models(models)
     merged_specs: Dict[str, dict] = {}
     for m in model_list:
         specs = merge_model_columns(base_schema, ext_schema, institution_id, m.lower())
@@ -755,8 +759,9 @@ def _compute_model_list_and_merged_specs(
 
 
 # --------------------------------------------------------------------------- #
-# PDP single-model path: edvise read + Pandera validate. Cohort converter defaults
-# to None so validated row sets can differ from batch jobs that use dataio converters.
+# PDP single-model path: edvise read + Pandera validate. Edvise uploads use raw
+# Edvise Pandera schemas directly. Cohort converter defaults to None so PDP
+# validated row sets can differ from batch jobs that use dataio converters.
 # --------------------------------------------------------------------------- #
 
 # Datetime formats to try for PDP course (same order as pdp_data_audit)
@@ -942,6 +947,52 @@ def _read_pdp_course_edvise(
     raise validation_error
 
 
+def _validate_edvise_with_repo_schema(
+    filename: Src,
+    enc: str,
+    model_list: List[str],
+    institution_id: str,
+) -> Dict[str, Any]:
+    """Validate Edvise Schema uploads with upstream raw Edvise Pandera schemas."""
+    schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
+    if schema_class is None:
+        raise HardValidationError(
+            schema_errors=f"Edvise repo schema expected; got models={model_list}",
+            failure_cases=[],
+        )
+
+    with _path_for_edvise_read(filename, enc) as path:
+        read_enc = "utf-8" if not isinstance(filename, (str, os.PathLike)) else enc
+        try:
+            df = pd.read_csv(path, encoding=read_enc, dtype="string")
+        except (
+            pd.errors.ParserError,
+            pd.errors.EmptyDataError,
+            UnicodeDecodeError,
+            OSError,
+        ) as e:
+            logger.exception("Edvise CSV read failed: %s", e)
+            raise HardValidationError(
+                schema_errors="Edvise upload: could not read CSV.",
+                failure_cases=[str(e)],
+            ) from e
+
+    validated_df = pdp_edvise.validate_dataframe_with_edvise_schema(
+        df,
+        schema_class,
+        raw_to_canon={},
+        canon_to_raw={},
+        merged_specs={},
+    )
+    return {
+        "validation_status": "passed",
+        "schemas": model_list,
+        "missing_optional": [],
+        "unknown_extra_columns": [],
+        "normalized_df": validated_df,
+    }
+
+
 def _validate_pdp_with_edvise_read(
     filename: Src,
     enc: str,
@@ -951,13 +1002,15 @@ def _validate_pdp_with_edvise_read(
     pdp_course_converter_func: PDPConverterFunc = None,
 ) -> Dict[str, Any]:
     """
-    Validate a single-model PDP cohort or course file via edvise read and Pandera.
+    Validate a single-model PDP or Edvise cohort/course file via edvise repo schemas.
 
-    Writes file-like inputs to a temp path, then calls ``read_raw_pdp_cohort_data``
-    (STUDENT) or ``_read_pdp_course_edvise`` (COURSE). Cohort rows are only
+    For PDP, writes file-like inputs to a temp path, then calls
+    ``read_raw_pdp_cohort_data`` (STUDENT) or ``_read_pdp_course_edvise`` (COURSE).
+    Cohort rows are only
     transformed when ``pdp_cohort_converter_func`` is set; batch jobs may still
     filter cohort rows via ``dataio``, so API output rows are not guaranteed to
-    match pipeline output for the same file.
+    match pipeline output for the same file. Edvise uses the raw Edvise Pandera
+    schema classes directly.
 
     Args:
         filename: Path or file-like CSV source.
@@ -978,6 +1031,14 @@ def _validate_pdp_with_edvise_read(
     """
     _reset_to_start_if_possible(filename)
     model_set = {str(m).strip().upper() for m in model_list if m}
+
+    if institution_id == "edvise":
+        return _validate_edvise_with_repo_schema(
+            filename,
+            enc,
+            model_list,
+            institution_id,
+        )
 
     _validate_pdp_converter_callables(
         pdp_cohort_converter_func, pdp_course_converter_func
@@ -1114,8 +1175,9 @@ def validate_dataset(
     Validate a dataset against merged base and optional extension schemas.
 
     Detects encoding, merges institution column specs, then routes to legacy
-    any-format handling, PDP edvise read (single-model STUDENT/COURSE), or
-    JSON Pandera validation. ``institution_id == "legacy"`` skips column schema checks.
+    any-format handling, PDP/Edvise repo schema validation (single-model
+    STUDENT/COURSE), or JSON Pandera validation. ``institution_id == "legacy"``
+    skips column schema checks.
 
     Args:
         filename: CSV path or file-like object.
@@ -1145,6 +1207,19 @@ def validate_dataset(
     if institution_id == "legacy":
         return _validate_legacy_any_format(filename, enc, models)
 
+    model_list = _model_list_from_models(models)
+    # Route PDP/Edvise STUDENT/COURSE to the edvise repo schema path before JSON
+    # schema merging so registry extension drift cannot bypass upstream validation.
+    if pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list) is not None:
+        return _validate_pdp_with_edvise_read(
+            filename,
+            enc,
+            model_list,
+            institution_id,
+            pdp_cohort_converter_func=pdp_cohort_converter_func,
+            pdp_course_converter_func=pdp_course_converter_func,
+        )
+
     model_list, merged_specs = _compute_model_list_and_merged_specs(
         base_schema, ext_schema, institution_id, models
     )
@@ -1156,17 +1231,6 @@ def validate_dataset(
             "unknown_extra_columns": [],
             "normalized_df": None,
         }
-
-    # Route PDP STUDENT/COURSE to edvise read path (cohort converter optional; see section above).
-    if pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list) is not None:
-        return _validate_pdp_with_edvise_read(
-            filename,
-            enc,
-            model_list,
-            institution_id,
-            pdp_cohort_converter_func=pdp_cohort_converter_func,
-            pdp_course_converter_func=pdp_course_converter_func,
-        )
 
     (
         raw_to_canon,

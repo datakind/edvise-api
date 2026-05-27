@@ -53,10 +53,10 @@ def test_should_use_edvise_schema_behavior_for_pdp_single_model() -> None:
     assert is_edvise_schema_available() is True
 
 
-def test_should_use_edvise_schema_edvise_namespace_uses_json_validation() -> None:
-    """edvise namespace does not use repo schema; uses JSON-based validation (different shape)."""
-    assert should_use_edvise_schema("edvise", ["STUDENT"]) is False
-    assert should_use_edvise_schema("edvise", ["COURSE"]) is False
+def test_should_use_edvise_schema_edvise_namespace_uses_repo_validation() -> None:
+    """edvise namespace uses upstream raw Edvise schemas for STUDENT and COURSE."""
+    assert should_use_edvise_schema("edvise", ["STUDENT"]) is True
+    assert should_use_edvise_schema("edvise", ["COURSE"]) is True
 
 
 def test_should_use_edvise_schema_normalizes_model_names_to_uppercase() -> None:
@@ -89,6 +89,16 @@ def test_get_edvise_schema_for_models_returns_class_when_available() -> None:
     assert course_schema is not None
     assert cohort_schema.__name__ == "RawPDPCohortDataSchema"
     assert course_schema.__name__ == "RawPDPCourseDataSchema"
+
+
+def test_get_edvise_schema_for_upload_returns_raw_edvise_classes() -> None:
+    """Edvise namespace returns raw Edvise student/course schema classes."""
+    student_schema = get_edvise_schema_for_upload("edvise", ["STUDENT"])
+    course_schema = get_edvise_schema_for_upload("edvise", ["COURSE"])
+    assert student_schema is not None
+    assert course_schema is not None
+    assert student_schema.__name__ == "RawEdviseStudentDataSchema"
+    assert course_schema.__name__ == "RawEdviseCourseDataSchema"
 
 
 def test_get_edvise_schema_for_models_normalizes_lowercase_model_names() -> None:
@@ -171,11 +181,13 @@ def test_extract_missing_required_includes_only_missing_column_checks() -> None:
 
 
 def test_get_edvise_schema_for_upload_single_entry_point() -> None:
-    """get_edvise_schema_for_upload is the single check: None = use JSON path, else run repo schema (PDP only)."""
+    """get_edvise_schema_for_upload is the single check: None = JSON path, else repo schema."""
     assert get_edvise_schema_for_upload("", ["STUDENT"]) is None
     assert get_edvise_schema_for_upload("pdp", ["STUDENT", "COURSE"]) is None
-    assert get_edvise_schema_for_upload("edvise", ["COURSE"]) is None
-    assert get_edvise_schema_for_upload("edvise", ["STUDENT"]) is None
+    assert get_edvise_schema_for_upload("edvise", ["STUDENT", "COURSE"]) is None
+    assert get_edvise_schema_for_upload("edvise", ["SEMESTER"]) is None
+    assert get_edvise_schema_for_upload("edvise", ["COURSE"]) is not None
+    assert get_edvise_schema_for_upload("edvise", ["STUDENT"]) is not None
     assert get_edvise_schema_for_upload("pdp", ["STUDENT"]) is not None
     assert get_edvise_schema_for_upload("pdp", ["COURSE"]) is not None
     assert get_edvise_schema_for_upload("other-uuid", ["STUDENT"]) is None
@@ -191,11 +203,11 @@ def test_get_edvise_schema_for_upload_rejects_non_list_model_list() -> None:
     assert get_edvise_schema_for_upload("pdp", cast(Any, {"STUDENT"})) is None
 
 
-def test_pdp_edvise_namespaces_pdp_only_uses_repo_schema() -> None:
-    """Only PDP uses edvise repo schema; Edvise has a different shape and uses JSON validation."""
+def test_pdp_edvise_namespaces_use_repo_schema() -> None:
+    """PDP and Edvise use upstream repo schemas for supported single-model uploads."""
     assert "pdp" in PDP_EDVISE_NAMESPACES
-    assert "edvise" not in PDP_EDVISE_NAMESPACES
-    assert len(PDP_EDVISE_NAMESPACES) == 1
+    assert "edvise" in PDP_EDVISE_NAMESPACES
+    assert len(PDP_EDVISE_NAMESPACES) == 2
 
 
 # --------------------------------------------------------------------------- #
