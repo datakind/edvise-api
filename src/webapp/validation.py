@@ -759,9 +759,9 @@ def _compute_model_list_and_merged_specs(
 
 
 # --------------------------------------------------------------------------- #
-# PDP single-model path: edvise read + Pandera validate. Edvise uploads use raw
-# Edvise Pandera schemas directly. Cohort converter defaults to None so PDP
-# validated row sets can differ from batch jobs that use dataio converters.
+# PDP single-model path: edvise read + Pandera validate. Cohort converter defaults
+# to None so PDP validated row sets can differ from batch jobs that use dataio
+# converters.
 # --------------------------------------------------------------------------- #
 
 # Datetime formats to try for PDP course (same order as pdp_data_audit)
@@ -1002,15 +1002,13 @@ def _validate_pdp_with_edvise_read(
     pdp_course_converter_func: PDPConverterFunc = None,
 ) -> Dict[str, Any]:
     """
-    Validate a single-model PDP or Edvise cohort/course file via edvise repo schemas.
+    Validate a single-model PDP cohort or course file via edvise read and Pandera.
 
-    For PDP, writes file-like inputs to a temp path, then calls
-    ``read_raw_pdp_cohort_data`` (STUDENT) or ``_read_pdp_course_edvise`` (COURSE).
-    Cohort rows are only
+    Writes file-like inputs to a temp path, then calls ``read_raw_pdp_cohort_data``
+    (STUDENT) or ``_read_pdp_course_edvise`` (COURSE). Cohort rows are only
     transformed when ``pdp_cohort_converter_func`` is set; batch jobs may still
     filter cohort rows via ``dataio``, so API output rows are not guaranteed to
-    match pipeline output for the same file. Edvise uses the raw Edvise Pandera
-    schema classes directly.
+    match pipeline output for the same file.
 
     Args:
         filename: Path or file-like CSV source.
@@ -1031,14 +1029,6 @@ def _validate_pdp_with_edvise_read(
     """
     _reset_to_start_if_possible(filename)
     model_set = {str(m).strip().upper() for m in model_list if m}
-
-    if institution_id == "edvise":
-        return _validate_edvise_with_repo_schema(
-            filename,
-            enc,
-            model_list,
-            institution_id,
-        )
 
     _validate_pdp_converter_callables(
         pdp_cohort_converter_func, pdp_course_converter_func
@@ -1210,7 +1200,15 @@ def validate_dataset(
     model_list = _model_list_from_models(models)
     # Route PDP/Edvise STUDENT/COURSE to the edvise repo schema path before JSON
     # schema merging so registry extension drift cannot bypass upstream validation.
-    if pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list) is not None:
+    schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
+    if schema_class is not None and institution_id == "edvise":
+        return _validate_edvise_with_repo_schema(
+            filename,
+            enc,
+            model_list,
+            institution_id,
+        )
+    if schema_class is not None:
         return _validate_pdp_with_edvise_read(
             filename,
             enc,
