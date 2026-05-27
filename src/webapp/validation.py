@@ -584,49 +584,6 @@ def _read_dataframe_with_specs(
     return df
 
 
-def _try_pdp_repo_validation_and_return(
-    df: pd.DataFrame,
-    model_list: List[str],
-    canon_to_raw: Dict[str, str],
-    raw_to_canon: Dict[str, str],
-    missing_optional: List[str],
-    unknown_extra: List[str],
-    merged_specs: Dict[str, dict],
-    institution_id: str,
-) -> Optional[Dict[str, Any]]:
-    """If a repo schema applies, run it and return result dict; otherwise return None."""
-    schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
-    if schema_class is None:
-        return None
-    validation_df, display_canon_to_raw = (
-        pdp_edvise.rename_pdp_dataframe_to_repo_schema(df, canon_to_raw, model_list)
-    )
-    pdp_edvise.validate_dataframe_with_edvise_schema(
-        validation_df,
-        schema_class,
-        raw_to_canon,
-        display_canon_to_raw,
-        merged_specs,
-    )
-    if missing_optional or unknown_extra:
-        return {
-            "validation_status": "passed_with_soft_errors",
-            "schemas": model_list,
-            "missing_optional": missing_optional,
-            "optional_validation_failures": [],
-            "failure_cases": [],
-            "unknown_extra_columns": unknown_extra,
-            "normalized_df": validation_df,
-        }
-    return {
-        "validation_status": "passed",
-        "schemas": model_list,
-        "missing_optional": [],
-        "unknown_extra_columns": [],
-        "normalized_df": validation_df,
-    }
-
-
 def _validate_optional_columns_json(
     df: pd.DataFrame,
     merged_specs: Dict[str, dict],
@@ -707,21 +664,8 @@ def _run_validation_flow(
     raw_to_canon: Dict[str, str],
     missing_optional: List[str],
     unknown_extra: List[str],
-    institution_id: str,
 ) -> Dict[str, Any]:
-    """Run repo-schema path if applicable; otherwise JSON validation. Returns result dict."""
-    pdp_result = _try_pdp_repo_validation_and_return(
-        df,
-        model_list,
-        canon_to_raw,
-        raw_to_canon,
-        missing_optional,
-        unknown_extra,
-        merged_specs,
-        institution_id,
-    )
-    if pdp_result is not None:
-        return pdp_result
+    """Run JSON validation and return result dict."""
     return _validate_with_json_schemas_return(
         df,
         model_list,
@@ -1250,5 +1194,4 @@ def validate_dataset(
         raw_to_canon,
         missing_optional,
         unknown_extra,
-        institution_id,
     )
