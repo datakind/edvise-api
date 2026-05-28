@@ -12,6 +12,7 @@ import os
 import logging
 from sqlalchemy.exc import IntegrityError
 import re
+import requests
 from ..validation import HardValidationError
 from ..validation_error_formatter import format_validation_error
 import pandas as pd
@@ -178,6 +179,33 @@ class ValidationResult(BaseModel):
     inst_id: str
     file_types: List[str]
     source: str
+
+
+class BronzeImportRequest(BaseModel):
+    """Request to import a dataset from the institution's bronze volume into GCS."""
+
+    name: str
+
+
+class BronzeImportResponse(BaseModel):
+    """Response for bronze import request."""
+
+    file_name: str
+    message: str
+
+
+def _upload_file_bytes_to_signed_url(file_bytes: bytes, upload_signed_url: str) -> None:
+    """Upload file bytes to a signed GCS URL using the same request shape as the worker path."""
+    upload_response = requests.put(
+        upload_signed_url,
+        data=file_bytes,
+        headers={"Content-Type": "text/csv"},
+        timeout=600,
+    )
+    if upload_response.status_code != 200:
+        raise requests.RequestException(
+            f"{upload_response.status_code} {upload_response.text}"
+        )
 
 
 class DataOverview(BaseModel):
@@ -1678,6 +1706,127 @@ def get_upload_url(
     except ValueError as ve:
         # Return a 400 error with the specific message from ValueError
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
+
+@router.get("/{inst_id}/input/bronze-datasets", response_model=list[str])
+def list_bronze_datasets(
+    inst_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """List `.csv` files directly under the institution's Databricks bronze volume root."""
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+
+    try:
+        return databricks_control.list_bronze_volume_csvs(inst.name)
+    except ValueError as ve:
+        msg = str(ve)
+        if "not configured" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg
+        )
+
+
+@router.post(
+    "/{inst_id}/input/upload-from-volume-to-gcs-bucket",
+    response_model=BronzeImportResponse,
+)
+def upload_from_volume_to_gcs_bucket(
+    inst_id: str,
+    req: BronzeImportRequest,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+) -> Any:
+    """Import a selected dataset from the institution's bronze volume into GCS unvalidated/."""
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+
+    requested_name = (req.name or "").strip()
+    if not requested_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Dataset name is required.",
+        )
+    if "/" in requested_name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Dataset name can't contain '/'.",
+        )
+
+    # Ensure this is actually present in the bronze root (and matches naming rules).
+    try:
+        available = databricks_control.list_bronze_volume_csvs(inst.name)
+    except ValueError as ve:
+        msg = str(ve)
+        if "not configured" in msg.lower():
+            raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg
+        )
+
+    available_map = {x.lower(): x for x in available}
+    file_name = available_map.get(requested_name.lower())
+    if not file_name:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Bronze dataset not found.",
+        )
+
+    stream = None
+    try:
+        stream = databricks_control.download_bronze_volume_file(inst.name, file_name)
+        file_bytes = stream.read()
+        upload_url = storage_control.generate_upload_signed_url(
+            get_external_bucket_name(inst_id), file_name
+        )
+        _upload_file_bytes_to_signed_url(file_bytes, upload_url)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except requests.RequestException as rexc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload dataset to GCS: {rexc}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected error importing dataset: {e}",
+        )
+    finally:
+        if stream is not None and hasattr(stream, "close"):
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    return {"file_name": file_name, "message": "Upload successful."}
 
 
 @router.post("/{inst_id}/add-custom-school-job/{job_run_id}")
