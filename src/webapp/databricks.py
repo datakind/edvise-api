@@ -106,7 +106,7 @@ def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
     Return the job id for the GCS→bronze sync job.
 
     Prefer ``DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID`` when set (stable across renames).
-    Otherwise resolve by ``VALIDATED_BRONZE_SYNC_JOB_NAME``; multiple matches is an error.
+    Otherwise resolve by exact name, then by a unique bundle-prefixed name.
     """
     raw = (os.environ.get(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV) or "").strip()
     if raw:
@@ -129,29 +129,60 @@ def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
 
     jobs = list(w.jobs.list(name=VALIDATED_BRONZE_SYNC_JOB_NAME))
     if len(jobs) == 0:
+        jobs = _find_validated_bronze_sync_jobs_by_suffix(w)
+    if len(jobs) == 0:
         raise ValueError(
-            f"Job named {VALIDATED_BRONZE_SYNC_JOB_NAME!r} not found. "
+            f"Job named {VALIDATED_BRONZE_SYNC_JOB_NAME!r} or a unique bundle-prefixed "
+            f"variant was not found. "
             f"Deploy the bundle job or set {DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} "
             "to the numeric job id from the Databricks UI / API."
         )
     if len(jobs) > 1:
         ids = [j.job_id for j in jobs if j.job_id is not None]
         raise ValueError(
-            f"Multiple ({len(jobs)}) jobs named {VALIDATED_BRONZE_SYNC_JOB_NAME!r}; "
+            f"Multiple ({len(jobs)}) jobs matched {VALIDATED_BRONZE_SYNC_JOB_NAME!r}; "
             f"set {DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} to the correct id. Found job_ids={ids}."
         )
     job = jobs[0]
     if job.job_id is None:
         raise ValueError(
-            f"Job named {VALIDATED_BRONZE_SYNC_JOB_NAME!r} has no job_id in list response."
+            f"Job matching {VALIDATED_BRONZE_SYNC_JOB_NAME!r} has no job_id in list response."
         )
     job_id = job.job_id
     LOGGER.info(
-        "Resolved bronze sync job by name %r: job_id=%s",
-        VALIDATED_BRONZE_SYNC_JOB_NAME,
+        "Resolved bronze sync job %r: job_id=%s",
+        _databricks_job_name(job) or VALIDATED_BRONZE_SYNC_JOB_NAME,
         job_id,
     )
     return job_id
+
+
+def _databricks_job_name(job: Any) -> Optional[str]:
+    """Return the display name from a Databricks job list item, if present."""
+    settings = getattr(job, "settings", None)
+    name = getattr(settings, "name", None)
+    if isinstance(name, str):
+        return name
+    name = getattr(job, "name", None)
+    if isinstance(name, str):
+        return name
+    return None
+
+
+def _find_validated_bronze_sync_jobs_by_suffix(w: WorkspaceClient) -> list[Any]:
+    """
+    Find a Databricks Asset Bundle dev-mode job with a prefixed display name.
+
+    Development-mode bundle jobs can be named like
+    ``[dev service_principal] edvise_validated_gcs_to_bronze_sync``. Only a
+    single suffix match is accepted by the caller.
+    """
+    suffix = f" {VALIDATED_BRONZE_SYNC_JOB_NAME}"
+    return [
+        job
+        for job in w.jobs.list()
+        if (name := _databricks_job_name(job)) is not None and name.endswith(suffix)
+    ]
 
 
 class DatabricksInferenceRunRequest(BaseModel):

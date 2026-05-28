@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -98,6 +99,51 @@ def test_resolve_bronze_sync_job_id_by_name_ambiguous_raises(
     monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
     w = mock.Mock()
     w.jobs.list.return_value = [mock.Mock(job_id=1), mock.Mock(job_id=2)]
+    with pytest.raises(ValueError, match="Multiple"):
+        _resolve_validated_bronze_sync_job_id(w)
+
+
+def test_resolve_bronze_sync_job_id_by_prefixed_bundle_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    job = SimpleNamespace(
+        job_id=123,
+        settings=SimpleNamespace(
+            name="[dev dev_cloudrun_sa] edvise_validated_gcs_to_bronze_sync"
+        ),
+    )
+    w = mock.Mock()
+    w.jobs.list.side_effect = [[], [job]]
+    assert _resolve_validated_bronze_sync_job_id(w) == 123
+    assert w.jobs.list.call_args_list == [
+        mock.call(name="edvise_validated_gcs_to_bronze_sync"),
+        mock.call(),
+    ]
+
+
+def test_resolve_bronze_sync_job_id_by_prefixed_bundle_name_ambiguous_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    w = mock.Mock()
+    w.jobs.list.side_effect = [
+        [],
+        [
+            SimpleNamespace(
+                job_id=1,
+                settings=SimpleNamespace(
+                    name="[dev user_a] edvise_validated_gcs_to_bronze_sync"
+                ),
+            ),
+            SimpleNamespace(
+                job_id=2,
+                settings=SimpleNamespace(
+                    name="[dev user_b] edvise_validated_gcs_to_bronze_sync"
+                ),
+            ),
+        ],
+    ]
     with pytest.raises(ValueError, match="Multiple"):
         _resolve_validated_bronze_sync_job_id(w)
 
