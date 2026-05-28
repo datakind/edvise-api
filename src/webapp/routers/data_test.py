@@ -1292,6 +1292,32 @@ def test_validate_upload_skips_bronze_sync_when_env_disabled(
     MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
 
 
+def test_validate_upload_databricks_trigger_failure_is_non_fatal(
+    edvise_client: TestClient,
+) -> None:
+    """Databricks trigger errors do not fail validation after the file is validated."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.side_effect = RuntimeError(
+        "network failed"
+    )
+    try:
+        response = edvise_client.post(
+            "/institutions/"
+            + uuid_to_str(EDVISE_INST_UUID)
+            + "/input/validate-upload/edvise_student_file.csv",
+        )
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "edvise_student_file.csv"
+        MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    finally:
+        MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.side_effect = None
+        MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.return_value = mock.Mock(
+            job_run_id=1
+        )
+
+
 def test_validate_upload_rejects_empty_file_name(legacy_client: TestClient) -> None:
     """Empty or whitespace-only file name returns 422."""
     # Trailing space in path decodes to " "

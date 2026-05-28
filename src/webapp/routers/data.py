@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, date
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -89,7 +89,7 @@ def _log_validation_trace_json(event: str, **fields: Any) -> None:
 def _bronze_sync_trace_base(
     correlation_id: str, inst_id: str, bucket: str, file_name: str
 ) -> Dict[str, Any]:
-    """Shared fields for GCS→bronze background trace log lines."""
+    """Shared fields for GCS→bronze trace log lines."""
     return {
         "correlation_id": correlation_id,
         "inst_id": inst_id,
@@ -147,7 +147,7 @@ def _attempt_gcs_bronze_sync_trigger(
     trace_base: Dict[str, Any],
     correlation_id: str,
 ) -> None:
-    """Call Databricks to start the bronze sync job and log success (raises ValueError on failure)."""
+    """Call Databricks to start the bronze sync job and log success."""
     sync_resp = databricks_control.run_validated_gcs_to_bronze_sync(
         DatabricksBronzeSyncRequest(
             inst_name=inst_name,
@@ -168,7 +168,7 @@ def _trigger_gcs_bronze_sync_if_applicable(
     databricks_control: DatabricksControl,
     correlation_id: str,
 ) -> None:
-    """Fire-and-forget Databricks job to copy validated/ into bronze (runs in BackgroundTasks)."""
+    """Trigger Databricks job to copy validated/ into bronze without waiting for the copy."""
     trace_base = _bronze_sync_trace_base(correlation_id, inst_id, bucket, file_name)
     _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
 
@@ -187,7 +187,7 @@ def _trigger_gcs_bronze_sync_if_applicable(
             trace_base,
             correlation_id,
         )
-    except ValueError:
+    except Exception:
         _log_bronze_sync_trigger_failed(trace_base, validated_blob_path, correlation_id)
 
 
@@ -1676,7 +1676,6 @@ def validation_helper(
     storage_control: StorageControl,
     sql_session: Session,
     databricks_control: DatabricksControl,
-    background_tasks: BackgroundTasks,
 ) -> Any:
     """Run file validation for an institution and upsert the file record.
 
@@ -1691,7 +1690,7 @@ def validation_helper(
         current_user: Authenticated user; must have access to inst_id.
         storage_control: StorageControl instance for GCS and validate_file.
         sql_session: DB session for institution, schema, and file record.
-        background_tasks: Schedules GCS→Databricks bronze sync after the response.
+        databricks_control: Starts the GCS→Databricks bronze sync after validation.
 
     Returns:
         Dict with name, inst_id, file_types, source, status.
@@ -1764,10 +1763,9 @@ def validation_helper(
         storage_control,
         sess,
     )
-    # GCS validated/ write is complete; schedule Databricks bronze sync so the client
-    # does not wait on job lookup / run_now (Databricks copy runs asynchronously there).
-    background_tasks.add_task(
-        _trigger_gcs_bronze_sync_if_applicable,
+    # GCS validated/ write is complete; start the Databricks run now. The API waits
+    # only for run_now to return a run id, not for cluster startup or file copying.
+    _trigger_gcs_bronze_sync_if_applicable(
         inst.name,
         inst.edvise_id,
         inst.legacy_id,
@@ -1790,7 +1788,6 @@ def validate_file_sftp(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
-    background_tasks: BackgroundTasks,
 ) -> Any:
     """Validate a given file pulled from SFTP. The file_name should be url encoded."""
     file_name = decode_url_piece(file_name)
@@ -1807,7 +1804,6 @@ def validate_file_sftp(
         storage_control,
         sql_session,
         databricks_control,
-        background_tasks,
     )
 
 
@@ -1821,7 +1817,6 @@ def validate_file_manual_upload(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
-    background_tasks: BackgroundTasks,
 ) -> Any:
     """Validate a given file. The file_name should be url encoded."""
 
@@ -1835,7 +1830,6 @@ def validate_file_manual_upload(
         storage_control,
         sql_session,
         databricks_control,
-        background_tasks,
     )
 
 
