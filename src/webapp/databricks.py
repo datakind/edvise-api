@@ -38,6 +38,11 @@ PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 VALIDATED_BRONZE_SYNC_JOB_NAME = "edvise_validated_gcs_to_bronze_sync"
 # Optional: numeric Databricks job id. If unset, the job is resolved by name (must be unique).
 DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV = "DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID"
+# Environment-specific Databricks job ids for deployed API environments.
+VALIDATED_BRONZE_SYNC_JOB_IDS_BY_ENV = {
+    "DEV": 1005654397694881,
+    "STAGING": 611181637854021,
+}
 
 # Must match edvise bundle job parameters (github_validated_bronze_sync.yml).
 BRONZE_SYNC_GCS_SOURCE_PREFIX = "validated/"
@@ -106,7 +111,7 @@ def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
     Return the job id for the GCS→bronze sync job.
 
     Prefer ``DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID`` when set (stable across renames).
-    Otherwise resolve by exact name, then by a unique bundle-prefixed name.
+    Otherwise resolve by exact name, deployed environment, then a unique bundle-prefixed name.
     """
     raw = (os.environ.get(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV) or "").strip()
     if raw:
@@ -128,6 +133,10 @@ def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
         return job_id
 
     jobs = list(w.jobs.list(name=VALIDATED_BRONZE_SYNC_JOB_NAME))
+    if len(jobs) == 0:
+        env_job_id = _resolve_validated_bronze_sync_job_id_by_environment()
+        if env_job_id is not None:
+            return env_job_id
     if len(jobs) == 0:
         jobs = _find_validated_bronze_sync_jobs_by_suffix(w)
     if len(jobs) == 0:
@@ -154,6 +163,15 @@ def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
         _databricks_job_name(job) or VALIDATED_BRONZE_SYNC_JOB_NAME,
         job_id,
     )
+    return job_id
+
+
+def _resolve_validated_bronze_sync_job_id_by_environment() -> Optional[int]:
+    """Return the deployed Databricks job id for the current API environment."""
+    env = (os.environ.get("ENV") or "").strip().upper()
+    job_id = VALIDATED_BRONZE_SYNC_JOB_IDS_BY_ENV.get(env)
+    if job_id is not None:
+        LOGGER.info("Bronze sync job id from ENV=%s mapping: job_id=%s", env, job_id)
     return job_id
 
 

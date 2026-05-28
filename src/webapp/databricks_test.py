@@ -87,6 +87,7 @@ def test_resolve_bronze_sync_job_id_by_name_single(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "DEV")
     job = mock.Mock(job_id=99)
     w = mock.Mock()
     w.jobs.list.return_value = [job]
@@ -103,10 +104,32 @@ def test_resolve_bronze_sync_job_id_by_name_ambiguous_raises(
         _resolve_validated_bronze_sync_job_id(w)
 
 
+def test_resolve_bronze_sync_job_id_by_dev_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "DEV")
+    w = mock.Mock()
+    w.jobs.list.return_value = []
+    assert _resolve_validated_bronze_sync_job_id(w) == 1005654397694881
+    w.jobs.list.assert_called_once_with(name="edvise_validated_gcs_to_bronze_sync")
+
+
+def test_resolve_bronze_sync_job_id_by_staging_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "STAGING")
+    w = mock.Mock()
+    w.jobs.list.return_value = []
+    assert _resolve_validated_bronze_sync_job_id(w) == 611181637854021
+
+
 def test_resolve_bronze_sync_job_id_by_prefixed_bundle_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "LOCAL")
     job = SimpleNamespace(
         job_id=123,
         settings=SimpleNamespace(
@@ -126,6 +149,7 @@ def test_resolve_bronze_sync_job_id_by_prefixed_bundle_name_ambiguous_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "LOCAL")
     w = mock.Mock()
     w.jobs.list.side_effect = [
         [],
@@ -152,6 +176,7 @@ def test_resolve_bronze_sync_job_id_by_name_missing_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "LOCAL")
     w = mock.Mock()
     w.jobs.list.return_value = []
     with pytest.raises(ValueError, match="not found"):
