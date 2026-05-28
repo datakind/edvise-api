@@ -181,7 +181,9 @@ def test_validate_file_reader_edvise_routes_before_schema_merge(
                 "normalized_df": pd.DataFrame({"learner_id": ["s1"]}),
             },
         ) as mock_edvise_schema,
-        patch("src.webapp.validation._compute_model_list_and_merged_specs") as mock_merge,
+        patch(
+            "src.webapp.validation._compute_model_list_and_merged_specs"
+        ) as mock_merge,
     ):
         result = validate_file_reader(
             str(csv_path),
