@@ -2,7 +2,7 @@
 
 This repo contains:
 
-* [src/webapp/](https://github.com/datakind/edvise-api/tree/develop/src/webapp): The source code for the SST API (which is called by the SST frontend and by any direct API callers)
+* [src/webapp/](https://github.com/datakind/edvise-api/tree/develop/src/webapp): The source code for the Edvise API (which is called by the SST frontend and by any direct API callers)
 * [src/worker/](https://github.com/datakind/edvise-api/tree/develop/src/worker): The source code for the SFTP Worker (which calls the SST API)
 * [terraform/]
 (https://github.com/datakind/edvise-api/tree/develop/terraform): The Terraform configuration for the SST API/Frontend and other GCP resources including Cloud SQL setup, networking setup, secrets setup
