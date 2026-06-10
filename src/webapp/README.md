@@ -131,8 +131,8 @@ $ curl -X 'GET' \
 
 ### Before committing, run the formatter and run the unit tests
 
-1. Formatter: `black src/webapp/.`
-1. Unit tests: `coverage run -m pytest  -v -s ./src/webapp/`
+1. Lint: `uv run ruff check src/webapp/`
+1. Unit tests: `uv run coverage run -m pytest -v -s ./src/webapp/`
 
 #### Optionally run pylint
 

@@ -98,9 +98,6 @@ class ModelCreationRequest(BaseModel):
     """Model creation request object."""
 
     name: str
-    # valid = False, means the model is not ready for use.
-    valid: bool = False
-    schema_configs: list[list[SchemaConfigObj]]
 
 
 class ModelInfo(BaseModel):
@@ -112,7 +109,7 @@ class ModelInfo(BaseModel):
     inst_id: str
     # User id of created_by.
     created_by: str | None = None
-    valid: bool = False
+    valid: bool = True
     deleted: bool | None = None
 
 
@@ -222,8 +219,7 @@ def create_model(
             name=req.name,
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),
-            valid=req.valid,
-            schema_configs=jsonpickle.encode(req.schema_configs),
+            valid=True,
         )
         local_session.get().add(model)
         local_session.get().commit()

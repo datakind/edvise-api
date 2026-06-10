@@ -1,7 +1,22 @@
+from types import SimpleNamespace
+from unittest import mock
+
 import pytest
 from unittest.mock import MagicMock
 
-from .databricks import DatabricksControl, _resolve_pipeline_job
+from .databricks import (
+    BRONZE_SYNC_BRONZE_SUBDIR,
+    BRONZE_SYNC_GCS_SOURCE_PREFIX,
+    BRONZE_SYNC_MAX_OBJECTS,
+    BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE,
+    BRONZE_SYNC_STRICT_MODE,
+    DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
+    DatabricksBronzeSyncRequest,
+    DatabricksControl,
+    _build_validated_bronze_sync_job_parameters,
+    _resolve_pipeline_job,
+    _resolve_validated_bronze_sync_job_id,
+)
 
 
 @pytest.fixture
@@ -109,3 +124,164 @@ def test_resolve_pipeline_job_ambiguous_substring_raises():
 
     with pytest.raises(ValueError, match="Multiple jobs match substring"):
         _resolve_pipeline_job(w, canonical, "test")
+
+
+def test_resolve_bronze_sync_job_id_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, "12345")
+    w = mock.Mock()
+    assert _resolve_validated_bronze_sync_job_id(w) == 12345
+    w.jobs.list.assert_not_called()
+
+
+def test_resolve_bronze_sync_job_id_env_invalid_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, "not-a-number")
+    w = mock.Mock()
+    with pytest.raises(ValueError, match="positive integer"):
+        _resolve_validated_bronze_sync_job_id(w)
+
+
+def test_resolve_bronze_sync_job_id_by_name_single(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "DEV")
+    job = mock.Mock(job_id=99)
+    w = mock.Mock()
+    w.jobs.list.return_value = [job]
+    assert _resolve_validated_bronze_sync_job_id(w) == 99
+
+
+def test_resolve_bronze_sync_job_id_by_name_ambiguous_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    w = mock.Mock()
+    w.jobs.list.return_value = [mock.Mock(job_id=1), mock.Mock(job_id=2)]
+    with pytest.raises(ValueError, match="Multiple"):
+        _resolve_validated_bronze_sync_job_id(w)
+
+
+def test_resolve_bronze_sync_job_id_by_dev_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "DEV")
+    w = mock.Mock()
+    w.jobs.list.return_value = []
+    assert _resolve_validated_bronze_sync_job_id(w) == 1005654397694881
+    w.jobs.list.assert_called_once_with(name="edvise_validated_gcs_to_bronze_sync")
+
+
+def test_resolve_bronze_sync_job_id_by_staging_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "STAGING")
+    w = mock.Mock()
+    w.jobs.list.return_value = []
+    assert _resolve_validated_bronze_sync_job_id(w) == 611181637854021
+
+
+def test_resolve_bronze_sync_job_id_by_prefixed_bundle_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "LOCAL")
+    job = SimpleNamespace(
+        job_id=123,
+        settings=SimpleNamespace(
+            name="[dev dev_cloudrun_sa] edvise_validated_gcs_to_bronze_sync"
+        ),
+    )
+    w = mock.Mock()
+    w.jobs.list.side_effect = [[], [job]]
+    assert _resolve_validated_bronze_sync_job_id(w) == 123
+    assert w.jobs.list.call_args_list == [
+        mock.call(name="edvise_validated_gcs_to_bronze_sync"),
+        mock.call(),
+    ]
+
+
+def test_resolve_bronze_sync_job_id_by_prefixed_bundle_name_ambiguous_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "LOCAL")
+    w = mock.Mock()
+    w.jobs.list.side_effect = [
+        [],
+        [
+            SimpleNamespace(
+                job_id=1,
+                settings=SimpleNamespace(
+                    name="[dev user_a] edvise_validated_gcs_to_bronze_sync"
+                ),
+            ),
+            SimpleNamespace(
+                job_id=2,
+                settings=SimpleNamespace(
+                    name="[dev user_b] edvise_validated_gcs_to_bronze_sync"
+                ),
+            ),
+        ],
+    ]
+    with pytest.raises(ValueError, match="Multiple"):
+        _resolve_validated_bronze_sync_job_id(w)
+
+
+def test_resolve_bronze_sync_job_id_by_name_missing_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, raising=False)
+    monkeypatch.setenv("ENV", "LOCAL")
+    w = mock.Mock()
+    w.jobs.list.return_value = []
+    with pytest.raises(ValueError, match="not found"):
+        _resolve_validated_bronze_sync_job_id(w)
+
+
+def test_build_validated_bronze_sync_job_parameters_shape() -> None:
+    req = DatabricksBronzeSyncRequest(
+        inst_name="Test School",
+        gcp_bucket_name="bucket-a",
+        validated_blob_paths=["validated/student.csv"],
+    )
+    params = _build_validated_bronze_sync_job_parameters(req, "test_school")
+    assert params["gcp_bucket_name"] == "bucket-a"
+    assert params["databricks_institution_name"] == "test_school"
+    assert params["gcs_source_prefix"] == BRONZE_SYNC_GCS_SOURCE_PREFIX
+    assert params["bronze_subdir"] == BRONZE_SYNC_BRONZE_SUBDIR
+    assert params["max_objects"] == BRONZE_SYNC_MAX_OBJECTS
+    assert params["require_at_least_one_file"] == BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE
+    assert params["strict_mode"] == BRONZE_SYNC_STRICT_MODE
+    assert params["sync_run_id"] == ""
+    assert params["include_blob_paths_json"] == '["validated/student.csv"]'
+
+
+def test_run_validated_gcs_to_bronze_sync_calls_run_now_with_bundle_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV, "42")
+    workspace = mock.Mock()
+    run_response = mock.Mock()
+    run_response.response.run_id = 9001
+    workspace.jobs.run_now.return_value = run_response
+
+    with mock.patch("src.webapp.databricks.WorkspaceClient", return_value=workspace):
+        ctrl = DatabricksControl()
+        req = DatabricksBronzeSyncRequest(
+            inst_name="My Inst",
+            gcp_bucket_name="my-bucket",
+            validated_blob_paths=["validated/foo.csv"],
+        )
+        resp = ctrl.run_validated_gcs_to_bronze_sync(req)
+
+    assert resp.job_run_id == 9001
+    workspace.jobs.run_now.assert_called_once()
+    run_args, run_kwargs = workspace.jobs.run_now.call_args
+    assert run_args[0] == 42
+    params = run_kwargs["job_parameters"]
+    assert params["include_blob_paths_json"] == '["validated/foo.csv"]'
+    assert params["gcs_source_prefix"] == BRONZE_SYNC_GCS_SOURCE_PREFIX
