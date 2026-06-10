@@ -6,7 +6,11 @@ from datetime import datetime, date
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
+<<<<<<< HEAD
 from sqlalchemy import and_, or_
+=======
+from sqlalchemy import and_, false, or_
+>>>>>>> 19f02e0 (fix: type check)
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 import os
