@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, date
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -800,12 +800,14 @@ def get_eda_data(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
+    clear_cache: Annotated[Optional[str], Query(alias="clear-cache")] = None,
 ) -> Any:
     """Returns EDA (Exploratory Data Analysis) data for a specific batch.
 
     This endpoint provides all the data needed to populate the EDA dashboard,
     including summary statistics, GPA charts, enrollment data, and demographic breakdowns.
     Analyzes all files in the batch together to provide comprehensive insights.
+    Pass query ``clear-cache=1`` to drop any cached EDA result for this batch before serving.
     """
     has_access_to_inst_or_err(inst_id, current_user)
     has_full_data_access_or_err(current_user, "EDA data")
@@ -830,6 +832,9 @@ def get_eda_data(
         )
 
     cache_key = f"{inst_id}:{batch_id}"
+    if clear_cache == "1":
+        EDA_CACHE.pop(cache_key, None)
+
     cached_result = EDA_CACHE.get(cache_key)
     if cached_result is not None:
         logger.debug(f"EDA cache hit for {cache_key}")
