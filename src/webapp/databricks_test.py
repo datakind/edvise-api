@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from unittest.mock import MagicMock
 
 from .databricks import (
     BRONZE_SYNC_BRONZE_SUBDIR,
@@ -13,6 +14,7 @@ from .databricks import (
     DatabricksBronzeSyncRequest,
     DatabricksControl,
     _build_validated_bronze_sync_job_parameters,
+    _resolve_pipeline_job,
     _resolve_validated_bronze_sync_job_id,
 )
 
@@ -65,6 +67,63 @@ def test_invalid_regex_is_ignored(ctrl):
 def test_returns_none_when_no_match(ctrl):
     mapping = {"student": "student.csv"}
     assert ctrl.get_key_for_file(mapping, "unknown.csv") is None
+
+
+def _job_named(full_name: str, job_id: int = 42) -> MagicMock:
+    j = MagicMock()
+    j.job_id = job_id
+    j.settings = MagicMock()
+    j.settings.name = full_name
+    return j
+
+
+def test_resolve_pipeline_job_exact_match_skips_scan():
+    canonical = "edvise_github_sourced_pdp_inference_pipeline"
+    hit = _job_named(canonical, job_id=7)
+
+    def list_jobs(name=None):
+        if name == canonical:
+            return iter([hit])
+        return iter([])
+
+    w = MagicMock()
+    w.jobs.list.side_effect = list_jobs
+
+    assert _resolve_pipeline_job(w, canonical, "test").job_id == 7
+    w.jobs.list.assert_called_once()
+
+
+def test_resolve_pipeline_job_substring_dev_prefix():
+    canonical = "edvise_github_sourced_pdp_inference_pipeline"
+    hit = _job_named(f"[dev vishakh] {canonical}", job_id=11)
+
+    def list_jobs(name=None):
+        if name is not None:
+            return iter([])
+        return iter([hit])
+
+    w = MagicMock()
+    w.jobs.list.side_effect = list_jobs
+
+    assert _resolve_pipeline_job(w, canonical, "test").job_id == 11
+    assert w.jobs.list.call_count == 2
+
+
+def test_resolve_pipeline_job_ambiguous_substring_raises():
+    canonical = "edvise_github_sourced_pdp_inference_pipeline"
+    a = _job_named(f"[dev a] {canonical}", job_id=1)
+    b = _job_named(f"[dev b] {canonical}", job_id=2)
+
+    def list_jobs(name=None):
+        if name is not None:
+            return iter([])
+        return iter([a, b])
+
+    w = MagicMock()
+    w.jobs.list.side_effect = list_jobs
+
+    with pytest.raises(ValueError, match="Multiple jobs match substring"):
+        _resolve_pipeline_job(w, canonical, "test")
 
 
 def test_resolve_bronze_sync_job_id_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

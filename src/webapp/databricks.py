@@ -2,7 +2,7 @@
 
 import os
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import DatabricksError
 from databricks.sdk.service import catalog
@@ -32,8 +32,11 @@ LOGGER = logging.getLogger(__name__)
 # List of data medallion levels
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
-# The name of the deployed pipeline in Databricks. Must match directly.
+# The name of the deployed pipeline in Databricks. Must match the job's `name` in that workspace.
+# Override with LEGACY_INFERENCE_JOB_NAME (and PDP_INFERENCE_JOB_NAME) when dev/staging deploy
+# uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
 # GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
 VALIDATED_BRONZE_SYNC_JOB_NAME = "edvise_validated_gcs_to_bronze_sync"
 # Optional: numeric Databricks job id. If unset, the job is resolved by name (must be unique).
@@ -203,8 +206,72 @@ def _find_validated_bronze_sync_jobs_by_suffix(w: WorkspaceClient) -> list[Any]:
     ]
 
 
-class DatabricksInferenceRunRequest(BaseModel):
-    """Databricks parameters for an inference run."""
+def _pdp_inference_job_name() -> str:
+    name = os.environ.get("PDP_INFERENCE_JOB_NAME", "").strip()
+    return name or PDP_INFERENCE_JOB_NAME
+
+
+def _legacy_inference_job_name() -> str:
+    name = os.environ.get("LEGACY_INFERENCE_JOB_NAME", "").strip()
+    return name or LEGACY_INFERENCE_JOB_NAME
+
+
+def _resolve_pipeline_job(w: Any, pipeline_type: str, caller_label: str) -> Any:
+    """Find a job by exact name, else by unique substring match on display name.
+
+    Development bundles often prefix job names (e.g. ``[dev vishakh] edvise_...``) while
+    the API passes the canonical base name. Optional env ``PDP_INFERENCE_JOB_NAME`` /
+    ``LEGACY_INFERENCE_JOB_NAME`` still wins when set to the full exact name.
+    """
+    job = next(w.jobs.list(name=pipeline_type), None)
+    if job is not None and getattr(job, "job_id", None) is not None:
+        LOGGER.info(
+            "%s: resolved job by exact name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            job.job_id,
+        )
+        return job
+
+    matches: list[tuple[str, Any]] = []
+    for j in w.jobs.list():
+        settings = getattr(j, "settings", None)
+        name = getattr(settings, "name", None) if settings is not None else None
+        if not name:
+            continue
+        if pipeline_type in name:
+            matches.append((name, j))
+
+    if len(matches) == 1:
+        picked_name, picked = matches[0]
+        if getattr(picked, "job_id", None) is None:
+            raise ValueError(
+                f"{caller_label}: Job name {picked_name!r} matched substring {pipeline_type!r} but has no job_id."
+            )
+        LOGGER.info(
+            "%s: resolved job by substring %r -> display name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            picked_name,
+            picked.job_id,
+        )
+        return picked
+
+    if len(matches) > 1:
+        names = [n for n, _ in matches]
+        raise ValueError(
+            f"{caller_label}: Multiple jobs match substring {pipeline_type!r}: {names}. "
+            "Set PDP_INFERENCE_JOB_NAME or LEGACY_INFERENCE_JOB_NAME to the full job name."
+        )
+
+    raise ValueError(
+        f"{caller_label}: Job {pipeline_type!r} was not found (exact name or unique substring of settings.name) "
+        f"for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
+    )
+
+
+class DatabricksPDPInferenceRunRequest(BaseModel):
+    """Databricks parameters for a PDP inference run."""
 
     inst_name: str
     # Note that the following should be the filepath.
@@ -213,6 +280,24 @@ class DatabricksInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
+
+
+class DatabricksLegacyInferenceRunRequest(BaseModel):
+    """Databricks parameters for a legacy schools inference run."""
+
+    inst_name: str
+    model_name: str
+    config_file_name: str = ""
+    features_table_name: str = ""
+    # The email where notifications will get sent.
+    email: str = ""
+    gcp_external_bucket_name: str
+
+    @field_validator("config_file_name", "features_table_name", "email", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v: object) -> object:
+        """Allow callers to omit or pass null; Databricks job treats empty like YAML defaults."""
+        return "" if v is None else v
 
 
 class DatabricksInferenceRunResponse(BaseModel):
@@ -386,7 +471,7 @@ class DatabricksControl(BaseModel):
     # E.g. there is one PDP inference pipeline, so one PDP inference function here.
 
     def run_pdp_inference(
-        self, req: DatabricksInferenceRunRequest
+        self, req: DatabricksPDPInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
         """Triggers PDP inference Databricks run."""
         LOGGER.info(f"Running PDP inference for institution: {req.inst_name}")
@@ -416,14 +501,10 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-        pipeline_type = PDP_INFERENCE_JOB_NAME
+        pipeline_type = _pdp_inference_job_name()
 
         try:
-            job = next(w.jobs.list(name=pipeline_type), None)
-            if not job or job.job_id is None:
-                raise ValueError(
-                    f"run_pdp_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
-                )
+            job = _resolve_pipeline_job(w, pipeline_type, "run_pdp_inference")
             job_id = job.job_id
             LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
         except Exception as e:
@@ -458,6 +539,69 @@ class DatabricksControl(BaseModel):
 
         if not run_job.response or run_job.response.run_id is None:
             raise ValueError("run_pdp_inference(): Job did not return a valid run_id.")
+
+        run_id = run_job.response.run_id
+        LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
+
+        return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_legacy_inference(
+        self, req: DatabricksLegacyInferenceRunRequest
+    ) -> DatabricksInferenceRunResponse:
+        """Triggers legacy schools inference Databricks run."""
+        LOGGER.info(f"Running legacy inference for institution: {req.inst_name}")
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"run_legacy_inference(): Workspace client initialization failed: {e}"
+            )
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        pipeline_type = _legacy_inference_job_name()
+
+        try:
+            job = _resolve_pipeline_job(w, pipeline_type, "run_legacy_inference")
+            job_id = job.job_id
+            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+        except Exception as e:
+            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            raise ValueError(f"run_legacy_inference(): Failed to find job: {e}")
+
+        try:
+            run_job: Any = w.jobs.run_now(
+                job_id,
+                job_parameters={
+                    "databricks_institution_name": db_inst_name,
+                    "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+                    "model_name": req.model_name,
+                    "config_file_name": req.config_file_name,
+                    "features_table_name": req.features_table_name,
+                    "gcp_bucket_name": req.gcp_external_bucket_name,
+                    "datakind_notification_email": req.email,
+                    "DK_CC_EMAIL": req.email,
+                },
+            )
+            LOGGER.info(
+                f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
+            )
+        except Exception as e:
+            LOGGER.exception("Failed to run the legacy inference job.")
+            raise ValueError(f"run_legacy_inference(): Job could not be run: {e}")
+
+        if not run_job.response or run_job.response.run_id is None:
+            raise ValueError(
+                "run_legacy_inference(): Job did not return a valid run_id."
+            )
 
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
