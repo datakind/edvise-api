@@ -3,7 +3,7 @@
 import uuid
 import re
 from typing import Annotated, Final, Any, Optional, Tuple, Union
-from urllib.parse import unquote
+from urllib.parse import unquote_plus
 from strenum import StrEnum  # needed for python pre 3.11
 import jwt
 from fastapi import HTTPException, status, Depends
@@ -23,8 +23,33 @@ from .config import env_vars
 
 
 def decode_url_piece(src: str) -> str:
-    """Decode encoded URL."""
-    return unquote(src)
+    """Decode a URL path segment the way most clients encode names.
+
+    Uses :func:`urllib.parse.unquote_plus` so ``+`` is treated as a space (common
+    when clients apply form-style encoding to paths). A literal ``+`` in a name
+    must be sent as ``%2B``.
+    """
+    return unquote_plus(src)
+
+
+def file_name_variants_for_lookup(name: str) -> set[str]:
+    """Return spellings to try when matching a stored ``file.name``.
+
+    Accepts common mismatches between spaces and ``+`` (and ``decode_url_piece``-style
+    decoding) so batch endpoints stay usable even if the client and DB disagree.
+    """
+    n = unquote_plus(name.strip())
+    if not n:
+        return set()
+    return {n, n.replace("+", " "), n.replace(" ", "+")}
+
+
+def expand_batch_file_name_lookups(names: list[str]) -> list[str]:
+    """Flatten :func:`file_name_variants_for_lookup` for a SQL ``IN`` clause."""
+    expanded: set[str] = set()
+    for name in names:
+        expanded |= file_name_variants_for_lookup(name)
+    return list(expanded)
 
 
 class AccessType(StrEnum):
