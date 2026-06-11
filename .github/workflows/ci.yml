@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+    branches: [main, develop, "release/*"]
+
+jobs:
+  pr-title:
+    uses: datakind/.github/.github/workflows/pr-title.yml@main
+    permissions:
+      pull-requests: read
+
+  asana:
+    uses: datakind/.github/.github/workflows/link-asana-task.yml@main
+    secrets:
+      ASANA_SECRET: ${{ secrets.ASANA_SECRET }}
+
+  dependency-review:
+    uses: datakind/.github/.github/workflows/dependency-review.yml@main
+    permissions:
+      contents: read
+
+  # Apps with develop/main branching: PRs into main must come from release/* or hotfix/*
+  enforce-targets:
+    uses: datakind/.github/.github/workflows/enforce-pr-targets.yml@main
+
+  # Release repos: require CHANGELOG.md updates on PRs to main
+  pre-release:
+    if: github.base_ref == 'main'
+    permissions:
+      pull-requests: read
+    uses: datakind/.github/.github/workflows/pre-release.yml@main
+
+  style:
+    uses: ./.github/workflows/style.yml
+  tests:
+    uses: ./.github/workflows/tests.yml
