@@ -2,7 +2,6 @@ name: style
 
 on:
   workflow_call:
-  pull_request:  # any pull request
 
 jobs:
   style:
