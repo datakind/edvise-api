@@ -135,7 +135,7 @@ def resolve_model_schema_configs(
     normalized = raw_config
     for legacy, new in LEGACY_TO_NEW_SCHEMA.items():
         normalized = normalized.replace(f'"{legacy}"', f'"{new}"')
-    return jsonpickle.decode(normalized)
+    return cast(list[list[SchemaConfigObj]], jsonpickle.decode(normalized))
 
 
 def check_file_types_valid_schema_configs(
