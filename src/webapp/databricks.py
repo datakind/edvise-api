@@ -37,6 +37,8 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 # uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
+# Dev bundle prefix for the Cloud Run service principal job target.
+CLOUDRUN_BUNDLE_JOB_PREFIX = "[dev dev_cloudrun_sa]"
 # GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
 VALIDATED_BRONZE_SYNC_JOB_NAME = "edvise_validated_gcs_to_bronze_sync"
 # Optional: numeric Databricks job id. If unset, the job is resolved by name (must be unique).
@@ -216,6 +218,39 @@ def _legacy_inference_job_name() -> str:
     return name or LEGACY_INFERENCE_JOB_NAME
 
 
+def _disambiguate_pipeline_job_matches(
+    matches: list[tuple[str, Any]],
+    pipeline_type: str,
+    caller_label: str,
+) -> tuple[str, Any]:
+    """Prefer the Cloud Run bundle job when several dev-prefixed jobs match."""
+    cloudrun_matches = [
+        (name, job) for name, job in matches if CLOUDRUN_BUNDLE_JOB_PREFIX in name
+    ]
+    if len(cloudrun_matches) == 1:
+        return cloudrun_matches[0]
+    if len(cloudrun_matches) > 1:
+        picked_name, picked = sorted(cloudrun_matches, key=lambda item: item[0])[0]
+        LOGGER.warning(
+            "%s: Multiple Cloud Run bundle jobs match substring %r: %s; using %r.",
+            caller_label,
+            pipeline_type,
+            [name for name, _ in cloudrun_matches],
+            picked_name,
+        )
+        return picked_name, picked
+
+    picked_name, picked = sorted(matches, key=lambda item: item[0])[0]
+    LOGGER.warning(
+        "%s: Multiple jobs match substring %r: %s; no Cloud Run bundle job found; using first match %r.",
+        caller_label,
+        pipeline_type,
+        [name for name, _ in matches],
+        picked_name,
+    )
+    return picked_name, picked
+
+
 def _resolve_pipeline_job(w: Any, pipeline_type: str, caller_label: str) -> Any:
     """Find a job by exact name, else by unique substring match on display name.
 
@@ -258,11 +293,21 @@ def _resolve_pipeline_job(w: Any, pipeline_type: str, caller_label: str) -> Any:
         return picked
 
     if len(matches) > 1:
-        names = [n for n, _ in matches]
-        raise ValueError(
-            f"{caller_label}: Multiple jobs match substring {pipeline_type!r}: {names}. "
-            "Set PDP_INFERENCE_JOB_NAME or LEGACY_INFERENCE_JOB_NAME to the full job name."
+        picked_name, picked = _disambiguate_pipeline_job_matches(
+            matches, pipeline_type, caller_label
         )
+        if getattr(picked, "job_id", None) is None:
+            raise ValueError(
+                f"{caller_label}: Job name {picked_name!r} matched substring {pipeline_type!r} but has no job_id."
+            )
+        LOGGER.info(
+            "%s: resolved job by substring %r -> display name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            picked_name,
+            picked.job_id,
+        )
+        return picked
 
     raise ValueError(
         f"{caller_label}: Job {pipeline_type!r} was not found (exact name or unique substring of settings.name) "
