@@ -58,6 +58,86 @@ class SchemaConfigObj(BaseModel):
     multiple_allowed: bool = False
 
 
+# Input file schema types used when deriving batch rules from inst.schemas.
+_BATCH_INPUT_SCHEMA_ORDER: tuple[SchemaType, ...] = (
+    SchemaType.COURSE,
+    SchemaType.STUDENT,
+    SchemaType.SEMESTER,
+)
+_NON_INPUT_SCHEMA_TYPES: frozenset[SchemaType] = frozenset(
+    {SchemaType.UNKNOWN, SchemaType.SST_OUTPUT, SchemaType.PNG}
+)
+
+
+def default_schema_configs_from_inst_schemas(
+    inst_schemas: list[str] | None,
+) -> list[list[SchemaConfigObj]]:
+    """Build a required one-of-each batch config from institution allowed schemas."""
+    if not inst_schemas:
+        return []
+
+    allowed = {str(s) for s in inst_schemas}
+    ordered_types: list[SchemaType] = []
+    for schema_type in _BATCH_INPUT_SCHEMA_ORDER:
+        if schema_type.value in allowed:
+            ordered_types.append(schema_type)
+
+    for raw in sorted(allowed):
+        if raw in {t.value for t in _NON_INPUT_SCHEMA_TYPES}:
+            continue
+        try:
+            schema_type = SchemaType(raw)
+        except ValueError:
+            continue
+        if schema_type in _NON_INPUT_SCHEMA_TYPES or schema_type in ordered_types:
+            continue
+        ordered_types.append(schema_type)
+
+    if not ordered_types:
+        return []
+
+    return [
+        [
+            SchemaConfigObj(
+                schema_type=schema_type,
+                optional=False,
+                multiple_allowed=False,
+            )
+            for schema_type in ordered_types
+        ]
+    ]
+
+
+def resolve_model_schema_configs(
+    raw_config: Any,
+    inst_schemas: list[str] | None,
+) -> list[list[SchemaConfigObj]]:
+    """Return batch schema rules from the model row or derive from institution schemas."""
+    if raw_config is None:
+        derived = default_schema_configs_from_inst_schemas(inst_schemas)
+        if not derived:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Model has no schema_configs and the institution schemas could not "
+                    "be used to derive a default batch configuration. Configure input "
+                    "schema types on the institution (e.g. STUDENT, COURSE)."
+                ),
+            )
+        return derived
+
+    if not isinstance(raw_config, str):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Model schema_configs must be a jsonpickle-encoded string.",
+        )
+
+    normalized = raw_config
+    for legacy, new in LEGACY_TO_NEW_SCHEMA.items():
+        normalized = normalized.replace(f'"{legacy}"', f'"{new}"')
+    return jsonpickle.decode(normalized)
+
+
 def check_file_types_valid_schema_configs(
     file_types: list[list[SchemaType]],
     valid_schema_configs: list[list[SchemaConfigObj]],
@@ -657,15 +737,10 @@ def trigger_inference_run(
         )
     # inst_file_schemas = [x.schemas for x in batch_result[0][0].files]
     inst_file_schemas = [list({s for f in batch_result[0][0].files for s in f.schemas})]
-    raw_config = query_result[0][0].schema_configs
-
-    # Inline legacy → new mapping directly on the string
-    for legacy, new in LEGACY_TO_NEW_SCHEMA.items():
-        # This replaces every occurrence of "PDP_COURSE", "PDP_COHORT", etc.
-        raw_config = raw_config.replace(f'"{legacy}"', f'"{new}"')
-
-    schema_configs = jsonpickle.decode(raw_config)
-    # POTENTIAL_REVERSE: schema_configs = jsonpickle.decode(query_result[0][0].schema_configs)
+    schema_configs = resolve_model_schema_configs(
+        query_result[0][0].schema_configs,
+        inst.schemas,
+    )
 
     if not check_file_types_valid_schema_configs(
         inst_file_schemas,
