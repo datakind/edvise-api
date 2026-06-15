@@ -33,6 +33,8 @@ from .models import (
     RunInfo,
     check_file_types_valid_schema_configs,
     SchemaConfigObj,
+    default_schema_configs_from_inst_schemas,
+    resolve_model_schema_configs,
 )
 from ..gcsutil import StorageControl
 from ..databricks import DatabricksControl, DatabricksInferenceRunResponse
@@ -170,6 +172,7 @@ def session_fixture():
                         name="school_1",
                         pdp_id="12345",
                         edvise_id=None,
+                        schemas=[SchemaType.STUDENT, SchemaType.COURSE],
                         created_at=DATETIME_TESTING,
                         updated_at=DATETIME_TESTING,
                     ),
@@ -455,3 +458,60 @@ def test_check_file_types_valid_schema_configs():
     assert not check_file_types_valid_schema_configs(file_types4, [sst_configs])
     assert not check_file_types_valid_schema_configs(file_types4, [pdp_configs])
     assert check_file_types_valid_schema_configs(file_types4, [custom])
+
+
+def test_default_schema_configs_from_inst_schemas():
+    """Standard PDP institutions derive required COURSE + STUDENT batch rules."""
+    derived = default_schema_configs_from_inst_schemas(["STUDENT", "COURSE"])
+    assert len(derived) == 1
+    assert [c.schema_type for c in derived[0]] == [
+        SchemaType.COURSE,
+        SchemaType.STUDENT,
+    ]
+    assert all(not c.optional and not c.multiple_allowed for c in derived[0])
+
+    assert default_schema_configs_from_inst_schemas([]) == []
+    assert default_schema_configs_from_inst_schemas(None) == []
+    assert default_schema_configs_from_inst_schemas(["SST_OUTPUT", "PNG"]) == []
+
+
+def test_resolve_model_schema_configs_falls_back_to_institution():
+    """Null model schema_configs uses institution allowed input schemas."""
+    resolved = resolve_model_schema_configs(None, ["STUDENT", "COURSE"])
+    assert [c.schema_type for c in resolved[0]] == [
+        SchemaType.COURSE,
+        SchemaType.STUDENT,
+    ]
+
+
+def test_trigger_inference_run_derives_schema_configs_when_null(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """PDP inference succeeds when model.schema_configs is null but inst.schemas is set."""
+    null_config_model = ModelTable(
+        id=UUID_2,
+        inst_id=USER_VALID_INST_UUID,
+        name="pdp_model_without_schema_configs",
+        schema_configs=None,
+        valid=True,
+    )
+    session.add(null_config_model)
+    session.commit()
+
+    MOCK_DATABRICKS.run_pdp_inference.return_value = DatabricksInferenceRunResponse(
+        job_run_id=456
+    )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        version="1", run_id="run-abc"
+    )
+
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/models/pdp_model_without_schema_configs/run-inference",
+        json={"batch_name": "batch_foo", "is_pdp": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == 456
+    assert response.json()["m_name"] == "pdp_model_without_schema_configs"

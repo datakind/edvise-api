@@ -10,6 +10,7 @@ from .databricks import (
     BRONZE_SYNC_MAX_OBJECTS,
     BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE,
     BRONZE_SYNC_STRICT_MODE,
+    CLOUDRUN_BUNDLE_JOB_PREFIX,
     DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
     DatabricksBronzeSyncRequest,
     DatabricksControl,
@@ -109,7 +110,7 @@ def test_resolve_pipeline_job_substring_dev_prefix():
     assert w.jobs.list.call_count == 2
 
 
-def test_resolve_pipeline_job_ambiguous_substring_raises():
+def test_resolve_pipeline_job_ambiguous_substring_uses_first_match():
     canonical = "edvise_github_sourced_pdp_inference_pipeline"
     a = _job_named(f"[dev a] {canonical}", job_id=1)
     b = _job_named(f"[dev b] {canonical}", job_id=2)
@@ -117,13 +118,31 @@ def test_resolve_pipeline_job_ambiguous_substring_raises():
     def list_jobs(name=None):
         if name is not None:
             return iter([])
-        return iter([a, b])
+        return iter([b, a])
 
     w = MagicMock()
     w.jobs.list.side_effect = list_jobs
 
-    with pytest.raises(ValueError, match="Multiple jobs match substring"):
-        _resolve_pipeline_job(w, canonical, "test")
+    assert _resolve_pipeline_job(w, canonical, "test").job_id == 1
+
+
+def test_resolve_pipeline_job_prefers_cloudrun_bundle_job():
+    canonical = "edvise_github_sourced_pdp_inference_pipeline"
+    jobs = [
+        _job_named(f"[dev kayla] {canonical}", job_id=1),
+        _job_named(f"{CLOUDRUN_BUNDLE_JOB_PREFIX} {canonical}", job_id=99),
+        _job_named(f"[dev vishakh] {canonical}", job_id=3),
+    ]
+
+    def list_jobs(name=None):
+        if name is not None:
+            return iter([])
+        return iter(jobs)
+
+    w = MagicMock()
+    w.jobs.list.side_effect = list_jobs
+
+    assert _resolve_pipeline_job(w, canonical, "test").job_id == 99
 
 
 def test_resolve_bronze_sync_job_id_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
