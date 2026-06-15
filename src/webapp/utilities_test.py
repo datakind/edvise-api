@@ -32,15 +32,17 @@ def test_base_user_class_functions():
 
 
 def test_has_at_most_one_school_type() -> None:
-    """Test mutual exclusivity helper: at most one of pdp_id, edvise_id, legacy_id may be set."""
-    assert has_at_most_one_school_type(None, None, None) is True
-    assert has_at_most_one_school_type("pdp1", None, None) is True
-    assert has_at_most_one_school_type(None, "edvise1", None) is True
-    assert has_at_most_one_school_type(None, None, "legacy1") is True
-    assert has_at_most_one_school_type("pdp1", "edvise1", None) is False
-    assert has_at_most_one_school_type("pdp1", None, "legacy1") is False
-    assert has_at_most_one_school_type(None, "edvise1", "legacy1") is False
-    assert has_at_most_one_school_type("pdp1", "edvise1", "legacy1") is False
+    """Test mutual exclusivity helper: at most one school-type id may be set."""
+    assert has_at_most_one_school_type(None, None, None, None) is True
+    assert has_at_most_one_school_type("pdp1", None, None, None) is True
+    assert has_at_most_one_school_type(None, "edvise1", None, None) is True
+    assert has_at_most_one_school_type(None, None, "legacy1", None) is True
+    assert has_at_most_one_school_type(None, None, None, "genai1") is True
+    assert has_at_most_one_school_type("pdp1", "edvise1", None, None) is False
+    assert has_at_most_one_school_type("pdp1", None, "legacy1", None) is False
+    assert has_at_most_one_school_type(None, "edvise1", "legacy1", None) is False
+    assert has_at_most_one_school_type("pdp1", "edvise1", "legacy1", None) is False
+    assert has_at_most_one_school_type(None, None, "legacy1", "genai1") is False
 
 
 def test_has_access_to_inst_or_err():
