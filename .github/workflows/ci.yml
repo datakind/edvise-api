@@ -36,3 +36,30 @@ jobs:
     uses: ./.github/workflows/style.yml
   tests:
     uses: ./.github/workflows/tests.yml
+
+  ci:
+    needs:
+      [
+        pr-title,
+        asana,
+        dependency-review,
+        enforce-targets,
+        pre-release,
+        style,
+        tests,
+      ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require passing checks
+        run: |
+          for result in \
+            "${{ needs.pr-title.result }}" \
+            "${{ needs.asana.result }}" \
+            "${{ needs.dependency-review.result }}" \
+            "${{ needs.enforce-targets.result }}" \
+            "${{ needs.pre-release.result }}" \
+            "${{ needs.style.result }}" \
+            "${{ needs.tests.result }}"; do
+            case "$result" in success|skipped) ;; *) exit 1 ;; esac
+          done
