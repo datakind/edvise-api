@@ -80,6 +80,7 @@ EMPTY_INSTITUTION_OBJ = {
     "pdp_id": None,
     "edvise_id": None,
     "legacy_id": None,
+    "genai_id": None,
     "retention_days": 0,
 }
 
@@ -90,6 +91,7 @@ INSTITUTION_OBJ = {
     "pdp_id": "12345",
     "edvise_id": None,
     "legacy_id": None,
+    "genai_id": None,
     "retention_days": None,
 }
 

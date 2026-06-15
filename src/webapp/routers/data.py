@@ -6,7 +6,7 @@ from datetime import datetime, date
 from typing import Annotated, Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, false, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 import os
@@ -30,6 +30,8 @@ from ..utilities import (
     DataSource,
     get_external_bucket_name,
     decode_url_piece,
+    expand_batch_file_name_lookups,
+    file_name_variants_for_lookup,
 )
 
 from ..database import (
@@ -888,9 +890,16 @@ def create_batch(
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),  # type: ignore
         )
-        f_names = [] if not req.file_names else req.file_names
+        f_names = [] if not req.file_names else list(req.file_names)
         f_ids = [] if not req.file_ids else strs_to_uuids(req.file_ids)
-        print(f"File names: {f_names}, File Ids: {f_ids}")
+        file_match_parts: List[Any] = []
+        if f_ids:
+            file_match_parts.append(FileTable.id.in_(f_ids))
+        if f_names:
+            file_match_parts.append(
+                FileTable.name.in_(expand_batch_file_name_lookups(f_names))
+            )
+        file_clause = or_(*file_match_parts) if file_match_parts else false()
         # Check that the files requested for this batch exists.
         # Only valid non-sst generated files can be added to a batch at creation time.
         query_result_files = (
@@ -898,10 +907,7 @@ def create_batch(
             .execute(
                 select(FileTable).where(
                     and_(
-                        or_(
-                            FileTable.id.in_(f_ids),
-                            FileTable.name.in_(f_names),
-                        ),
+                        file_clause,
                         FileTable.inst_id == str_to_uuid(inst_id),
                         FileTable.valid == True,
                         FileTable.sst_generated == False,
@@ -1043,12 +1049,15 @@ def update_batch(
     if "file_names" in update_data_req:
         for f in update_data_req["file_names"]:
             # Check that the files requested for this batch exists
+            name_variants = list(file_name_variants_for_lookup(f))
             query_result_file = (
                 local_session.get()
                 .execute(
                     select(FileTable).where(
                         and_(
-                            FileTable.name == f,
+                            FileTable.name.in_(name_variants)
+                            if name_variants
+                            else false(),
                             FileTable.inst_id == str_to_uuid(inst_id),
                         )
                     )
@@ -1396,7 +1405,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
 
     Args:
         file_name: Name of the file (used for keyword inference).
-        inst: Institution row (must have legacy_id attr for legacy fallback).
+        inst: Institution row (legacy_id or genai_id enables arbitrary-name UNKNOWN fallback).
 
     Returns:
         Sorted list of allowed schema names (e.g. ["COURSE"], ["STUDENT"], ["UNKNOWN"]).
@@ -1423,7 +1432,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
     if has_semester:
         inferred_from_name.add("SEMESTER")
     if not inferred_from_name:
-        if getattr(inst, "legacy_id", None):
+        if getattr(inst, "legacy_id", None) or getattr(inst, "genai_id", None):
             return ["UNKNOWN"]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1441,23 +1450,26 @@ def _resolve_schema_namespace(inst: Any) -> str:
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
     legacy_id = getattr(inst, "legacy_id", None)
-    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id):
+    genai_id = getattr(inst, "genai_id", None)
+    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id, genai_id):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Institution configuration error: cannot have more than one of "
-            "pdp_id, edvise_id, or legacy_id set",
+            "pdp_id, edvise_id, legacy_id, or genai_id set",
         )
     if edvise_id:
         return "edvise"
     if pdp_id:
         return "pdp"
     if legacy_id:
-        return "legacy"
+        return ("legacy", None)
+    if genai_id:
+        return ("legacy", None)
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=(
             "Institution configuration error: institution has no pdp_id, edvise_id, "
-            "or legacy_id; cannot resolve validation schema."
+            "legacy_id, or genai_id; cannot resolve validation schema."
         ),
     )
 

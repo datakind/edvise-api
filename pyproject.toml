@@ -3,7 +3,7 @@ name = "src"
 version = "0.3.0"
 description = "School-agnostic lib for implementing Edvise workflows."
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<=3.13"
 dependencies = [
     "databricks-sdk~=0.38.0",
     "pydantic~=2.10",
@@ -18,7 +18,6 @@ dependencies = [
     "pycryptodome~=3.20.0",
     "python-dotenv~=1.0.1",
     "strenum~=0.4.15",
-    "tomli~=2.0; python_version<'3.11'",
     "jsonpickle~=4.0.1",
     "requests~=2.32.0",
     "types-requests~=2.32.0.0",
@@ -101,7 +100,7 @@ testpaths = ["src"]
 
 [tool.mypy]
 files = ["src"]
-python_version = "3.10"
+python_version = "3.12"
 pretty = true
 allow_redefinition = true
 warn_return_any = true
