@@ -20,4 +20,4 @@ jobs:
       - name: Check types
         if: steps.changed-files.outputs.any_changed == 'true'
         run: |
-          uv run python -m mypy --install-types --non-interactive ${{ steps.changed-files.outputs.all_changed_files }}
+          uv run python -m mypy ${{ steps.changed-files.outputs.all_changed_files }}

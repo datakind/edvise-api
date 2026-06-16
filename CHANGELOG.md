@@ -1,2 +1,13 @@
-# CHANGELOG
-- TBD: Updated with gitflow & semver
+## 1.0.0 (2026-06-16)
+- feat: add GenAI as a fourth schema type (alongside PDP, Edvise, and Legacy) in API and uploads (#244)
+- feat: legacy school inference Databricks job trigger (#212)
+- feat: validate Edvise uploads against repo schemas (#242)
+- feat: trigger Databricks GCS→bronze sync after file validation (Edvise/Legacy) (#239)
+- feat: simplify create-model request to name only (#238)
+- feat: add `clear_cache` option to `/eda` endpoint (#233)
+- feat: establish `pyproject.toml` as canonical Edvise API version (#243)
+- fix: derive PDP batch schema configs from institution schemas (#247)
+- chore: bump `edvise` dependency to 1.2.0
+- chore: standardize Python 3.12 across project, CI, devcontainer, and Docker
+- ci: adopt DataKind shared workflows (#245)
+- docs: inherit org community health files (#237)
