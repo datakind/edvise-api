@@ -1,7 +1,7 @@
 # This Dockerfile uses a multi-stage build to separate the build environment from the runtime.
 
 # Build stage
-FROM python:3.10-slim-bookworm AS builder
+FROM python:3.12-slim-bookworm AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.5.30 /uv /uvx /bin/
 
 ENV UV_COMPILE_BYTECODE=1
@@ -28,7 +28,7 @@ ADD . /app
 RUN uv sync --frozen --no-editable
 
 # Runtime stage
-FROM python:3.10-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # Copy the environment, but not the source code
 COPY --from=builder /app/.venv /app/.venv
