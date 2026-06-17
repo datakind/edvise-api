@@ -991,6 +991,7 @@ EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EDVISE_INST_2_UUID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 EDVISE_SCHEMA_UUID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 LEGACY_INST_UUID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+GENAI_INST_UUID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 PDP_ONLY_INST_UUID = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 
 
@@ -1133,6 +1134,84 @@ def legacy_client_fixture(
 
     def get_session_override():
         return legacy_session
+
+    def get_current_active_user_override():
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            None,
+            AccessType.DATAKINDER,
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
+
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(name="genai_session")
+def genai_session_fixture():
+    """Database setup for GenAI (any-format) tests: one institution with genai_id."""
+    engine = sqlalchemy.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    try:
+        with sqlalchemy.orm.Session(engine) as session:
+            session.add_all(
+                [
+                    InstTable(
+                        id=GENAI_INST_UUID,
+                        name="genai_school",
+                        genai_id="genai123",
+                        pdp_id=None,
+                        edvise_id=None,
+                        legacy_id=None,
+                        schemas=["UNKNOWN"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.base,
+                        is_pdp=False,
+                        is_edvise=False,
+                        version_label="1.0.0",
+                        json_doc={"version": "1.0.0", "base": {"data_models": {}}},
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                ]
+            )
+            session.commit()
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(name="genai_client")
+def genai_client_fixture(
+    genai_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> Any:
+    """Test client for GenAI institution tests."""
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    def get_session_override():
+        return genai_session
 
     def get_current_active_user_override():
         from ..utilities import AccessType, BaseUser
@@ -1340,10 +1419,59 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert call_kwargs.get("institution_id") == "legacy"
 
 
+def test_validate_file_with_genai_schema(genai_client: TestClient) -> None:
+    """GenAI schools use legacy any-format validation and trigger GCS→bronze sync."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = genai_client.post(
+        "/institutions/"
+        + uuid_to_str(GENAI_INST_UUID)
+        + "/input/validate-upload/genai_student_data.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "genai_student_data.csv"
+    assert response.json()["file_types"] == ["STUDENT"]
+    assert response.json()["inst_id"] == uuid_to_str(GENAI_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.validated_blob_paths == ["validated/genai_student_data.csv"]
+    assert sync_req.inst_name == "genai_school"
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "legacy"
+
+
+def test_validate_file_genai_accepts_arbitrary_filename(
+    genai_client: TestClient,
+) -> None:
+    """GenAI schools may use any filename; when inference fails, allowed_schemas is UNKNOWN."""
+    MOCK_STORAGE.validate_file.return_value = ["UNKNOWN"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = genai_client.post(
+        "/institutions/"
+        + uuid_to_str(GENAI_INST_UUID)
+        + "/input/validate-upload/export_2024.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "export_2024.csv"
+    assert response.json()["file_types"] == ["UNKNOWN"]
+    assert response.json()["inst_id"] == uuid_to_str(GENAI_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    assert MOCK_STORAGE.validate_file.call_args.args[2] == ["UNKNOWN"]
+    assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "legacy"
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+
+
 def test_validate_upload_pdp_only_institution_skips_bronze_sync(
     pdp_only_client: TestClient,
 ) -> None:
-    """PDP-only schools do not trigger GCS→bronze sync (Edvise/Legacy pipeline only)."""
+    """PDP-only schools do not trigger GCS→bronze sync (Edvise/Legacy/GenAI only)."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
     MOCK_DATABRICKS.reset_mock()
 

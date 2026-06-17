@@ -62,7 +62,9 @@ logger.setLevel(logging.DEBUG)
 
 
 def _gcs_bronze_sync_skip_reason(
-    edvise_id: Optional[str], legacy_id: Optional[str]
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+    genai_id: Optional[str],
 ) -> Optional[str]:
     """
     If sync should not run, return a stable reason code; otherwise None.
@@ -75,8 +77,8 @@ def _gcs_bronze_sync_skip_reason(
         "yes",
     ):
         return "env_disabled"
-    if edvise_id is None and legacy_id is None:
-        return "not_edvise_or_legacy"
+    if edvise_id is None and legacy_id is None and genai_id is None:
+        return "not_edvise_legacy_or_genai"
     return None
 
 
@@ -162,6 +164,7 @@ def _trigger_gcs_bronze_sync_if_applicable(
     inst_name: str,
     edvise_id: Optional[str],
     legacy_id: Optional[str],
+    genai_id: Optional[str],
     inst_id: str,
     file_name: str,
     bucket: str,
@@ -172,7 +175,7 @@ def _trigger_gcs_bronze_sync_if_applicable(
     trace_base = _bronze_sync_trace_base(correlation_id, inst_id, bucket, file_name)
     _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
 
-    skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id)
+    skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id, genai_id)
     if skip_reason is not None:
         _log_bronze_sync_skipped(trace_base, skip_reason)
         return
@@ -1401,7 +1404,7 @@ STATE = _ValidationState()
 
 
 def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]:
-    """Infer allowed schema names from file name; legacy may use any name (UNKNOWN).
+    """Infer allowed schema names from file name; legacy/genai may use any name (UNKNOWN).
 
     Args:
         file_name: Name of the file (used for keyword inference).
@@ -1411,7 +1414,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
         Sorted list of allowed schema names (e.g. ["COURSE"], ["STUDENT"], ["UNKNOWN"]).
 
     Raises:
-        HTTPException: 422 if name is non-descriptive and institution is not legacy.
+        HTTPException: 422 if name is non-descriptive and institution is not legacy/genai.
     """
     name = os.path.basename(file_name).lower()
     has_course = "course" in name
@@ -1446,7 +1449,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
 
 
 def _resolve_schema_namespace(inst: Any) -> str:
-    """Resolve validation namespace by institution type (edvise/pdp/legacy)."""
+    """Resolve validation namespace by institution type (edvise/pdp/legacy/genai)."""
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
     legacy_id = getattr(inst, "legacy_id", None)
@@ -1461,10 +1464,8 @@ def _resolve_schema_namespace(inst: Any) -> str:
         return "edvise"
     if pdp_id:
         return "pdp"
-    if legacy_id:
-        return ("legacy", None)
-    if genai_id:
-        return ("legacy", None)
+    if legacy_id or genai_id:
+        return "legacy"
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=(
@@ -1657,6 +1658,7 @@ def validation_helper(
         inst.name,
         inst.edvise_id,
         inst.legacy_id,
+        inst.genai_id,
         inst_id,
         file_name,
         bucket,
