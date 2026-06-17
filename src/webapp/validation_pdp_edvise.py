@@ -1,11 +1,9 @@
-"""PDP Pandera schemas re-exported from edvise for upload validation.
+"""Pandera schemas re-exported from edvise for upload validation.
 
-Imports ``RawPDPCohortDataSchema`` and ``RawPDPCourseDataSchema`` so PDP uploads use
-the same column and type rules as edvise pipeline audits. Cohort row transforms run
-in ``validation.py`` (optional converter) and can differ from batch ``dataio`` hooks;
-this module only supplies schema classes and helpers.
-
-Non-PDP Edvise institutions use JSON-based validation elsewhere (different columns).
+Imports raw PDP and Edvise schema classes so uploads use the same column and type
+rules as edvise pipeline audits. Cohort row transforms run in ``validation.py``
+(optional converter) and can differ from batch ``dataio`` hooks; this module only
+supplies schema classes and helpers.
 
 Requires the ``edvise`` package (see pyproject.toml).
 """
@@ -23,6 +21,8 @@ from pandera.errors import SchemaError, SchemaErrors
 
 from edvise.data_audit.schemas.raw_cohort import RawPDPCohortDataSchema
 from edvise.data_audit.schemas.raw_course import RawPDPCourseDataSchema
+from edvise.data_audit.schemas.raw_edvise_course import RawEdviseCourseDataSchema
+from edvise.data_audit.schemas.raw_edvise_student import RawEdviseStudentDataSchema
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,8 @@ def _get_hard_validation_error_class() -> type:
     return HardValidationError
 
 
-# Institution namespaces that use edvise repo schemas (RawPDPCohortDataSchema / RawPDPCourseDataSchema).
-# Only PDP uses repo validation; Edvise has a different shape and uses JSON-based validation only.
-PDP_EDVISE_NAMESPACES = frozenset({"pdp"})
+# Institution namespaces that use edvise repo schemas for single-model uploads.
+PDP_EDVISE_NAMESPACES = frozenset({"pdp", "edvise"})
 
 
 def rename_pdp_dataframe_to_repo_schema(
@@ -86,16 +85,17 @@ def get_edvise_schema_for_upload(
     Return the edvise repo schema class for this upload, or None.
 
     Use this as the single check: when not None, run that schema and skip JSON
-    Pandera. Only PDP uses repo validation (edvise package required); Edvise
-    institution has a different shape and uses JSON validation only.
+    Pandera. PDP and Edvise single-model STUDENT/COURSE uploads use repo
+    validation (edvise package required).
 
     Args:
-        institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy"). Only "pdp" uses repo schema.
+        institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy").
         model_list: Inferred model names from filename (e.g. ["STUDENT"], ["COURSE"]). May be None.
 
     Returns:
         RawPDPCohortDataSchema for PDP+STUDENT, RawPDPCourseDataSchema for PDP+COURSE,
-        or None (non-PDP or multi-model; use JSON-based validation).
+        RawEdviseStudentDataSchema for Edvise+STUDENT, RawEdviseCourseDataSchema for
+        Edvise+COURSE, or None (non-repo-schema or multi-model; use JSON-based validation).
     """
     if not institution_id or not isinstance(institution_id, str):
         return None
@@ -104,10 +104,14 @@ def get_edvise_schema_for_upload(
     if model_list is not None and not isinstance(model_list, list):
         return None
     model_set = {str(m).strip().upper() for m in (model_list or []) if m}
-    if model_set == {"STUDENT"}:
+    if institution_id == "pdp" and model_set == {"STUDENT"}:
         return cast(Optional[type], RawPDPCohortDataSchema)
-    if model_set == {"COURSE"}:
+    if institution_id == "pdp" and model_set == {"COURSE"}:
         return cast(Optional[type], RawPDPCourseDataSchema)
+    if institution_id == "edvise" and model_set == {"STUDENT"}:
+        return cast(Optional[type], RawEdviseStudentDataSchema)
+    if institution_id == "edvise" and model_set == {"COURSE"}:
+        return cast(Optional[type], RawEdviseCourseDataSchema)
     return None
 
 
@@ -120,7 +124,7 @@ def should_use_edvise_schema(
 
 
 def get_edvise_schema_for_models(model_list: List[str]) -> Optional[type]:
-    """Return edvise schema for single-model list (pdp namespace). For tests/callers that don't have institution_id."""
+    """Return PDP edvise schema for single-model lists when callers lack institution_id."""
     return get_edvise_schema_for_upload("pdp", model_list)
 
 
@@ -246,7 +250,7 @@ def validate_dataframe_with_edvise_schema(
     raw_to_canon: Dict[str, str],
     canon_to_raw: Dict[str, str],
     merged_specs: Dict[str, dict],
-) -> None:
+) -> pd.DataFrame:
     """
     Validate a DataFrame with the given edvise schema (cohort or course).
 
@@ -256,10 +260,13 @@ def validate_dataframe_with_edvise_schema(
 
     Args:
         df: DataFrame with canonical column names (from header pass + read).
-        schema_class: RawPDPCohortDataSchema or RawPDPCourseDataSchema.
+        schema_class: RawPDPCohortDataSchema, RawPDPCourseDataSchema, or raw Edvise schema.
         raw_to_canon: Mapping from raw file headers to canonical names.
         canon_to_raw: Mapping from canonical names to raw file headers.
         merged_specs: Merged JSON spec for formatter context.
+
+    Returns:
+        Validated DataFrame returned by the upstream schema class.
 
     Raises:
         HardValidationError: When schema validation fails (missing columns or row-level checks).
@@ -274,7 +281,8 @@ def validate_dataframe_with_edvise_schema(
         )
     try:
         # Lazy=True so all failures are collected in one SchemaErrors.
-        schema_class.validate(df, lazy=True)  # type: ignore[attr-defined]
+        validated_df = schema_class.validate(df, lazy=True)  # type: ignore[attr-defined]
+        return cast(pd.DataFrame, validated_df)
     except (SchemaErrors, SchemaError) as e:
         # Pandera raises SchemaErrors for lazy validation; single failure may raise SchemaError.
         hard = _convert_schema_errors_to_hard_validation_error(

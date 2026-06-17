@@ -1,5 +1,6 @@
 """Main file for the SST API."""
 
+from importlib.metadata import version
 import logging
 from typing import Any, Annotated, Optional, cast
 from datetime import timedelta
@@ -45,11 +46,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 app = FastAPI(
-    servers=[
-        # TODO: placeholders
-        {"url": "https://stag.example.com", "description": "Staging environment"},
-        {"url": "https://prod.example.com", "description": "Production environment"},
-    ],
+    title="Edvise API",
+    version=version("src"),
     root_path="/api/v1",
 )
 

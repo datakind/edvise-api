@@ -29,6 +29,7 @@ from ..database import (
     get_session,
 )
 from ..utilities import uuid_to_str, get_current_active_user, SchemaType
+from . import data as data_router
 from .data import (
     router,
     DataOverview,
@@ -37,8 +38,11 @@ from .data import (
 )
 from fastapi import HTTPException
 from ..gcsutil import StorageControl
+from ..databricks import DatabricksControl
 
 MOCK_STORAGE = mock.Mock()
+MOCK_DATABRICKS = mock.Mock()
+MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.return_value = mock.Mock(job_run_id=1)
 
 UUID_2 = uuid.UUID("9bcbc782-2e71-4441-afa2-7a311024a5ec")
 FILE_UUID_1 = uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a")
@@ -214,10 +218,14 @@ def client_fixture(session: sqlalchemy.orm.Session, monkeypatch: Any) -> Any:
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -892,12 +900,189 @@ def test_get_eda_data_success(
     assert "series" in data["race_by_pell_status"]
 
 
+def test_get_eda_data_clear_cache(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """clear-cache=1 evicts the TTL entry so batch files are read from storage again."""
+    import pandas as pd
+
+    data_router.EDA_CACHE.clear()
+
+    eda_batch = BatchTable(
+        id=uuid.UUID("66666666-6666-6666-6666-666666666666"),
+        inst_id=USER_VALID_INST_UUID,
+        name="batch_eda_clear_cache",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        completed=True,
+    )
+    student_file = FileTable(
+        id=uuid.UUID("77777777-7777-7777-7777-777777777777"),
+        inst_id=USER_VALID_INST_UUID,
+        name="student_clear_cache.csv",
+        source="MANUAL_UPLOAD",
+        batches={eda_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    session.add_all([eda_batch, student_file])
+    session.commit()
+
+    df_cohort = pd.DataFrame(
+        {
+            "student_id": ["S001"],
+            "cohort": ["2020"],
+            "cohort_term": ["FALL"],
+            "enrollment_type": ["FIRST-TIME"],
+            "enrollment_intensity_first_term": ["Full-Time"],
+            "gpa_group_year_1": [3.5],
+            "credential_type_sought_year_1": ["Bachelor"],
+            "pell_status_first_year": ["N"],
+            "first_gen": ["N"],
+            "gender": ["Female"],
+            "race": ["White"],
+            "student_age": ["20 - 24"],
+        }
+    )
+
+    def mock_read_csv(bucket_name: str, blob_path: str) -> pd.DataFrame:
+        if "student" in blob_path.lower():
+            return df_cohort
+        raise ValueError(f"File not found: {blob_path}")
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = mock_read_csv
+
+    base_path = (
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/batch/"
+        + uuid_to_str(eda_batch.id)
+        + "/eda"
+    )
+
+    try:
+        with mock.patch.object(
+            data_router,
+            "read_batch_files_as_dataframes",
+            wraps=data_router.read_batch_files_as_dataframes,
+        ) as read_dfs:
+            r1 = client.get(base_path)
+            assert r1.status_code == 200
+            assert read_dfs.call_count == 1
+            r2 = client.get(base_path)
+            assert r2.status_code == 200
+            assert read_dfs.call_count == 1
+            r3 = client.get(base_path + "?clear-cache=1")
+            assert r3.status_code == 200
+            assert read_dfs.call_count == 2
+            r4 = client.get(base_path)
+            assert r4.status_code == 200
+            assert read_dfs.call_count == 2
+    finally:
+        MOCK_STORAGE.reset_mock()
+
+
 # ==================== EDVISE VALIDATION TESTS ====================
 
 EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EDVISE_INST_2_UUID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 EDVISE_SCHEMA_UUID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 LEGACY_INST_UUID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+PDP_ONLY_INST_UUID = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+
+
+@pytest.fixture(name="pdp_only_session")
+def pdp_only_session_fixture():
+    """Database setup for PDP-only institution (pdp_id set; no edvise_id or legacy_id)."""
+    engine = sqlalchemy.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    pdp_schema_doc = {
+        "version": "1.0.0",
+        "institutions": {"pdp": {"data_models": {}}},
+    }
+    try:
+        with sqlalchemy.orm.Session(engine) as session:
+            session.add_all(
+                [
+                    InstTable(
+                        id=PDP_ONLY_INST_UUID,
+                        name="pdp_only_school",
+                        pdp_id="pdp999",
+                        edvise_id=None,
+                        legacy_id=None,
+                        schemas=["STUDENT"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.base,
+                        is_pdp=False,
+                        is_edvise=False,
+                        version_label="1.0.0",
+                        json_doc={"version": "1.0.0", "base": {"data_models": {}}},
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.extension,
+                        is_pdp=True,
+                        is_edvise=False,
+                        version_label="pdp-1.0.0",
+                        json_doc=pdp_schema_doc,
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                ]
+            )
+            session.commit()
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(name="pdp_only_client")
+def pdp_only_client_fixture(
+    pdp_only_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> Any:
+    """Test client for PDP-only institution validation tests."""
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    def get_session_override():
+        return pdp_only_session
+
+    def get_current_active_user_override():
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            uuid_to_str(PDP_ONLY_INST_UUID),
+            AccessType.MODEL_OWNER,
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
+
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture(name="legacy_session")
@@ -963,10 +1148,14 @@ def legacy_client_fixture(
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -1083,10 +1272,14 @@ def edvise_client_fixture(
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     yield client
@@ -1100,6 +1293,7 @@ def edvise_client_fixture(
 def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     """Test file upload validation uses Edvise Schema (ES) when edvise_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
 
     response = edvise_client.post(
         "/institutions/"
@@ -1116,12 +1310,20 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     # Verify that validate_file was called with institution_identifier for Edvise Schema (ES)
     assert MOCK_STORAGE.validate_file.called
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "edvise"
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
+
+    # GCS → bronze Databricks job triggered for Edvise schools
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.validated_blob_paths == ["validated/edvise_student_file.csv"]
+    assert sync_req.inst_name == "edvise_school"
 
 
 def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     """Test file upload validation uses legacy (any-format) path when legacy_id is set."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
 
     response = legacy_client.post(
         "/institutions/"
@@ -1135,8 +1337,73 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
 
     assert MOCK_STORAGE.validate_file.called
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.validated_blob_paths == ["validated/legacy_student_data.csv"]
+    assert sync_req.inst_name == "legacy_school"
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_id") == "legacy"
+
+
+def test_validate_upload_pdp_only_institution_skips_bronze_sync(
+    pdp_only_client: TestClient,
+) -> None:
+    """PDP-only schools do not trigger GCS→bronze sync (Edvise/Legacy pipeline only)."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = pdp_only_client.post(
+        "/institutions/"
+        + uuid_to_str(PDP_ONLY_INST_UUID)
+        + "/input/validate-upload/pdp_student_file.csv",
+    )
+
+    assert response.status_code == 200
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
+
+
+def test_validate_upload_skips_bronze_sync_when_env_disabled(
+    edvise_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENABLE_GCS_BRONZE_SYNC_ON_VALIDATION=false disables bronze sync for Edvise schools."""
+    monkeypatch.setenv("ENABLE_GCS_BRONZE_SYNC_ON_VALIDATION", "false")
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/edvise_student_file.csv",
+    )
+
+    assert response.status_code == 200
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
+
+
+def test_validate_upload_databricks_trigger_failure_is_non_fatal(
+    edvise_client: TestClient,
+) -> None:
+    """Databricks trigger errors do not fail validation after the file is validated."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.side_effect = RuntimeError(
+        "network failed"
+    )
+    try:
+        response = edvise_client.post(
+            "/institutions/"
+            + uuid_to_str(EDVISE_INST_UUID)
+            + "/input/validate-upload/edvise_student_file.csv",
+        )
+
+        assert response.status_code == 200
+        assert response.json()["name"] == "edvise_student_file.csv"
+        MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    finally:
+        MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.side_effect = None
+        MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.return_value = mock.Mock(
+            job_run_id=1
+        )
 
 
 def test_validate_upload_rejects_empty_file_name(legacy_client: TestClient) -> None:
@@ -1376,7 +1643,7 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 
     assert response.status_code == 500
     assert (
-        "cannot have more than one of pdp_id, edvise_id, or legacy_id set"
+        "cannot have more than one of pdp_id, edvise_id, legacy_id, or genai_id set"
         in response.json()["detail"]
     )
 
@@ -1388,14 +1655,15 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
 def test_validation_helper_rejects_institution_without_school_type(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Upload validation requires pdp_id, edvise_id, or legacy_id on the institution."""
+    """Upload validation requires a school-type id on the institution."""
     inst = edvise_session.execute(
         select(InstTable).where(InstTable.id == EDVISE_INST_UUID)
     ).scalar_one()
-    saved = (inst.edvise_id, inst.pdp_id, inst.legacy_id)
+    saved = (inst.edvise_id, inst.pdp_id, inst.legacy_id, inst.genai_id)
     inst.edvise_id = None  # type: ignore
     inst.pdp_id = None  # type: ignore
     inst.legacy_id = None  # type: ignore
+    inst.genai_id = None  # type: ignore
     edvise_session.commit()
 
     from .data import STATE
@@ -1408,9 +1676,9 @@ def test_validation_helper_rejects_institution_without_school_type(
         + "/input/validate-upload/test_student_file.csv",
     )
     assert response.status_code == 500
-    assert "no pdp_id, edvise_id, or legacy_id" in response.json()["detail"]
+    assert "no pdp_id, edvise_id, legacy_id, or genai_id" in response.json()["detail"]
 
-    inst.edvise_id, inst.pdp_id, inst.legacy_id = saved
+    inst.edvise_id, inst.pdp_id, inst.legacy_id, inst.genai_id = saved
     edvise_session.commit()
 
 
@@ -1611,10 +1879,14 @@ def test_validate_edvise_unauthorized(
     def storage_control_override():
         return MOCK_STORAGE
 
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
     app.include_router(router)
     app.dependency_overrides[get_session] = get_session_override
     app.dependency_overrides[get_current_active_user] = get_current_active_user_override
     app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
 
     client = TestClient(app)
     try:
