@@ -2,7 +2,6 @@
 # Each trigger sets _REGION and _ENVIRONMENT; deploys Cloud Run service "${_ENVIRONMENT}-webapp".
 substitutions:
   _REGION: us-east4
-  _SERVICE: edvise-api
 steps:
   - name: ghcr.io/astral-sh/uv:debian
     entrypoint: bash
@@ -34,7 +33,7 @@ steps:
     args:
       - run
       - deploy
-      - "${_SERVICE}"
+      - "${_ENVIRONMENT}-webapp"
       - "--image"
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
       - "--region"
