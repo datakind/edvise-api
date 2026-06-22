@@ -713,9 +713,7 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"run_es_inference(): Job could not be run: {e}") from e
 
         if not run_job.response or run_job.response.run_id is None:
-            raise ValueError(
-                "run_es_inference(): Job did not return a valid run_id."
-            )
+            raise ValueError("run_es_inference(): Job did not return a valid run_id.")
 
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
