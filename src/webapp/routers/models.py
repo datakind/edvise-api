@@ -607,23 +607,26 @@ def trigger_inference_run(
             + str(len(inst_result)),
         )
     inst = inst_result[0][0]
-    # Determine institution type: PDP, Edvise, or Legacy
-    # There are only three options: PDP (pdp_id), Edvise (edvise_id), or Legacy (legacy_id or none)
-    # Follows the same pattern as validation_helper in data.py
+    # Determine institution type: PDP, Edvise Schema (ES), Legacy, or GenAI.
+    # Follows the same pattern as validation_helper in data.py.
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
     legacy_id = getattr(inst, "legacy_id", None)
-    # Defensive check: ensure mutual exclusivity (should not happen if validation works correctly)
-    if sum(bool(x) for x in (pdp_id, edvise_id, legacy_id)) > 1:
+    genai_id = getattr(inst, "genai_id", None)
+    if sum(bool(x) for x in (pdp_id, edvise_id, legacy_id, genai_id)) > 1:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Institution configuration error: cannot have more than one of pdp_id, edvise_id, or legacy_id set",
+            detail=(
+                "Institution configuration error: cannot have more than one of "
+                "pdp_id, edvise_id, legacy_id, or genai_id set"
+            ),
         )
     is_pdp = bool(pdp_id)
     is_legacy = bool(legacy_id)
+    is_edvise = bool(edvise_id) or bool(genai_id)
 
-    # Legacy schools inference
-    if is_legacy:
+    # Legacy, Edvise Schema (ES), and GenAI inference (config-driven; no batch validation)
+    if is_legacy or is_edvise:
         legacy_model_result = (
             local_session.get()
             .execute(
@@ -654,13 +657,17 @@ def trigger_inference_run(
             email=current_user.email or "",
         )
         try:
-            res = databricks_control.run_legacy_inference(db_req)
+            if is_legacy:
+                res = databricks_control.run_legacy_inference(db_req)
+            else:
+                res = databricks_control.run_es_inference(db_req)
         except Exception as e:
             tb = traceback.format_exc()
             logging.error(f"Databricks run failure:\n{tb}")
+            op = "run_legacy_inference" if is_legacy else "run_es_inference"
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Databricks run_legacy_inference error. Error = {str(e)}",
+                detail=f"Databricks {op} error. Error = {str(e)}",
             ) from e
         triggered_timestamp = datetime.now()
         latest_model_version = databricks_control.fetch_model_version(
@@ -695,7 +702,7 @@ def trigger_inference_run(
     if not is_pdp:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP and Legacy schools inference are supported.",
+            detail="Currently, only PDP, Legacy, Edvise Schema (ES), and GenAI schools inference are supported.",
         )
     query_result = (
         local_session.get()
