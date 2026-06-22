@@ -38,17 +38,6 @@ def test_validate_file_reader_pdp_student_calls_edvise_read_path(
 
     with (
         patch(
-            "src.webapp.validation._compute_model_list_and_merged_specs",
-            return_value=(
-                ["STUDENT"],
-                {"student_id": {"dtype": "string", "required": True}},
-            ),
-        ),
-        patch(
-            "src.webapp.validation.pdp_edvise.get_edvise_schema_for_upload",
-            return_value=object(),  # non-None so PDP path is taken
-        ),
-        patch(
             "src.webapp.validation._validate_pdp_with_edvise_read",
             return_value={
                 "validation_status": "passed",
@@ -62,8 +51,6 @@ def test_validate_file_reader_pdp_student_calls_edvise_read_path(
         result = validate_file_reader(
             str(csv_path),
             ["STUDENT"],
-            base_schema={"base": {"data_models": {}}},
-            inst_schema={"institutions": {"pdp": {"data_models": {}}}},
             institution_id="pdp",
         )
         assert result["validation_status"] == "passed"
@@ -84,17 +71,6 @@ def test_validate_file_reader_pdp_course_calls_edvise_read_path(tmp_path: Path) 
 
     with (
         patch(
-            "src.webapp.validation._compute_model_list_and_merged_specs",
-            return_value=(
-                ["COURSE"],
-                {"course_id": {"dtype": "string", "required": True}},
-            ),
-        ),
-        patch(
-            "src.webapp.validation.pdp_edvise.get_edvise_schema_for_upload",
-            return_value=object(),
-        ),
-        patch(
             "src.webapp.validation._validate_pdp_with_edvise_read",
             return_value={
                 "validation_status": "passed",
@@ -108,8 +84,6 @@ def test_validate_file_reader_pdp_course_calls_edvise_read_path(tmp_path: Path) 
         result = validate_file_reader(
             str(csv_path),
             ["COURSE"],
-            base_schema={"base": {"data_models": {}}},
-            inst_schema={"institutions": {"pdp": {"data_models": {}}}},
             institution_id="pdp",
         )
         assert result["validation_status"] == "passed"
@@ -127,17 +101,6 @@ def test_validate_file_reader_edvise_student_calls_repo_schema_path(
 
     with (
         patch(
-            "src.webapp.validation._compute_model_list_and_merged_specs",
-            return_value=(
-                ["STUDENT"],
-                {"learner_id": {"dtype": "string", "required": True}},
-            ),
-        ),
-        patch(
-            "src.webapp.validation.pdp_edvise.get_edvise_schema_for_upload",
-            return_value=object(),
-        ),
-        patch(
             "src.webapp.validation._validate_edvise_with_repo_schema",
             return_value={
                 "validation_status": "passed",
@@ -151,8 +114,6 @@ def test_validate_file_reader_edvise_student_calls_repo_schema_path(
         result = validate_file_reader(
             str(csv_path),
             ["STUDENT"],
-            base_schema={"base": {"data_models": {}}},
-            inst_schema={"institutions": {"edvise": {"data_models": {}}}},
             institution_id="edvise",
         )
         assert result["validation_status"] == "passed"
@@ -170,32 +131,24 @@ def test_validate_file_reader_edvise_routes_before_schema_merge(
     csv_path = tmp_path / "edvise_student.csv"
     pd.DataFrame({"learner_id": ["s1"]}).to_csv(csv_path, index=False)
 
-    with (
-        patch(
-            "src.webapp.validation._validate_edvise_with_repo_schema",
-            return_value={
-                "validation_status": "passed",
-                "schemas": ["STUDENT"],
-                "missing_optional": [],
-                "unknown_extra_columns": [],
-                "normalized_df": pd.DataFrame({"learner_id": ["s1"]}),
-            },
-        ) as mock_edvise_schema,
-        patch(
-            "src.webapp.validation._compute_model_list_and_merged_specs"
-        ) as mock_merge,
-    ):
+    with patch(
+        "src.webapp.validation._validate_edvise_with_repo_schema",
+        return_value={
+            "validation_status": "passed",
+            "schemas": ["STUDENT"],
+            "missing_optional": [],
+            "unknown_extra_columns": [],
+            "normalized_df": pd.DataFrame({"learner_id": ["s1"]}),
+        },
+    ) as mock_edvise_schema:
         result = validate_file_reader(
             str(csv_path),
             ["STUDENT"],
-            base_schema={"base": {"data_models": {}}},
-            inst_schema={"institutions": {"edvise": {"data_models": {}}}},
             institution_id="edvise",
         )
 
     assert result["validation_status"] == "passed"
     mock_edvise_schema.assert_called_once()
-    mock_merge.assert_not_called()
 
 
 def test_validate_edvise_with_repo_schema_preserves_string_values(

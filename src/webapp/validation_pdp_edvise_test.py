@@ -181,7 +181,7 @@ def test_extract_missing_required_includes_only_missing_column_checks() -> None:
 
 
 def test_get_edvise_schema_for_upload_single_entry_point() -> None:
-    """get_edvise_schema_for_upload is the single check: None = JSON path, else repo schema."""
+    """get_edvise_schema_for_upload returns repo schema classes for supported uploads."""
     assert get_edvise_schema_for_upload("", ["STUDENT"]) is None
     assert get_edvise_schema_for_upload("pdp", ["STUDENT", "COURSE"]) is None
     assert get_edvise_schema_for_upload("edvise", ["STUDENT", "COURSE"]) is None
@@ -194,7 +194,7 @@ def test_get_edvise_schema_for_upload_single_entry_point() -> None:
 
 
 def test_get_edvise_schema_for_upload_rejects_non_list_model_list() -> None:
-    """When model_list is not a list (e.g. wrong type), return None to fall back to JSON validation."""
+    """When model_list is not a list (e.g. wrong type), return None so callers can reject it."""
     assert (
         get_edvise_schema_for_upload("pdp", None) is None
     )  # None is allowed, treated as []

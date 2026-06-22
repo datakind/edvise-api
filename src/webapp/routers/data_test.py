@@ -1,7 +1,6 @@
 """Test file for the data.py file and constituent API functions."""
 
 import uuid
-import time
 from unittest import mock
 from collections import Counter
 from fastapi.testclient import TestClient
@@ -992,6 +991,7 @@ EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EDVISE_INST_2_UUID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 EDVISE_SCHEMA_UUID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 LEGACY_INST_UUID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+GENAI_INST_UUID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 PDP_ONLY_INST_UUID = uuid.UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 
 
@@ -1162,6 +1162,84 @@ def legacy_client_fixture(
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(name="genai_session")
+def genai_session_fixture():
+    """Database setup for GenAI (any-format) tests: one institution with genai_id."""
+    engine = sqlalchemy.create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    try:
+        with sqlalchemy.orm.Session(engine) as session:
+            session.add_all(
+                [
+                    InstTable(
+                        id=GENAI_INST_UUID,
+                        name="genai_school",
+                        genai_id="genai123",
+                        pdp_id=None,
+                        edvise_id=None,
+                        legacy_id=None,
+                        schemas=["UNKNOWN"],
+                        created_at=DATETIME_TESTING,
+                        updated_at=DATETIME_TESTING,
+                    ),
+                    SchemaRegistryTable(
+                        doc_type=DocType.base,
+                        is_pdp=False,
+                        is_edvise=False,
+                        version_label="1.0.0",
+                        json_doc={"version": "1.0.0", "base": {"data_models": {}}},
+                        is_active=True,
+                        created_at=DATETIME_TESTING,
+                    ),
+                ]
+            )
+            session.commit()
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(name="genai_client")
+def genai_client_fixture(
+    genai_session: sqlalchemy.orm.Session, monkeypatch: Any
+) -> Any:
+    """Test client for GenAI institution tests."""
+    monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+
+    def get_session_override():
+        return genai_session
+
+    def get_current_active_user_override():
+        from ..utilities import AccessType, BaseUser
+
+        return BaseUser(
+            uuid_to_str(USER_UUID),
+            None,
+            AccessType.DATAKINDER,
+            "abc@example.com",
+        )
+
+    def storage_control_override():
+        return MOCK_STORAGE
+
+    def databricks_control_override():
+        return MOCK_DATABRICKS
+
+    app.include_router(router)
+    app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_current_active_user] = get_current_active_user_override
+    app.dependency_overrides[StorageControl] = storage_control_override
+    app.dependency_overrides[DatabricksControl] = databricks_control_override
+
+    client = TestClient(app)
+    yield client
+    app.dependency_overrides.clear()
+
+
 @pytest.fixture(name="edvise_session")
 def edvise_session_fixture():
     """Unit test database setup for Edvise Schema (ES) tests."""
@@ -1284,10 +1362,6 @@ def edvise_client_fixture(
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
-    # Clear Edvise cache between tests
-    from .data import STATE
-
-    STATE._edvise_cache = (0.0, None)
 
 
 def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
@@ -1345,10 +1419,59 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert call_kwargs.get("institution_id") == "legacy"
 
 
+def test_validate_file_with_genai_schema(genai_client: TestClient) -> None:
+    """GenAI schools use legacy any-format validation and trigger GCS→bronze sync."""
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = genai_client.post(
+        "/institutions/"
+        + uuid_to_str(GENAI_INST_UUID)
+        + "/input/validate-upload/genai_student_data.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "genai_student_data.csv"
+    assert response.json()["file_types"] == ["STUDENT"]
+    assert response.json()["inst_id"] == uuid_to_str(GENAI_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.validated_blob_paths == ["validated/genai_student_data.csv"]
+    assert sync_req.inst_name == "genai_school"
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "legacy"
+
+
+def test_validate_file_genai_accepts_arbitrary_filename(
+    genai_client: TestClient,
+) -> None:
+    """GenAI schools may use any filename; when inference fails, allowed_schemas is UNKNOWN."""
+    MOCK_STORAGE.validate_file.return_value = ["UNKNOWN"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = genai_client.post(
+        "/institutions/"
+        + uuid_to_str(GENAI_INST_UUID)
+        + "/input/validate-upload/export_2024.csv",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "export_2024.csv"
+    assert response.json()["file_types"] == ["UNKNOWN"]
+    assert response.json()["inst_id"] == uuid_to_str(GENAI_INST_UUID)
+
+    assert MOCK_STORAGE.validate_file.called
+    assert MOCK_STORAGE.validate_file.call_args.args[2] == ["UNKNOWN"]
+    assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "legacy"
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+
+
 def test_validate_upload_pdp_only_institution_skips_bronze_sync(
     pdp_only_client: TestClient,
 ) -> None:
-    """PDP-only schools do not trigger GCS→bronze sync (Edvise/Legacy pipeline only)."""
+    """PDP-only schools do not trigger GCS→bronze sync (Edvise/Legacy/GenAI only)."""
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
     MOCK_DATABRICKS.reset_mock()
 
@@ -1557,6 +1680,35 @@ def test_validate_edvise_non_descriptive_filename_returns_422(
     assert "report" in response.json()["detail"]
 
 
+def test_validate_edvise_unsupported_model_validation_error_returns_400(
+    edvise_client: TestClient,
+) -> None:
+    """Unsupported Edvise model sets surface as validation errors."""
+    from ..validation import HardValidationError
+
+    MOCK_STORAGE.validate_file.side_effect = HardValidationError(
+        schema_errors=(
+            "edvise upload validation only supports STUDENT and COURSE "
+            "single-model uploads through the edvise repo. Requested model(s): SEMESTER."
+        ),
+        failure_cases=[],
+    )
+
+    response = edvise_client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/input/validate-upload/semester.csv",
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "edvise repo" in detail
+    assert "SEMESTER" in detail
+
+    MOCK_STORAGE.validate_file.side_effect = None
+    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+
+
 def test_validate_upload_second_call_succeeds_and_idempotent(
     legacy_client: TestClient,
 ) -> None:
@@ -1584,11 +1736,10 @@ def test_validate_upload_second_call_succeeds_and_idempotent(
     assert response2.json()["inst_id"] == response1.json()["inst_id"]
 
 
-def test_validation_helper_edvise_schema_not_found(
+def test_validate_file_with_edvise_does_not_require_active_schema_doc(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test error when edvise_id is set but no active Edvise Schema (ES) exists."""
-    # Deactivate the Edvise Schema (ES)
+    """Edvise uploads no longer require active JSON schema registry docs."""
     edvise_schema = edvise_session.execute(
         select(SchemaRegistryTable).where(
             SchemaRegistryTable.is_edvise.is_(True),
@@ -1599,11 +1750,6 @@ def test_validation_helper_edvise_schema_not_found(
         edvise_schema.is_active = False
         edvise_session.commit()
 
-    # Clear cache to force reload
-    from .data import STATE
-
-    STATE._edvise_cache = (0.0, None)
-
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
 
     response = edvise_client.post(
@@ -1612,9 +1758,11 @@ def test_validation_helper_edvise_schema_not_found(
         + "/input/validate-upload/test_student_file.csv",
     )
 
-    assert response.status_code == 500
-    assert "Edvise Schema (ES) not found" in response.json()["detail"]
-    assert "edvise_id" in response.json()["detail"]
+    assert response.status_code == 200
+    assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "edvise"
+    assert MOCK_STORAGE.validate_file.call_args.kwargs.get(
+        "institution_identifier"
+    ) == uuid_to_str(EDVISE_INST_UUID)
 
 
 def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
@@ -1627,11 +1775,6 @@ def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
     ).scalar_one_or_none()
     corrupted_inst.pdp_id = "pdp999"  # type: ignore
     edvise_session.commit()
-
-    # Clear cache
-    from .data import STATE
-
-    STATE._edvise_cache = (0.0, None)
 
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
 
@@ -1666,10 +1809,6 @@ def test_validation_helper_rejects_institution_without_school_type(
     inst.genai_id = None  # type: ignore
     edvise_session.commit()
 
-    from .data import STATE
-
-    STATE._edvise_cache = (0.0, None)
-
     response = edvise_client.post(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
@@ -1680,48 +1819,6 @@ def test_validation_helper_rejects_institution_without_school_type(
 
     inst.edvise_id, inst.pdp_id, inst.legacy_id, inst.genai_id = saved
     edvise_session.commit()
-
-
-def test_edvise_schema_cache(
-    edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
-) -> None:
-    """Test that Edvise Schema (ES) is cached and reused."""
-    from .data import STATE
-
-    # Clear cache
-    STATE._edvise_cache = (0.0, None)
-
-    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
-
-    # First call: Should load from DB and set cache
-    response1 = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_student1.csv",
-    )
-    assert response1.status_code == 200
-
-    # Verify cache was set
-    cache_exp, cache_doc = STATE._edvise_cache
-    assert cache_doc is not None
-    assert cache_exp > time.monotonic()
-
-    # Second call: Should use cached value (same expiration time)
-    response2 = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(EDVISE_INST_2_UUID)  # Different institution, same schema
-        + "/input/validate-upload/test_student2.csv",
-    )
-    assert response2.status_code == 200
-
-    # Verify cache expiration time is the same (cache was reused)
-    cache_exp2, cache_doc2 = STATE._edvise_cache
-    assert cache_doc2 is not None
-    assert cache_exp2 == cache_exp  # Same expiration means cache was reused
-
-    # Both institutions should use the same cached Edvise Schema (ES)
-    assert STATE._edvise_cache[1] is not None
-    assert STATE._edvise_cache[1] is cache_doc
 
 
 def test_validate_file_edvise_schema_validation_errors(
@@ -1759,10 +1856,10 @@ def test_validate_file_edvise_schema_validation_errors(
     MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
 
 
-def test_edvise_schema_takes_precedence_over_custom(
+def test_edvise_validation_does_not_pass_custom_schema_doc(
     edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
 ) -> None:
-    """Test that Edvise Schema (ES) is used instead of custom when edvise_id is set."""
+    """Edvise uploads pass namespace only, not JSON schema registry docs."""
     # Add a custom extension for this institution with unique version_label
     custom_schema = SchemaRegistryTable(
         doc_type=DocType.extension,
@@ -1777,25 +1874,17 @@ def test_edvise_schema_takes_precedence_over_custom(
     edvise_session.add(custom_schema)
     edvise_session.commit()
 
-    # Clear cache
-    from .data import STATE
-
-    STATE._edvise_cache = (0.0, None)
-
-    # Capture schema, institution_id, and institution_identifier passed to validate_file
-    captured_schema = None
+    # Capture active validation metadata and ensure only bucket/name/models are positional.
+    captured_arg_count = None
     captured_institution_id = None
     captured_institution_identifier = None
 
     def capture_schema(*args, **kwargs):
         # fmt: off
-        nonlocal captured_schema, captured_institution_id, captured_institution_identifier
+        nonlocal captured_arg_count, captured_institution_id, captured_institution_identifier
         # fmt: on
-        # validate_file(bucket, file_name, allowed_schemas, base_schema, inst_schema, institution_id=..., institution_identifier=...)
-        if len(args) >= 5:
-            captured_schema = args[4]
-        elif "inst_schema" in kwargs:
-            captured_schema = kwargs["inst_schema"]
+        # validate_file(bucket, file_name, allowed_schemas, institution_id=..., institution_identifier=...)
+        captured_arg_count = len(args)
         captured_institution_id = kwargs.get("institution_id")
         captured_institution_identifier = kwargs.get("institution_identifier")
         return ["STUDENT"]
@@ -1808,25 +1897,10 @@ def test_edvise_schema_takes_precedence_over_custom(
         + "/input/validate-upload/test_student_file.csv",
     )
 
-    # Should succeed using Edvise Schema (ES), not custom
     assert response.status_code == 200
 
-    # Verify Edvise Schema (ES) was passed to validation (not custom)
-    assert captured_schema is not None
-    # Edvise Schema (ES) should have "edvise" or "institutions" structure
-    assert isinstance(captured_schema, dict)
-    assert (
-        "edvise" in str(captured_schema).lower()
-        or captured_schema.get("institutions") is not None
-    )
-    # Custom schema should NOT be in the captured schema
-    assert (
-        "custom" not in str(captured_schema).lower()
-        or captured_schema.get("custom") is None
-    )
-    # Verify correct institution_id so merge_model_columns uses institutions["edvise"]
+    assert captured_arg_count == 3
     assert captured_institution_id == "edvise"
-    # Router must pass institution_identifier (institution UUID) for Edvise normalization
     assert captured_institution_identifier == uuid_to_str(EDVISE_INST_UUID)
 
     # Reset mock
@@ -1931,85 +2005,6 @@ def test_validate_edvise_course_file(edvise_client: TestClient) -> None:
     assert response.json()["file_types"] == ["COURSE"]
     assert response.json()["name"] == "edvise_course.csv"
     assert response.json()["inst_id"] == uuid_to_str(EDVISE_INST_UUID)
-
-
-def test_edvise_cache_expiration(
-    edvise_client: TestClient, edvise_session: sqlalchemy.orm.Session
-) -> None:
-    """Test that expired cache reloads from database."""
-    from .data import STATE
-
-    # Set cache with expired TTL
-    old_exp = time.monotonic() - 1
-    STATE._edvise_cache = (old_exp, {"old": "schema"})
-
-    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
-
-    # Should reload from DB (cache expired) and update cache
-    response = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_student.csv",
-    )
-    assert response.status_code == 200
-
-    # Verify cache was updated with new expiration
-    cache_exp, cache_doc = STATE._edvise_cache
-    assert cache_doc is not None
-    assert cache_exp > old_exp  # New expiration time means cache was reloaded
-
-
-def test_edvise_cache_none_reloads(edvise_client: TestClient) -> None:
-    """Test that None in expired cache doesn't prevent reload."""
-    from .data import STATE
-
-    # Set cache with None but expired TTL
-    STATE._edvise_cache = (time.monotonic() - 1, None)
-
-    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
-
-    # Should reload from DB (not use None)
-    response = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_student.csv",
-    )
-    # Should succeed (schema exists in DB)
-    assert response.status_code == 200
-    # Cache should now have the schema
-    assert STATE._edvise_cache[1] is not None
-
-
-def test_edvise_cache_shared_across_institutions(edvise_client: TestClient) -> None:
-    """Test that all Edvise Schema (ES) institutions share the same cached schema."""
-    from .data import STATE
-
-    STATE._edvise_cache = (0.0, None)
-
-    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
-
-    # First institution
-    response1 = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(EDVISE_INST_UUID)
-        + "/input/validate-upload/test_student1.csv",
-    )
-    assert response1.status_code == 200
-
-    # Get cached schema
-    cache_exp, cache_doc = STATE._edvise_cache
-    assert cache_doc is not None
-
-    # Second institution should use same cache
-    response2 = edvise_client.post(
-        "/institutions/"
-        + uuid_to_str(EDVISE_INST_2_UUID)
-        + "/input/validate-upload/test_student2.csv",
-    )
-    assert response2.status_code == 200
-
-    # Cache should be unchanged (same object reference)
-    assert STATE._edvise_cache[1] is cache_doc
 
 
 def test_validate_edvise_inst_not_found(edvise_client: TestClient) -> None:
