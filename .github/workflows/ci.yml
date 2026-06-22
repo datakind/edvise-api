@@ -12,7 +12,7 @@ jobs:
       pull-requests: read
 
   asana:
-    uses: datakind/.github/.github/workflows/link-asana-task.yml@feature/shared-workflows
+    uses: datakind/.github/.github/workflows/link-asana-task.yml@main
     secrets:
       ASANA_SECRET: ${{ secrets.ASANA_SECRET }}
 
