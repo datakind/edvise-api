@@ -627,7 +627,7 @@ def trigger_inference_run(
 
     # Legacy, Edvise Schema (ES), and GenAI inference
     if is_legacy or is_edvise:
-        # or: legacy_or_edvise_model_result ? 
+        # or: legacy_or_edvise_model_result ?
         shared_model_result = (
             local_session.get()
             .execute(
