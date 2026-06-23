@@ -627,7 +627,8 @@ def trigger_inference_run(
 
     # Legacy, Edvise Schema (ES), and GenAI inference (config-driven; no batch validation)
     if is_legacy or is_edvise:
-        legacy_model_result = (
+        # or: legacy_or_edvise_model_result ? 
+        model_result = (
             local_session.get()
             .execute(
                 select(ModelTable).where(
@@ -639,11 +640,11 @@ def trigger_inference_run(
             )
             .all()
         )
-        if len(legacy_model_result) != 1:
+        if len(model_result) != 1:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Unexpected number of models found: Expected 1, got "
-                + str(len(legacy_model_result)),
+                + str(len(model_result)),
             )
         # For legacy schools, we don't need batch validation (config and features table are used instead)
         # Omitting names is allowed; pass empty strings so Pydantic accepts the request and the
@@ -680,7 +681,7 @@ def trigger_inference_run(
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
             batch_name=f"{model_name}_{triggered_timestamp}",  # Legacy schools don't use batches
-            model_id=legacy_model_result[0][0].id,
+            model_id=model_result[0][0].id,
             output_valid=False,
             model_version=latest_model_version.version,
             model_run_id=latest_model_version.run_id,
