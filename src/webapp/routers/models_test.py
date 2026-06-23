@@ -10,6 +10,7 @@ import sqlalchemy
 from sqlalchemy.pool import StaticPool
 from ..test_helper import (
     USR,
+    DATAKINDER,
     USER_VALID_INST_UUID,
     USER_UUID,
     UUID_INVALID,
@@ -43,6 +44,7 @@ MOCK_STORAGE = mock.Mock()
 MOCK_DATABRICKS = mock.Mock()
 
 UUID_2 = uuid.UUID("9bcbc782-2e71-4441-afa2-7a311024a5ec")
+EDVISE_INST_UUID = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 FILE_UUID_1 = uuid.UUID("f0bb3a20-6d92-4254-afed-6a72f43c562a")
 FILE_UUID_2 = uuid.UUID("cb02d06c-2a59-486a-9bdd-d394a4fcb833")
 FILE_UUID_3 = uuid.UUID("fbe67a2e-50e0-40c7-b7b8-07043cb813a5")
@@ -515,3 +517,48 @@ def test_trigger_inference_run_derives_schema_configs_when_null(
     assert response.status_code == 200
     assert response.json()["run_id"] == 456
     assert response.json()["m_name"] == "pdp_model_without_schema_configs"
+
+
+def test_trigger_es_inference_run_edvise_institution(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """Edvise Schema institutions trigger run_es_inference instead of run_pdp_inference."""
+    app.dependency_overrides[get_current_active_user] = lambda: DATAKINDER
+    MOCK_DATABRICKS.reset_mock()
+    edvise_inst = InstTable(
+        id=EDVISE_INST_UUID,
+        name="edvise_school",
+        edvise_id="edvise_test_1",
+        schemas=[SchemaType.STUDENT, SchemaType.COURSE],
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    edvise_model = ModelTable(
+        id=uuid.uuid4(),
+        inst_id=EDVISE_INST_UUID,
+        name="es_model",
+        schema_configs=None,
+        valid=True,
+    )
+    session.add_all([edvise_inst, edvise_model])
+    session.commit()
+
+    MOCK_DATABRICKS.run_es_inference.return_value = DatabricksInferenceRunResponse(
+        job_run_id=789
+    )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        version="2", run_id="run-es"
+    )
+
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(EDVISE_INST_UUID)
+        + "/models/es_model/run-inference",
+        json={"batch_name": "ignored_for_es", "config_file_name": "config.toml"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == 789
+    assert response.json()["m_name"] == "es_model"
+    MOCK_DATABRICKS.run_es_inference.assert_called_once()
+    MOCK_DATABRICKS.run_pdp_inference.assert_not_called()

@@ -33,10 +33,11 @@ LOGGER = logging.getLogger(__name__)
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
 # The name of the deployed pipeline in Databricks. Must match the job's `name` in that workspace.
-# Override with LEGACY_INFERENCE_JOB_NAME (and PDP_INFERENCE_JOB_NAME) when dev/staging deploy
-# uses a different bundle target or a stub job that matches the same parameters.
+# Override with LEGACY_INFERENCE_JOB_NAME, ES_INFERENCE_JOB_NAME (and PDP_INFERENCE_JOB_NAME)
+# when dev/staging deploy uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
+ES_INFERENCE_JOB_NAME = "github_sourced_es_inference_pipeline"
 # Dev bundle prefix for the Cloud Run service principal job target.
 CLOUDRUN_BUNDLE_JOB_PREFIX = "[dev dev_cloudrun_sa]"
 # GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
@@ -218,6 +219,11 @@ def _legacy_inference_job_name() -> str:
     return name or LEGACY_INFERENCE_JOB_NAME
 
 
+def _es_inference_job_name() -> str:
+    name = os.environ.get("ES_INFERENCE_JOB_NAME", "").strip()
+    return name or ES_INFERENCE_JOB_NAME
+
+
 def _disambiguate_pipeline_job_matches(
     matches: list[tuple[str, Any]],
     pipeline_type: str,
@@ -327,7 +333,7 @@ class DatabricksPDPInferenceRunRequest(BaseModel):
     gcp_external_bucket_name: str
 
 
-class DatabricksLegacyInferenceRunRequest(BaseModel):
+class DatabricksSharedInferenceRunRequest(BaseModel):
     """Databricks parameters for a legacy schools inference run."""
 
     inst_name: str
@@ -591,7 +597,7 @@ class DatabricksControl(BaseModel):
         return DatabricksInferenceRunResponse(job_run_id=run_id)
 
     def run_legacy_inference(
-        self, req: DatabricksLegacyInferenceRunRequest
+        self, req: DatabricksSharedInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
         """Triggers legacy schools inference Databricks run."""
         LOGGER.info(f"Running legacy inference for institution: {req.inst_name}")
@@ -647,6 +653,67 @@ class DatabricksControl(BaseModel):
             raise ValueError(
                 "run_legacy_inference(): Job did not return a valid run_id."
             )
+
+        run_id = run_job.response.run_id
+        LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
+
+        return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_es_inference(
+        self, req: DatabricksSharedInferenceRunRequest
+    ) -> DatabricksInferenceRunResponse:
+        """Triggers Edvise Schema (ES) inference Databricks run."""
+        LOGGER.info(f"Running ES inference for institution: {req.inst_name}")
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"run_es_inference(): Workspace client initialization failed: {e}"
+            ) from e
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        pipeline_type = _es_inference_job_name()
+
+        try:
+            job = _resolve_pipeline_job(w, pipeline_type, "run_es_inference")
+            job_id = job.job_id
+            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+        except Exception as e:
+            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            raise ValueError(f"run_es_inference(): Failed to find job: {e}") from e
+
+        try:
+            run_job: Any = w.jobs.run_now(
+                job_id,
+                job_parameters={
+                    "databricks_institution_name": db_inst_name,
+                    "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+                    "model_name": req.model_name,
+                    "config_file_name": req.config_file_name,
+                    "schema_type": "edvise",
+                    "gcp_bucket_name": req.gcp_external_bucket_name,
+                    "datakind_notification_email": req.email,
+                    "DK_CC_EMAIL": req.email,
+                },
+            )
+            LOGGER.info(
+                f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
+            )
+        except Exception as e:
+            LOGGER.exception("Failed to run the ES inference job.")
+            raise ValueError(f"run_es_inference(): Job could not be run: {e}") from e
+
+        if not run_job.response or run_job.response.run_id is None:
+            raise ValueError("run_es_inference(): Job did not return a valid run_id.")
 
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
