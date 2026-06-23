@@ -703,7 +703,7 @@ def trigger_inference_run(
     if not is_pdp:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP, Legacy, Edvise Schema (ES), and GenAI schools inference are supported.",
+            detail="Currently, only PDP, Legacy, and Edvise Schema (ES) schools inference are supported.",
         )
     query_result = (
         local_session.get()
