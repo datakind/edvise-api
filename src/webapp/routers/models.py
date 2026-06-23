@@ -625,7 +625,7 @@ def trigger_inference_run(
     is_legacy = bool(legacy_id)
     is_edvise = bool(edvise_id) or bool(genai_id)
 
-    # Legacy, Edvise Schema (ES), and GenAI inference (config-driven; no batch validation)
+    # Legacy, Edvise Schema (ES), and GenAI inference
     if is_legacy or is_edvise:
         # or: legacy_or_edvise_model_result ? 
         shared_model_result = (
