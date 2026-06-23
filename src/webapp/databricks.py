@@ -333,7 +333,7 @@ class DatabricksPDPInferenceRunRequest(BaseModel):
     gcp_external_bucket_name: str
 
 
-class DatabricksLegacyInferenceRunRequest(BaseModel):
+class DatabricksSharedInferenceRunRequest(BaseModel):
     """Databricks parameters for a legacy schools inference run."""
 
     inst_name: str
@@ -597,7 +597,7 @@ class DatabricksControl(BaseModel):
         return DatabricksInferenceRunResponse(job_run_id=run_id)
 
     def run_legacy_inference(
-        self, req: DatabricksLegacyInferenceRunRequest
+        self, req: DatabricksSharedInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
         """Triggers legacy schools inference Databricks run."""
         LOGGER.info(f"Running legacy inference for institution: {req.inst_name}")
@@ -660,7 +660,7 @@ class DatabricksControl(BaseModel):
         return DatabricksInferenceRunResponse(job_run_id=run_id)
 
     def run_es_inference(
-        self, req: DatabricksLegacyInferenceRunRequest
+        self, req: DatabricksSharedInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
         """Triggers Edvise Schema (ES) inference Databricks run."""
         LOGGER.info(f"Running ES inference for institution: {req.inst_name}")

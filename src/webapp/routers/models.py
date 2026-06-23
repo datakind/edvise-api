@@ -11,7 +11,7 @@ from sqlalchemy.future import select
 from ..databricks import (
     DatabricksControl,
     DatabricksPDPInferenceRunRequest,
-    DatabricksLegacyInferenceRunRequest,
+    DatabricksSharedInferenceRunRequest,
 )
 from ..utilities import (
     has_access_to_inst_or_err,
@@ -628,7 +628,7 @@ def trigger_inference_run(
     # Legacy, Edvise Schema (ES), and GenAI inference (config-driven; no batch validation)
     if is_legacy or is_edvise:
         # or: legacy_or_edvise_model_result ? 
-        model_result = (
+        shared_model_result = (
             local_session.get()
             .execute(
                 select(ModelTable).where(
@@ -640,16 +640,16 @@ def trigger_inference_run(
             )
             .all()
         )
-        if len(model_result) != 1:
+        if len(shared_model_result) != 1:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Unexpected number of models found: Expected 1, got "
-                + str(len(model_result)),
+                + str(len(shared_model_result)),
             )
         # For legacy schools, we don't need batch validation (config and features table are used instead)
         # Omitting names is allowed; pass empty strings so Pydantic accepts the request and the
         # Edvise legacy_inference_inputs job can resolve artifacts under silver_volume (same as YAML defaults).
-        db_req = DatabricksLegacyInferenceRunRequest(
+        db_req = DatabricksSharedInferenceRunRequest(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
             config_file_name=req.config_file_name or "",
@@ -681,7 +681,7 @@ def trigger_inference_run(
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
             batch_name=f"{model_name}_{triggered_timestamp}",  # Legacy schools don't use batches
-            model_id=model_result[0][0].id,
+            model_id=shared_model_result[0][0].id,
             output_valid=False,
             model_version=latest_model_version.version,
             model_run_id=latest_model_version.run_id,
