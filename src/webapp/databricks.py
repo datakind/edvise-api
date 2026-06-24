@@ -364,6 +364,8 @@ class DatabricksBronzeSyncRequest(BaseModel):
     gcp_bucket_name: str
     # Full object paths in the bucket, e.g. ["validated/file.csv"].
     validated_blob_paths: list[str]
+    # When set, bronze copies land under gcs_uploads/<batch_id>/.
+    batch_id: str | None = None
 
 
 class DatabricksBronzeSyncResponse(BaseModel):
@@ -382,7 +384,7 @@ def _build_validated_bronze_sync_job_parameters(
         "gcp_bucket_name": req.gcp_bucket_name,
         "databricks_institution_name": databricks_institution_name,
         "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
-        "sync_run_id": "",
+        "batch_id": (req.batch_id or "").strip(),
         "gcs_source_prefix": BRONZE_SYNC_GCS_SOURCE_PREFIX,
         "bronze_subdir": BRONZE_SYNC_BRONZE_SUBDIR,
         "max_objects": BRONZE_SYNC_MAX_OBJECTS,
