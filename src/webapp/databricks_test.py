@@ -266,6 +266,7 @@ def test_build_validated_bronze_sync_job_parameters_shape() -> None:
         inst_name="Test School",
         gcp_bucket_name="bucket-a",
         validated_blob_paths=["validated/student.csv"],
+        batch_id="abc123batch",
     )
     params = _build_validated_bronze_sync_job_parameters(req, "test_school")
     assert params["gcp_bucket_name"] == "bucket-a"
@@ -275,7 +276,7 @@ def test_build_validated_bronze_sync_job_parameters_shape() -> None:
     assert params["max_objects"] == BRONZE_SYNC_MAX_OBJECTS
     assert params["require_at_least_one_file"] == BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE
     assert params["strict_mode"] == BRONZE_SYNC_STRICT_MODE
-    assert params["sync_run_id"] == ""
+    assert params["batch_id"] == "abc123batch"
     assert params["include_blob_paths_json"] == '["validated/student.csv"]'
 
 
