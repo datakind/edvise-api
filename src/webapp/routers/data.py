@@ -172,17 +172,14 @@ def _load_batch_for_bronze_sync(
 ) -> BatchTable:
     """Return the batch row or raise HTTPException when batch_id is invalid."""
     try:
-        batch = (
-            sess.execute(
-                select(BatchTable).where(
-                    and_(
-                        BatchTable.id == str_to_uuid(batch_id),
-                        BatchTable.inst_id == str_to_uuid(inst_id),
-                    )
+        batch = sess.execute(
+            select(BatchTable).where(
+                and_(
+                    BatchTable.id == str_to_uuid(batch_id),
+                    BatchTable.inst_id == str_to_uuid(inst_id),
                 )
             )
-            .scalar_one_or_none()
-        )
+        ).scalar_one_or_none()
     except (ValueError, TypeError):
         batch = None
     if batch is None:
