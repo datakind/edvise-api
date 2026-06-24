@@ -2,7 +2,7 @@
 
 import uuid
 import re
-from typing import Annotated, Final, Any, Optional, Tuple, Union
+from typing import Annotated, Final, Any, Iterable, Optional, Tuple, Union
 from urllib.parse import unquote_plus
 from strenum import StrEnum  # needed for python pre 3.11
 import jwt
@@ -18,7 +18,7 @@ from .authn import (
     verify_api_key,
     oauth2_apikey_scheme,
 )
-from .database import get_session, AccountTable, ApiKeyTable
+from .database import get_session, AccountTable, ApiKeyTable, FileTable
 from .config import env_vars
 
 
@@ -469,6 +469,19 @@ def uuid_to_str(uuid_val: uuid.UUID) -> Any:
 def str_to_uuid(hex_str: Optional[str]) -> uuid.UUID:
     """Convert str to UUID obj (database needs UUID obj)."""
     return uuid.UUID(hex_str)
+
+
+def batch_input_validated_blob_paths(
+    files: Iterable[FileTable],
+) -> list[str]:
+    """Return validated/ GCS paths for non-SST-generated batch input files."""
+    paths = sorted(f"validated/{f.name}" for f in files if not f.sst_generated)
+    if not paths:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch has no input files.",
+        )
+    return paths
 
 
 def get_external_bucket_name_from_uuid(inst_id: uuid.UUID) -> Any:

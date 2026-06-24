@@ -343,6 +343,10 @@ class DatabricksSharedInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str = ""
     gcp_external_bucket_name: str
+    # Batch UUID hex; bronze copies live under gcs_uploads/<batch_id>/.
+    batch_id: str = ""
+    # Full GCS object paths, e.g. ["validated/file.csv"].
+    validated_blob_paths: list[str] = []
 
     @field_validator("config_file_name", "features_table_name", "email", mode="before")
     @classmethod
@@ -372,6 +376,26 @@ class DatabricksBronzeSyncResponse(BaseModel):
     """Result of triggering the bronze sync Databricks job."""
 
     job_run_id: int
+
+
+def _build_shared_inference_job_parameters(
+    req: DatabricksSharedInferenceRunRequest,
+    databricks_institution_name: str,
+) -> dict[str, str]:
+    """Build common job_parameters for legacy and ES inference runs."""
+    return {
+        "databricks_institution_name": databricks_institution_name,
+        "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+        "model_name": req.model_name,
+        "config_file_name": req.config_file_name,
+        "gcp_bucket_name": req.gcp_external_bucket_name,
+        "datakind_notification_email": req.email,
+        "DK_CC_EMAIL": req.email,
+        "batch_id": req.batch_id,
+        "validated_blob_paths_json": json.dumps(
+            req.validated_blob_paths, separators=(",", ":")
+        ),
+    }
 
 
 def _build_validated_bronze_sync_job_parameters(
@@ -631,18 +655,11 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"run_legacy_inference(): Failed to find job: {e}")
 
         try:
+            job_parameters = _build_shared_inference_job_parameters(req, db_inst_name)
+            job_parameters["features_table_name"] = req.features_table_name
             run_job: Any = w.jobs.run_now(
                 job_id,
-                job_parameters={
-                    "databricks_institution_name": db_inst_name,
-                    "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
-                    "model_name": req.model_name,
-                    "config_file_name": req.config_file_name,
-                    "features_table_name": req.features_table_name,
-                    "gcp_bucket_name": req.gcp_external_bucket_name,
-                    "datakind_notification_email": req.email,
-                    "DK_CC_EMAIL": req.email,
-                },
+                job_parameters=job_parameters,
             )
             LOGGER.info(
                 f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
@@ -694,18 +711,11 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"run_es_inference(): Failed to find job: {e}") from e
 
         try:
+            job_parameters = _build_shared_inference_job_parameters(req, db_inst_name)
+            job_parameters["schema_type"] = "edvise"
             run_job: Any = w.jobs.run_now(
                 job_id,
-                job_parameters={
-                    "databricks_institution_name": db_inst_name,
-                    "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
-                    "model_name": req.model_name,
-                    "config_file_name": req.config_file_name,
-                    "schema_type": "edvise",
-                    "gcp_bucket_name": req.gcp_external_bucket_name,
-                    "datakind_notification_email": req.email,
-                    "DK_CC_EMAIL": req.email,
-                },
+                job_parameters=job_parameters,
             )
             LOGGER.info(
                 f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
