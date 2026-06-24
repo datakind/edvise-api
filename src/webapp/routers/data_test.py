@@ -510,6 +510,7 @@ def test_retrieve_file_as_bytes(client: TestClient) -> Any:
 
 def test_create_batch(client: TestClient) -> None:
     """Test POST /institutions/<uuid>/batch."""
+    MOCK_DATABRICKS.reset_mock()
     response = client.post(
         "/institutions/" + uuid_to_str(UUID_INVALID) + "/batch",
         json={"name": "batch_name_foo"},
@@ -544,6 +545,11 @@ def test_create_batch(client: TestClient) -> None:
         in response.json()["file_names_to_ids"]["file_input_one"]
     )
     assert len(response.json()["file_names_to_ids"]) == 1
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
+    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
+    assert sync_req.sync_run_id == response.json()["batch_id"]
+    assert sync_req.validated_blob_paths == ["validated/file_input_one"]
+    assert sync_req.inst_name == "school_1"
 
 
 def test_update_batch(client: TestClient) -> None:
@@ -1313,11 +1319,30 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert call_kwargs.get("institution_id") == "edvise"
     assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
 
-    # GCS → bronze Databricks job triggered for Edvise schools
+    # Non-PDP bronze sync runs only when batch_id is provided at validation time.
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
+
+
+def test_validate_with_batch_id_triggers_bronze_sync_with_sync_run_id(
+    client: TestClient,
+) -> None:
+    """Validate with batch_id copies validated files into bronze under that batch folder."""
+    MOCK_STORAGE.validate_file.return_value = ["COURSE"]
+    MOCK_DATABRICKS.reset_mock()
+
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/input/validate-upload/batch_scoped_file.csv"
+        + "?batch_id="
+        + uuid_to_str(BATCH_UUID),
+    )
+
+    assert response.status_code == 200
     MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
     sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
-    assert sync_req.validated_blob_paths == ["validated/edvise_student_file.csv"]
-    assert sync_req.inst_name == "edvise_school"
+    assert sync_req.sync_run_id == uuid_to_str(BATCH_UUID)
+    assert sync_req.validated_blob_paths == ["validated/batch_scoped_file.csv"]
 
 
 def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
@@ -1337,10 +1362,7 @@ def test_validate_file_with_legacy_schema(legacy_client: TestClient) -> None:
     assert response.json()["inst_id"] == uuid_to_str(LEGACY_INST_UUID)
 
     assert MOCK_STORAGE.validate_file.called
-    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_called_once()
-    sync_req = MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.call_args[0][0]
-    assert sync_req.validated_blob_paths == ["validated/legacy_student_data.csv"]
-    assert sync_req.inst_name == "legacy_school"
+    MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_id") == "legacy"
 
@@ -1381,19 +1403,21 @@ def test_validate_upload_skips_bronze_sync_when_env_disabled(
 
 
 def test_validate_upload_databricks_trigger_failure_is_non_fatal(
-    edvise_client: TestClient,
+    client: TestClient,
 ) -> None:
     """Databricks trigger errors do not fail validation after the file is validated."""
-    MOCK_STORAGE.validate_file.return_value = ["STUDENT"]
+    MOCK_STORAGE.validate_file.return_value = ["COURSE"]
     MOCK_DATABRICKS.reset_mock()
     MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.side_effect = RuntimeError(
         "network failed"
     )
     try:
-        response = edvise_client.post(
+        response = client.post(
             "/institutions/"
-            + uuid_to_str(EDVISE_INST_UUID)
-            + "/input/validate-upload/edvise_student_file.csv",
+            + uuid_to_str(USER_VALID_INST_UUID)
+            + "/input/validate-upload/edvise_student_file.csv"
+            + "?batch_id="
+            + uuid_to_str(BATCH_UUID),
         )
 
         assert response.status_code == 200

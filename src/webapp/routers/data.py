@@ -144,7 +144,8 @@ def _log_bronze_sync_trigger_failed(
 def _attempt_gcs_bronze_sync_trigger(
     inst_name: str,
     bucket: str,
-    validated_blob_path: str,
+    validated_blob_paths: list[str],
+    sync_run_id: str,
     databricks_control: DatabricksControl,
     trace_base: Dict[str, Any],
     correlation_id: str,
@@ -154,10 +155,47 @@ def _attempt_gcs_bronze_sync_trigger(
         DatabricksBronzeSyncRequest(
             inst_name=inst_name,
             gcp_bucket_name=bucket,
-            validated_blob_paths=[validated_blob_path],
+            validated_blob_paths=validated_blob_paths,
+            sync_run_id=sync_run_id,
         )
     )
-    _log_bronze_sync_success(trace_base, validated_blob_path, sync_resp.job_run_id)
+    path_for_log = (
+        validated_blob_paths[0]
+        if len(validated_blob_paths) == 1
+        else f"{len(validated_blob_paths)}_objects"
+    )
+    _log_bronze_sync_success(trace_base, path_for_log, sync_resp.job_run_id)
+
+
+def _load_batch_for_bronze_sync(
+    sess: Session, inst_id: str, batch_id: str
+) -> BatchTable:
+    """Return the batch row or raise HTTPException when batch_id is invalid."""
+    try:
+        batch = (
+            sess.execute(
+                select(BatchTable).where(
+                    and_(
+                        BatchTable.id == str_to_uuid(batch_id),
+                        BatchTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
+            .scalar_one_or_none()
+        )
+    except (ValueError, TypeError):
+        batch = None
+    if batch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found.",
+        )
+    if batch.deleted:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Batch is set for deletion, no modifications allowed.",
+        )
+    return batch
 
 
 def _trigger_gcs_bronze_sync_if_applicable(
@@ -169,14 +207,20 @@ def _trigger_gcs_bronze_sync_if_applicable(
     bucket: str,
     databricks_control: DatabricksControl,
     correlation_id: str,
+    batch_id: Optional[str],
 ) -> None:
     """Trigger Databricks job to copy validated/ into bronze without waiting for the copy."""
     trace_base = _bronze_sync_trace_base(correlation_id, inst_id, bucket, file_name)
+    if batch_id is not None:
+        trace_base["batch_id"] = batch_id
     _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
 
     skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id)
     if skip_reason is not None:
         _log_bronze_sync_skipped(trace_base, skip_reason)
+        return
+    if batch_id is None:
+        _log_bronze_sync_skipped(trace_base, "no_batch_id")
         return
 
     validated_blob_path = f"validated/{file_name}"
@@ -184,13 +228,54 @@ def _trigger_gcs_bronze_sync_if_applicable(
         _attempt_gcs_bronze_sync_trigger(
             inst_name,
             bucket,
-            validated_blob_path,
+            [validated_blob_path],
+            batch_id,
             databricks_control,
             trace_base,
             correlation_id,
         )
     except Exception:
         _log_bronze_sync_trigger_failed(trace_base, validated_blob_path, correlation_id)
+
+
+def _trigger_batch_bronze_sync_if_applicable(
+    inst: InstTable,
+    inst_id: str,
+    batch_id: str,
+    file_names: list[str],
+    databricks_control: DatabricksControl,
+) -> None:
+    """After batch creation, copy validated batch files into bronze under batch_id."""
+    skip_reason = _gcs_bronze_sync_skip_reason(inst.edvise_id, inst.legacy_id)
+    if skip_reason is not None or not file_names:
+        return
+
+    correlation_id = str(uuid.uuid4())
+    bucket = get_external_bucket_name(inst_id)
+    trace_base: Dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "inst_id": inst_id,
+        "bucket": bucket,
+        "batch_id": batch_id,
+        "trigger_source": "batch_create",
+    }
+    _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
+
+    validated_blob_paths = [f"validated/{name}" for name in file_names]
+    try:
+        _attempt_gcs_bronze_sync_trigger(
+            inst.name,
+            bucket,
+            validated_blob_paths,
+            batch_id,
+            databricks_control,
+            trace_base,
+            correlation_id,
+        )
+    except Exception:
+        _log_bronze_sync_trigger_failed(
+            trace_base, validated_blob_paths[0], correlation_id
+        )
 
 
 # Cache for EDA data - TTL of 10 minutes (600 seconds)
@@ -869,6 +954,7 @@ def create_batch(
     req: BatchCreationRequest,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
     """Create a new batch."""
     has_access_to_inst_or_err(inst_id, current_user)
@@ -886,6 +972,7 @@ def create_batch(
         )
         .all()
     )
+    created_new_batch = False
     if len(query_result) == 0:
         batch = BatchTable(
             name=req.name,
@@ -949,25 +1036,39 @@ def create_batch(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Database write of the batch created duplicate entries.",
             )
+        created_new_batch = True
     if len(query_result) > 1:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Batch with this name already exists.",
         )
+    batch_row = query_result[0][0]
+    batch_id_str = uuid_to_str(batch_row.id)
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is not None and created_new_batch:
+        _trigger_batch_bronze_sync_if_applicable(
+            inst,
+            inst_id,
+            batch_id_str,
+            [f.name for f in batch_row.files],
+            databricks_control,
+        )
     return {
-        "batch_id": uuid_to_str(query_result[0][0].id),
-        "inst_id": uuid_to_str(query_result[0][0].inst_id),
-        "name": query_result[0][0].name,
-        "file_names_to_ids": {
-            x.name: uuid_to_str(x.id) for x in query_result[0][0].files
-        },
-        "created_by": uuid_to_str(query_result[0][0].created_by),
+        "batch_id": batch_id_str,
+        "inst_id": uuid_to_str(batch_row.inst_id),
+        "name": batch_row.name,
+        "file_names_to_ids": {x.name: uuid_to_str(x.id) for x in batch_row.files},
+        "created_by": uuid_to_str(batch_row.created_by),
         "deleted": False,
         "completed": False,
         "deletion_request_time": None,
-        "created_at": query_result[0][0].created_at,
-        "updated_by": uuid_to_str(query_result[0][0].updated_by),
-        "updated_at": query_result[0][0].updated_at,
+        "created_at": batch_row.created_at,
+        "updated_by": uuid_to_str(batch_row.updated_by),
+        "updated_at": batch_row.updated_at,
     }
 
 
@@ -1693,6 +1794,7 @@ def validation_helper(
     storage_control: StorageControl,
     sql_session: Session,
     databricks_control: DatabricksControl,
+    batch_id: Optional[str] = None,
 ) -> Any:
     """Run file validation for an institution and upsert the file record.
 
@@ -1707,7 +1809,8 @@ def validation_helper(
         current_user: Authenticated user; must have access to inst_id.
         storage_control: StorageControl instance for GCS and validate_file.
         sql_session: DB session for institution, schema, and file record.
-        databricks_control: Starts the GCS→Databricks bronze sync after validation.
+        databricks_control: Starts the GCS→Databricks bronze sync after validation when
+            batch_id is provided (non-PDP schools only).
 
     Returns:
         Dict with name, inst_id, file_types, source, status.
@@ -1780,6 +1883,8 @@ def validation_helper(
         storage_control,
         sess,
     )
+    if batch_id is not None:
+        _load_batch_for_bronze_sync(sess, inst_id, batch_id)
     # GCS validated/ write is complete; start the Databricks run now. The API waits
     # only for run_now to return a run id, not for cluster startup or file copying.
     _trigger_gcs_bronze_sync_if_applicable(
@@ -1791,6 +1896,7 @@ def validation_helper(
         bucket,
         databricks_control,
         correlation_id,
+        batch_id,
     )
     return result
 
@@ -1805,6 +1911,7 @@ def validate_file_sftp(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    batch_id: Annotated[Optional[str], Query()] = None,
 ) -> Any:
     """Validate a given file pulled from SFTP. The file_name should be url encoded."""
     file_name = decode_url_piece(file_name)
@@ -1821,6 +1928,7 @@ def validate_file_sftp(
         storage_control,
         sql_session,
         databricks_control,
+        batch_id=batch_id,
     )
 
 
@@ -1834,6 +1942,7 @@ def validate_file_manual_upload(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    batch_id: Annotated[Optional[str], Query()] = None,
 ) -> Any:
     """Validate a given file. The file_name should be url encoded."""
 
@@ -1847,6 +1956,7 @@ def validate_file_manual_upload(
         storage_control,
         sql_session,
         databricks_control,
+        batch_id=batch_id,
     )
 
 
