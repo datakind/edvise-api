@@ -705,7 +705,9 @@ class DatabricksControl(BaseModel):
                     "gcp_bucket_name": req.gcp_external_bucket_name,
                     "datakind_notification_email": req.email,
                     "DK_CC_EMAIL": req.email,
-                    "is_genai_institution": "true" if req.is_genai_institution else "false",
+                    "is_genai_institution": "true"
+                    if req.is_genai_institution
+                    else "false",
                 },
             )
             LOGGER.info(
