@@ -656,6 +656,7 @@ def trigger_inference_run(
             features_table_name=req.features_table_name or "",
             gcp_external_bucket_name=get_external_bucket_name(inst_id),
             email=current_user.email or "",
+            is_genai_institution=bool(genai_id),
         )
         try:
             if is_legacy:

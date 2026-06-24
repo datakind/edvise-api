@@ -561,4 +561,51 @@ def test_trigger_es_inference_run_edvise_institution(
     assert response.json()["run_id"] == 789
     assert response.json()["m_name"] == "es_model"
     MOCK_DATABRICKS.run_es_inference.assert_called_once()
+    db_req = MOCK_DATABRICKS.run_es_inference.call_args[0][0]
+    assert db_req.is_genai_institution is False
+    MOCK_DATABRICKS.run_pdp_inference.assert_not_called()
+
+
+def test_trigger_es_inference_run_genai_institution(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """GenAI institutions pass is_genai_institution=True to run_es_inference."""
+    app.dependency_overrides[get_current_active_user] = lambda: DATAKINDER
+    MOCK_DATABRICKS.reset_mock()
+    genai_inst = InstTable(
+        id=uuid.uuid4(),
+        name="genai_school",
+        genai_id="genai_test_1",
+        schemas=[SchemaType.STUDENT, SchemaType.COURSE],
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    genai_model = ModelTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="genai_es_model",
+        schema_configs=None,
+        valid=True,
+    )
+    session.add_all([genai_inst, genai_model])
+    session.commit()
+
+    MOCK_DATABRICKS.run_es_inference.return_value = DatabricksInferenceRunResponse(
+        job_run_id=790
+    )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        version="1", run_id="run-genai"
+    )
+
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(genai_inst.id)
+        + "/models/genai_es_model/run-inference",
+        json={"batch_name": "ignored_for_es", "config_file_name": "config.toml"},
+    )
+
+    assert response.status_code == 200
+    MOCK_DATABRICKS.run_es_inference.assert_called_once()
+    db_req = MOCK_DATABRICKS.run_es_inference.call_args[0][0]
+    assert db_req.is_genai_institution is True
     MOCK_DATABRICKS.run_pdp_inference.assert_not_called()

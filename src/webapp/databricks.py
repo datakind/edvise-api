@@ -343,6 +343,8 @@ class DatabricksSharedInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str = ""
     gcp_external_bucket_name: str
+    # ES: True when institution has genai_id; False for edvise_id schools.
+    is_genai_institution: bool = True
 
     @field_validator("config_file_name", "features_table_name", "email", mode="before")
     @classmethod
@@ -703,6 +705,7 @@ class DatabricksControl(BaseModel):
                     "gcp_bucket_name": req.gcp_external_bucket_name,
                     "datakind_notification_email": req.email,
                     "DK_CC_EMAIL": req.email,
+                    "is_genai_institution": "true" if req.is_genai_institution else "false",
                 },
             )
             LOGGER.info(
