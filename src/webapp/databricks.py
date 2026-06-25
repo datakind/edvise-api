@@ -37,7 +37,7 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 # when dev/staging deploy uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
 LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
-ES_INFERENCE_JOB_NAME = "github_sourced_es_inference_pipeline"
+ES_INFERENCE_JOB_NAME = "github_sourced_genai_es_inference_pipeline"
 # Dev bundle prefix for the Cloud Run service principal job target.
 CLOUDRUN_BUNDLE_JOB_PREFIX = "[dev dev_cloudrun_sa]"
 # GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
