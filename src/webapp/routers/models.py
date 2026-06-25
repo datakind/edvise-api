@@ -95,6 +95,17 @@ def default_schema_configs_from_inst_schemas(
         ordered_types.append(schema_type)
 
     if not ordered_types:
+        # Legacy and GenAI institutions allow arbitrary uploads (UNKNOWN only).
+        if SchemaType.UNKNOWN.value in allowed:
+            return [
+                [
+                    SchemaConfigObj(
+                        schema_type=SchemaType.UNKNOWN,
+                        optional=False,
+                        multiple_allowed=True,
+                    )
+                ]
+            ]
         return []
 
     return [
