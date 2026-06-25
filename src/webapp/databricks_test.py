@@ -14,6 +14,8 @@ from .databricks import (
     DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
     DatabricksBronzeSyncRequest,
     DatabricksControl,
+    DatabricksSharedInferenceRunRequest,
+    _build_shared_inference_job_parameters,
     _build_validated_bronze_sync_job_parameters,
     _resolve_pipeline_job,
     _resolve_validated_bronze_sync_job_id,
@@ -278,6 +280,32 @@ def test_build_validated_bronze_sync_job_parameters_shape() -> None:
     assert params["strict_mode"] == BRONZE_SYNC_STRICT_MODE
     assert params["batch_id"] == "abc123batch"
     assert params["include_blob_paths_json"] == '["validated/student.csv"]'
+
+
+def test_build_shared_inference_job_parameters_shape() -> None:
+    req = DatabricksSharedInferenceRunRequest(
+        inst_name="Test School",
+        model_name="retention_model",
+        config_file_name="config.toml",
+        gcp_external_bucket_name="bucket-a",
+        email="user@example.com",
+        batch_id="5b2420f3103546ab90eb74d5df97de43",
+        validated_blob_paths=[
+            "validated/course.csv",
+            "validated/student.csv",
+        ],
+    )
+    params = _build_shared_inference_job_parameters(req, "test_school")
+    assert params["databricks_institution_name"] == "test_school"
+    assert params["model_name"] == "retention_model"
+    assert params["config_file_name"] == "config.toml"
+    assert params["gcp_bucket_name"] == "bucket-a"
+    assert params["datakind_notification_email"] == "user@example.com"
+    assert params["batch_id"] == "5b2420f3103546ab90eb74d5df97de43"
+    assert (
+        params["validated_blob_paths_json"]
+        == '["validated/course.csv","validated/student.csv"]'
+    )
 
 
 def test_run_validated_gcs_to_bronze_sync_calls_run_now_with_bundle_params(

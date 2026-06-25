@@ -25,6 +25,7 @@ from ..utilities import (
     SchemaType,
     decode_url_piece,
     LEGACY_TO_NEW_SCHEMA,
+    batch_input_validated_blob_paths,
 )
 from ..database import (
     get_session,
@@ -646,9 +647,40 @@ def trigger_inference_run(
                 detail="Unexpected number of models found: Expected 1, got "
                 + str(len(shared_model_result)),
             )
-        # For legacy schools, we don't need batch validation (config and features table are used instead)
-        # Omitting names is allowed; pass empty strings so Pydantic accepts the request and the
-        # Edvise legacy_inference_inputs job can resolve artifacts under silver_volume (same as YAML defaults).
+
+        batch_result = (
+            local_session.get()
+            .execute(
+                select(BatchTable).where(
+                    and_(
+                        BatchTable.name == req.batch_name,
+                        BatchTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
+            .all()
+        )
+        if len(batch_result) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unexpected number of batches found: Expected 1, got "
+                + str(len(batch_result)),
+            )
+        batch = batch_result[0][0]
+        inst_file_schemas = [list({s for f in batch.files for s in f.schemas})]
+        schema_configs = resolve_model_schema_configs(
+            shared_model_result[0][0].schema_configs,
+            inst.schemas,
+        )
+        if not check_file_types_valid_schema_configs(
+            inst_file_schemas,
+            schema_configs,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
+            )
+
         db_req = DatabricksSharedInferenceRunRequest(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
@@ -656,6 +688,8 @@ def trigger_inference_run(
             features_table_name=req.features_table_name or "",
             gcp_external_bucket_name=get_external_bucket_name(inst_id),
             email=current_user.email or "",
+            batch_id=uuid_to_str(batch.id),
+            validated_blob_paths=batch_input_validated_blob_paths(batch.files),
             is_genai_institution=bool(genai_id),
         )
         try:
@@ -681,7 +715,7 @@ def trigger_inference_run(
             id=res.job_run_id,
             triggered_at=triggered_timestamp,
             created_by=str_to_uuid(current_user.user_id),
-            batch_name=f"{model_name}_{triggered_timestamp}",  # Legacy schools don't use batches
+            batch_name=req.batch_name,
             model_id=shared_model_result[0][0].id,
             output_valid=False,
             model_version=latest_model_version.version,
@@ -694,7 +728,7 @@ def trigger_inference_run(
             "run_id": res.job_run_id,
             "created_by": current_user.user_id,
             "triggered_at": triggered_timestamp,
-            "batch_name": f"{model_name}_{triggered_timestamp}",
+            "batch_name": req.batch_name,
             "output_valid": False,
             "model_version": latest_model_version.version,
             "model_run_id": latest_model_version.run_id,

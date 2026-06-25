@@ -37,6 +37,7 @@ from .models import (
     default_schema_configs_from_inst_schemas,
     resolve_model_schema_configs,
 )
+from ..utilities import batch_input_validated_blob_paths
 from ..gcsutil import StorageControl
 from ..databricks import DatabricksControl, DatabricksInferenceRunResponse
 
@@ -519,6 +520,44 @@ def test_trigger_inference_run_derives_schema_configs_when_null(
     assert response.json()["m_name"] == "pdp_model_without_schema_configs"
 
 
+def test_batch_input_validated_blob_paths_skips_sst_generated() -> None:
+    """Only non-SST-generated files become validated/ blob paths."""
+    batch = BatchTable(
+        id=BATCH_UUID,
+        inst_id=USER_VALID_INST_UUID,
+        name="batch_foo",
+        created_by=created_by_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    input_file = FileTable(
+        id=FILE_UUID_1,
+        inst_id=USER_VALID_INST_UUID,
+        name="file_input_one",
+        source="MANUAL_UPLOAD",
+        batches={batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.COURSE],
+    )
+    output_file = FileTable(
+        id=FILE_UUID_3,
+        inst_id=USER_VALID_INST_UUID,
+        name="file_output_one",
+        batches={batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=True,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    assert batch_input_validated_blob_paths({input_file, output_file}) == [
+        "validated/file_input_one"
+    ]
+
+
 def test_trigger_es_inference_run_edvise_institution(
     client: TestClient, session: sqlalchemy.orm.Session
 ) -> None:
@@ -537,10 +576,65 @@ def test_trigger_es_inference_run_edvise_institution(
         id=uuid.uuid4(),
         inst_id=EDVISE_INST_UUID,
         name="es_model",
-        schema_configs=None,
+        schema_configs=jsonpickle.encode(
+            [
+                [
+                    SchemaConfigObj(
+                        schema_type=SchemaType.COURSE,
+                        optional=False,
+                        multiple_allowed=False,
+                    ),
+                    SchemaConfigObj(
+                        schema_type=SchemaType.STUDENT,
+                        optional=False,
+                        multiple_allowed=False,
+                    ),
+                ]
+            ]
+        ),
         valid=True,
     )
-    session.add_all([edvise_inst, edvise_model])
+    edvise_batch = BatchTable(
+        id=uuid.uuid4(),
+        inst_id=EDVISE_INST_UUID,
+        name="es_batch_foo",
+        created_by=created_by_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    edvise_course_file = FileTable(
+        id=uuid.uuid4(),
+        inst_id=EDVISE_INST_UUID,
+        name="es_course.csv",
+        source="MANUAL_UPLOAD",
+        batches={edvise_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.COURSE],
+    )
+    edvise_student_file = FileTable(
+        id=uuid.uuid4(),
+        inst_id=EDVISE_INST_UUID,
+        name="es_student.csv",
+        source="MANUAL_UPLOAD",
+        batches={edvise_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    session.add_all(
+        [
+            edvise_inst,
+            edvise_model,
+            edvise_batch,
+            edvise_course_file,
+            edvise_student_file,
+        ]
+    )
     session.commit()
 
     MOCK_DATABRICKS.run_es_inference.return_value = DatabricksInferenceRunResponse(
@@ -554,14 +648,20 @@ def test_trigger_es_inference_run_edvise_institution(
         "/institutions/"
         + uuid_to_str(EDVISE_INST_UUID)
         + "/models/es_model/run-inference",
-        json={"batch_name": "ignored_for_es", "config_file_name": "config.toml"},
+        json={"batch_name": "es_batch_foo", "config_file_name": "config.toml"},
     )
 
     assert response.status_code == 200
     assert response.json()["run_id"] == 789
     assert response.json()["m_name"] == "es_model"
+    assert response.json()["batch_name"] == "es_batch_foo"
     MOCK_DATABRICKS.run_es_inference.assert_called_once()
     db_req = MOCK_DATABRICKS.run_es_inference.call_args[0][0]
+    assert db_req.batch_id == uuid_to_str(edvise_batch.id)
+    assert db_req.validated_blob_paths == [
+        "validated/es_course.csv",
+        "validated/es_student.csv",
+    ]
     assert db_req.is_genai_institution is False
     MOCK_DATABRICKS.run_pdp_inference.assert_not_called()
 
@@ -587,7 +687,47 @@ def test_trigger_es_inference_run_genai_institution(
         schema_configs=None,
         valid=True,
     )
-    session.add_all([genai_inst, genai_model])
+    genai_batch = BatchTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="genai_batch_foo",
+        created_by=created_by_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    genai_course_file = FileTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="genai_course.csv",
+        source="MANUAL_UPLOAD",
+        batches={genai_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.COURSE],
+    )
+    genai_student_file = FileTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="genai_student.csv",
+        source="MANUAL_UPLOAD",
+        batches={genai_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    session.add_all(
+        [
+            genai_inst,
+            genai_model,
+            genai_batch,
+            genai_course_file,
+            genai_student_file,
+        ]
+    )
     session.commit()
 
     MOCK_DATABRICKS.run_es_inference.return_value = DatabricksInferenceRunResponse(
@@ -601,11 +741,12 @@ def test_trigger_es_inference_run_genai_institution(
         "/institutions/"
         + uuid_to_str(genai_inst.id)
         + "/models/genai_es_model/run-inference",
-        json={"batch_name": "ignored_for_es", "config_file_name": "config.toml"},
+        json={"batch_name": "genai_batch_foo", "config_file_name": "config.toml"},
     )
 
     assert response.status_code == 200
     MOCK_DATABRICKS.run_es_inference.assert_called_once()
     db_req = MOCK_DATABRICKS.run_es_inference.call_args[0][0]
     assert db_req.is_genai_institution is True
+    assert db_req.batch_id == uuid_to_str(genai_batch.id)
     MOCK_DATABRICKS.run_pdp_inference.assert_not_called()
