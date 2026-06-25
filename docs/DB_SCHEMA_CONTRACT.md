@@ -2,9 +2,9 @@
 
 Canonical DDL and ownership rules for the **shared Cloud SQL database** used by `edvise-ui` (Laravel) and `edvise-api` (FastAPI) in deployed environments.
 
-> **Verify in staging:** Before Alembic cutover, run `SHOW CREATE TABLE` for each table below on staging Cloud SQL and reconcile any drift with this document. This file is derived from repo migrations/ORM as of Phase 0; live DDL is authoritative.
+**Staging verified:** 2026-06-24 against Cloud SQL database `all_tables` (staging instance). Evidence: workspace `github/docs/dbtables/` (`SHOW CREATE TABLE` CSV exports).
 
-See also: full migration plan in workspace `github/.cursor/docs/database_table_ownership.md`.
+See also: migration plan in workspace `github/.cursor/docs/database_table_ownership.md`.
 
 ---
 
@@ -25,6 +25,20 @@ See also: full migration plan in workspace `github/.cursor/docs/database_table_o
 
 ---
 
+## Staging verification summary (2026-06-24)
+
+| Finding | Implication |
+|---------|-------------|
+| `users` has DB FK `inst_id` → `inst.id` ON DELETE CASCADE | Present on staging (likely from historical API `create_all`). UI migrations do not add it; **do not drop** without explicit decision. |
+| `job.model_run_id` is `VARCHAR(255)` with FK to `model.id` | Matches API ORM. **No `ALTER` needed on staging** before Alembic stamp. |
+| `job` lacks composite / `triggered_at` indexes from UI migration | Optional future Alembic migration for perf only — not blocking cutover. |
+| `institutions` table absent | Safe to remove UI migration (PR 5). |
+| `inst_custom_to_legacy_backup`, `schema_registry_custom_ext_backup` exist | Not in contract inventory; **exclude from Alembic** unless explicitly adopted. |
+
+**Still required:** repeat `SHOW CREATE TABLE` / dump on **dev** `all_tables` before dev Alembic stamp (PR 11).
+
+---
+
 ## Greenfield bootstrap order
 
 1. **API** `alembic upgrade head` — creates `inst`, `model`, `job`, and all API-owned tables.
@@ -38,35 +52,36 @@ See also: full migration plan in workspace `github/.cursor/docs/database_table_o
 **DDL owner:** edvise-ui (`database/migrations/`).  
 **ORM (API):** `AccountTable` in `src/webapp/database.py`.
 
-### Canonical columns
+### Canonical columns (staging `all_tables`, 2026-06-24)
 
 | Column | Type (MySQL) | Nullable | Default | Notes |
 |--------|--------------|----------|---------|-------|
-| `id` | `CHAR(36)` / UUID | NO | — | PK |
+| `id` | `CHAR(32)` | NO | — | PK; UUID without dashes on staging |
+| `inst_id` | `CHAR(32)` | YES | NULL | Index; **FK → `inst.id` ON DELETE CASCADE on staging** |
 | `name` | `VARCHAR(255)` | NO | — | |
 | `email` | `VARCHAR(255)` | NO | — | UNIQUE |
+| `invite_validated` | `TINYINT(1)` | NO | `0` | |
 | `google_id` | `VARCHAR(255)` | YES | NULL | |
 | `azure_id` | `VARCHAR(255)` | YES | NULL | |
 | `email_verified_at` | `DATETIME` | YES | NULL | |
 | `password` | `VARCHAR(255)` | NO | — | |
 | `two_factor_secret` | `TEXT` | YES | NULL | |
 | `two_factor_recovery_codes` | `TEXT` | YES | NULL | |
-| `two_factor_confirmed_at` | `DATETIME` | YES | NULL | If Fortify 2FA confirm enabled |
-| `remember_token` | `VARCHAR(100)` | YES | NULL | |
-| `inst_id` | `CHAR(36)` | YES | NULL | Logical FK to `inst.id`; **no DB FK in Laravel** |
-| `current_team_id` | `CHAR(36)` | YES | NULL | Jetstream |
+| `two_factor_confirmed_at` | `DATETIME` | YES | NULL | |
+| `remember_token` | `VARCHAR(255)` | YES | NULL | Laravel migration allows 100; staging uses 255 |
+| `current_team_id` | `CHAR(36)` | YES | NULL | |
 | `access_type` | `VARCHAR(36)` | YES | NULL | |
-| `accepted_terms` | `BOOLEAN` / `TINYINT(1)` | NO | `0` | UI-only auth flow; API ORM must mirror |
-| `invite_validated` | `BOOLEAN` / `TINYINT(1)` | NO | `0` | UI-only invite flow; API ORM must mirror |
-| `created_at` | `DATETIME` | YES | NULL | |
+| `accepted_terms` | `TINYINT(1)` | NO | `0` | API ORM must mirror |
+| `created_at` | `DATETIME` | YES | `now()` on staging | |
 | `updated_at` | `DATETIME` | YES | NULL | |
 
-### Known drift
+### Constraints (staging)
 
-| Item | UI | API ORM | Policy |
-|------|----|---------|--------|
-| `inst_id` FK | No DB constraint | `ForeignKey("inst.id", ON DELETE CASCADE)` in ORM only | Do not add UI FK (local SQLite isolation) |
-| `accepted_terms`, `invite_validated` | Laravel migrations | Must match in `AccountTable` | Paired PR on any change |
+```sql
+CONSTRAINT `users_ibfk_1` FOREIGN KEY (`inst_id`) REFERENCES `inst` (`id`) ON DELETE CASCADE
+```
+
+**Policy:** UI Laravel migrations must not rely on this FK for local SQLite. Staging/prod may retain it from API history. New UI migrations must not drop it without coordinated review.
 
 **Source migrations (UI):** `2014_10_12_000000_create_users_table.php`, `2025_06_06_142209_add_accepted_terms_to_users_table.php`, `2025_08_24_210106_add_invite_validated_to_users_table.php`.
 
@@ -78,68 +93,63 @@ See also: full migration plan in workspace `github/.cursor/docs/database_table_o
 **ORM (API):** `JobTable` in `src/webapp/database.py`.  
 **UI model:** `App\Models\Job` (read paths only until Phase 1.5).
 
-### Canonical columns (target)
+### Canonical columns (staging `all_tables`, 2026-06-24)
 
 | Column | Type (MySQL) | Nullable | Default | Notes |
 |--------|--------------|----------|---------|-------|
 | `id` | `BIGINT` | NO | AUTO_INCREMENT | PK; inference `run_id` |
-| `model_id` | `CHAR(36)` | NO | — | FK → `model.id` (API); UI bootstrap may lack FK |
-| `created_by` | `CHAR(36)` | NO | — | User UUID |
+| `model_id` | `CHAR(32)` | NO | — | FK → `model.id` ON DELETE CASCADE |
+| `created_by` | `CHAR(32)` | NO | — | User UUID |
 | `triggered_at` | `DATETIME` | NO | — | |
 | `batch_name` | `VARCHAR(255)` | NO | — | |
 | `output_filename` | `VARCHAR(255)` | YES | NULL | |
 | `err_msg` | `VARCHAR(255)` | YES | NULL | |
-| `completed` | `BOOLEAN` | YES | NULL | |
-| `output_valid` | `BOOLEAN` | YES | NULL | |
-| `model_run_id` | `VARCHAR(255)` | YES | NULL | Databricks training run id |
+| `completed` | `TINYINT(1)` | YES | NULL | |
+| `output_valid` | `TINYINT(1)` | YES | NULL | |
+| `model_run_id` | `VARCHAR(255)` | YES | NULL | |
 | `model_version` | `VARCHAR(255)` | YES | NULL | |
 
-### Indexes (API ORM / Laravel)
+### Constraints and indexes (staging)
 
-- `model_id` (index)
-- `(model_id, completed, output_valid)` composite
-- `triggered_at`
+```sql
+PRIMARY KEY (`id`)
+KEY `model_id` (`model_id`)
+CONSTRAINT `job_ibfk_1` FOREIGN KEY (`model_id`) REFERENCES `model` (`id`) ON DELETE CASCADE
+```
 
-### Known drift (reconcile via Alembic after stamp)
+### Optional vs UI migration (not blocking)
 
-| Item | UI migration | API ORM | Reconciliation |
-|------|--------------|---------|----------------|
-| `model_run_id` length | `VARCHAR(150)` | `VARCHAR(255)` | Prefer **255**; `ALTER` if staging has 150 |
-| `model_id` FK | No FK | FK → `model.id` | Alembic `ALTER` if missing in prod |
-| Table creator | Laravel `2025_10_29_*` may have run first | `create_all` may differ | Compare `SHOW CREATE TABLE` per env |
+| Item | UI Laravel migration | Staging | Action |
+|------|----------------------|---------|--------|
+| `model_run_id` length | `VARCHAR(150)` | `VARCHAR(255)` | **No action on staging** — already 255 |
+| `model_id` FK | Not in UI migration | Present | **No action on staging** |
+| Composite `(model_id, completed, output_valid)` | In UI migration | Absent | Optional Alembic index migration later |
+| Index on `triggered_at` | In UI migration | Absent | Optional Alembic index migration later |
+
+---
+
+## Tables on staging outside Alembic scope
+
+| Table | Notes |
+|-------|-------|
+| `inst_custom_to_legacy_backup` | One-off backup; do not include in baseline autogenerate |
+| `schema_registry_custom_ext_backup` | One-off backup; do not include in baseline autogenerate |
 
 ---
 
 ## edvise-ui only tables (Laravel DDL)
 
-| Table | Purpose |
-|-------|---------|
-| `teams`, `team_user`, `team_invitations` | Jetstream |
-| `personal_access_tokens` | Sanctum |
-| `password_reset_tokens` | Auth |
-| `sessions` | DB sessions |
-| `failed_jobs` | Queue failures |
-| `dk_api_tokens` | Backend API token storage |
-| `data_dictionary` | UI feature |
-| `invites` | Invite allowlist |
-| `migrations` | Laravel history |
+Verified on staging 2026-06-24: `teams`, `team_user`, `team_invitations`, `personal_access_tokens`, `password_reset_tokens`, `sessions`, `failed_jobs`, `dk_api_tokens`, `data_dictionary`, `invites`, `migrations`.
 
-**Do not deploy:** `institutions` — duplicate of API `inst`; removed in Phase 0.
+**Removed in Phase 0:** `institutions` — never existed on staging; duplicate of API `inst`.
 
 ---
 
 ## edvise-api only tables (Alembic DDL)
 
-| Table | Purpose |
-|-------|---------|
-| `inst` | Institutions (canonical) |
-| `apikey` | API key auth |
-| `account_history` | Audit trail (mostly unimplemented) |
-| `file`, `batch`, `file_batch_association_table` | Uploads |
-| `model` | ML models per institution |
-| `schema_registry` | Versioned JSON schemas |
-| `job` | Inference run records |
-| `alembic_version` | Alembic history (after Phase 1) |
+Verified on staging 2026-06-24: `inst`, `apikey`, `account_history`, `file`, `batch`, `file_batch_association_table`, `model`, `schema_registry`, `job`.
+
+After Phase 1: `alembic_version`.
 
 ---
 
