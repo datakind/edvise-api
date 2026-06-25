@@ -347,6 +347,8 @@ class DatabricksSharedInferenceRunRequest(BaseModel):
     batch_id: str = ""
     # Full GCS object paths, e.g. ["validated/file.csv"].
     validated_blob_paths: list[str] = []
+    # ES: True when institution has genai_id; False for edvise_id schools.
+    is_genai_institution: bool = True
 
     @field_validator("config_file_name", "features_table_name", "email", mode="before")
     @classmethod
@@ -713,6 +715,9 @@ class DatabricksControl(BaseModel):
         try:
             job_parameters = _build_shared_inference_job_parameters(req, db_inst_name)
             job_parameters["schema_type"] = "edvise"
+            job_parameters["is_genai_institution"] = (
+                "true" if req.is_genai_institution else "false"
+            )
             run_job: Any = w.jobs.run_now(
                 job_id,
                 job_parameters=job_parameters,

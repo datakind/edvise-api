@@ -690,6 +690,7 @@ def trigger_inference_run(
             email=current_user.email or "",
             batch_id=uuid_to_str(batch.id),
             validated_blob_paths=batch_input_validated_blob_paths(batch.files),
+            is_genai_institution=bool(genai_id),
         )
         try:
             if is_legacy:
