@@ -53,16 +53,30 @@ In the long-term, look into a way to have the API key --> token conversion be ha
 
 All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/edvise-api/blob/develop/src/webapp/database.py).
 
+**Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24 (evidence: workspace `github/docs/dbtables/`). Re-export **dev** before Alembic stamp (PR 11).
+
+### Shared tables (same physical MySQL database as edvise-ui)
+
+| Table | DDL owner | Notes |
+|-------|-----------|-------|
+| `users` | **edvise-ui** (Laravel) | API reads/writes via `AccountTable`; keep ORM in sync with UI migrations |
+| `job` | **edvise-api** (Alembic, Phase 1+) | API writes; UI may read until Phase 1.5 |
+
+### Greenfield database bootstrap
+
+1. Run API migrations (`alembic upgrade head`) — API-owned tables including `inst`, `model`, `job`.
+2. Run UI migrations (`php artisan migrate`) — `users` and UI-only tables.
+
 At time of writing, the databases the API cares about and tracks, are as follows:
 
 * Institution Table ("inst"): the institutions, including info about them like PDP ID if applicable, creator/creation time, etc.
 * API Key Table ("apikey"): the API keys including access type, valid status (you can disable a key), etc.
-* Account Table ("users"): **THIS TABLE IS (the only table) SHARED WITH THE FRONTEND**. This contains enduser email/password, access types, inst if applicable etc. Because this table is shared with the frontend, any changes to the table definition should be reflected in both the ORM handling the table in the frontend _and_ the backend. Note that intentionally, there's no way to create new users from the backend. This is because the backend only uses API keys to authenticate and also lacks some reqiured fields such as team id generation that is required by Laravel to use the user table. The frontend can directly create users in the table which the backend will be able to read.
+* Account Table ("users"): **SHARED WITH THE FRONTEND** (DDL owned by Laravel in edvise-ui). This contains enduser email/password, access types, inst if applicable etc. Because this table is shared with the frontend, any changes to the table definition should be reflected in both the ORM handling the table in the frontend _and_ the backend. See [docs/DB_SCHEMA_CONTRACT.md](../../docs/DB_SCHEMA_CONTRACT.md). Note that intentionally, there's no way to create new users from the backend. This is because the backend only uses API keys to authenticate and also lacks some reqiured fields such as team id generation that is required by Laravel to use the user table. The frontend can directly create users in the table which the backend will be able to read.
 * Account History Table ("account_history"): audit trail of certain events undertaken by users. TODO: interactions with this table largely remain unimplemented.
 * File Table ("file"): tracks files
 * Batch Table ("batch"): tracks batches
 * Model Table ("model"): tracks models
-* Job Table ("job"): tracks Databricks jobs, storing the per-run unique job_run_id. Status of the job is also partially tracked here. Note that failed jobs are currently indistinguishable from incomplete jobs. 
+* Job Table ("job"): **SHARED WITH THE FRONTEND** (DDL owned by API after Phase 1). Tracks Databricks inference runs (`run_id`, `model_run_id`). API writes; UI reads for some pages until Phase 1.5. See [docs/DB_SCHEMA_CONTRACT.md](../../docs/DB_SCHEMA_CONTRACT.md).
 
 NOTE: naming convention is to use a singular descriptor for the table name, however, the "users" table has to follow Laravel's table naming convention, which has the users table called "users".
 
