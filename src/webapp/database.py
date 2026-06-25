@@ -395,6 +395,12 @@ class AccountTable(Base):
     access_type: Mapped[str | None] = mapped_column(
         String(VAR_CHAR_LENGTH), nullable=True
     )
+    accepted_terms: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    invite_validated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     # profile_photo_path : Mapped[dict[str, str]] = mapped_column(String(VAR_CHAR_LENGTH), nullable=True)
     created_at = mapped_column(
         DateTime(timezone=True),
