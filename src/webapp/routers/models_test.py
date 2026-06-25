@@ -450,17 +450,18 @@ def test_check_file_types_valid_schema_configs():
     ]
     assert not check_file_types_valid_schema_configs(file_types1, [pdp_configs])
     assert not check_file_types_valid_schema_configs(file_types1, [sst_configs])
-    assert not check_file_types_valid_schema_configs(file_types1, [custom])
-    assert not check_file_types_valid_schema_configs(file_types1, schema_configs1)
+    assert check_file_types_valid_schema_configs(file_types1, [custom])
+    assert check_file_types_valid_schema_configs(file_types1, schema_configs1)
     assert check_file_types_valid_schema_configs(file_types2, [sst_configs])
     assert check_file_types_valid_schema_configs(file_types2, [pdp_configs])
-    assert not check_file_types_valid_schema_configs(file_types2, [custom])
+    assert check_file_types_valid_schema_configs(file_types2, [custom])
     assert check_file_types_valid_schema_configs(file_types3, [sst_configs])
     assert check_file_types_valid_schema_configs(file_types3, [pdp_configs])
-    assert not check_file_types_valid_schema_configs(file_types3, [custom])
+    assert check_file_types_valid_schema_configs(file_types3, [custom])
     assert not check_file_types_valid_schema_configs(file_types4, [sst_configs])
     assert not check_file_types_valid_schema_configs(file_types4, [pdp_configs])
     assert check_file_types_valid_schema_configs(file_types4, [custom])
+    assert not check_file_types_valid_schema_configs([], [custom])
 
 
 def test_default_schema_configs_from_inst_schemas():
@@ -806,7 +807,7 @@ def test_trigger_es_inference_run_genai_unknown_only_schemas(
         updated_at=DATETIME_TESTING,
         sst_generated=False,
         valid=True,
-        schemas=[SchemaType.UNKNOWN],
+        schemas=[SchemaType.STUDENT],
     )
     genai_file_two = FileTable(
         id=uuid.uuid4(),
@@ -818,7 +819,7 @@ def test_trigger_es_inference_run_genai_unknown_only_schemas(
         updated_at=DATETIME_TESTING,
         sst_generated=False,
         valid=True,
-        schemas=[SchemaType.UNKNOWN],
+        schemas=[SchemaType.COURSE],
     )
     session.add_all(
         [

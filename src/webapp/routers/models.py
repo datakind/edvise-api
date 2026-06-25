@@ -150,12 +150,26 @@ def resolve_model_schema_configs(
     return cast(list[list[SchemaConfigObj]], jsonpickle.decode(normalized))
 
 
+def _is_any_format_schema_config(config: list[SchemaConfigObj]) -> bool:
+    """True when config means any upload schema is acceptable (legacy/genai)."""
+    return (
+        len(config) == 1
+        and config[0].schema_type == SchemaType.UNKNOWN
+        and config[0].multiple_allowed
+        and not config[0].optional
+    )
+
+
 def check_file_types_valid_schema_configs(
     file_types: list[list[SchemaType]],
     valid_schema_configs: list[list[SchemaConfigObj]],
 ) -> bool:
     """Check that a list of files are valid for a given schema configuration."""
     for config in valid_schema_configs:
+        if _is_any_format_schema_config(config):
+            if file_types:
+                return True
+            continue
         found = True
         map_file_to_schema_config_obj: dict = {}
         for idx, s in enumerate(file_types):
