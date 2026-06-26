@@ -236,6 +236,29 @@ def test_is_pii_column_high_risk_indicators() -> None:
         assert _is_pii_column(f"{indicator}_suffix") is True
 
 
+def test_is_pii_column_datakind_course_file_headers() -> None:
+    """DataKind course student file headers should not be treated as PII."""
+    headers = [
+        "datakind_id",
+        "month_day_year_of_term_begin_date",
+        "term",
+        "class_department",
+        "class_subject",
+        "class_course_name",
+        "primary_class_section_name",
+        "class_title",
+        "month_day_year_of_class_end_date",
+        "class_catalog_level_group",
+        "class_instruction_mode",
+        "class_completion_status",
+        "class_grade",
+        "credit_hours",
+        "no_of_credits_earned",
+    ]
+    for col in headers:
+        assert _is_pii_column(col) is False, col
+
+
 def test_is_pii_column_medium_risk_token_matching() -> None:
     """Test medium-risk PII indicators use token matching (reduces false positives)."""
     # These should match (token match)
@@ -248,6 +271,7 @@ def test_is_pii_column_medium_risk_token_matching() -> None:
     assert _is_pii_column("course_name") is False
     assert _is_pii_column("component_name") is False
     assert _is_pii_column("class_course_name") is False
+    assert _is_pii_column("primary_class_section_name") is False
     assert _is_pii_column("district_name") is False
     assert _is_pii_column("school_name") is False
     assert _is_pii_column("column_name") is False

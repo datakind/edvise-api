@@ -75,8 +75,8 @@ def test_validate_file_reader_legacy_accepts_course_metadata_name_columns(
     """Legacy course files allow *_name columns for course metadata (not people)."""
     csv_path = tmp_path / "course_component.csv"
     csv_path.write_text(
-        "datakind_id,class_course_name,component_name,course_name,grade\n"
-        "dk-1,Intro Math,Lecture,Intro Math,A\n",
+        "datakind_id,class_course_name,primary_class_section_name,component_name,course_name,grade\n"
+        "dk-1,Intro Math,Section 001,Lecture,Intro Math,A\n",
         encoding="utf-8",
     )
 
@@ -90,6 +90,7 @@ def test_validate_file_reader_legacy_accepts_course_metadata_name_columns(
     assert list(result["normalized_df"].columns) == [
         "datakind_id",
         "class_course_name",
+        "primary_class_section_name",
         "component_name",
         "course_name",
         "grade",
