@@ -461,17 +461,18 @@ def test_check_file_types_valid_schema_configs():
     ]
     assert not check_file_types_valid_schema_configs(file_types1, [pdp_configs])
     assert not check_file_types_valid_schema_configs(file_types1, [sst_configs])
-    assert not check_file_types_valid_schema_configs(file_types1, [custom])
-    assert not check_file_types_valid_schema_configs(file_types1, schema_configs1)
+    assert check_file_types_valid_schema_configs(file_types1, [custom])
+    assert check_file_types_valid_schema_configs(file_types1, schema_configs1)
     assert check_file_types_valid_schema_configs(file_types2, [sst_configs])
     assert check_file_types_valid_schema_configs(file_types2, [pdp_configs])
-    assert not check_file_types_valid_schema_configs(file_types2, [custom])
+    assert check_file_types_valid_schema_configs(file_types2, [custom])
     assert check_file_types_valid_schema_configs(file_types3, [sst_configs])
     assert check_file_types_valid_schema_configs(file_types3, [pdp_configs])
-    assert not check_file_types_valid_schema_configs(file_types3, [custom])
+    assert check_file_types_valid_schema_configs(file_types3, [custom])
     assert not check_file_types_valid_schema_configs(file_types4, [sst_configs])
     assert not check_file_types_valid_schema_configs(file_types4, [pdp_configs])
     assert check_file_types_valid_schema_configs(file_types4, [custom])
+    assert not check_file_types_valid_schema_configs([], [custom])
 
 
 def test_default_schema_configs_from_inst_schemas():
@@ -488,6 +489,13 @@ def test_default_schema_configs_from_inst_schemas():
     assert default_schema_configs_from_inst_schemas(None) == []
     assert default_schema_configs_from_inst_schemas(["SST_OUTPUT", "PNG"]) == []
 
+    unknown_only = default_schema_configs_from_inst_schemas(["UNKNOWN"])
+    assert len(unknown_only) == 1
+    assert len(unknown_only[0]) == 1
+    assert unknown_only[0][0].schema_type == SchemaType.UNKNOWN
+    assert not unknown_only[0][0].optional
+    assert unknown_only[0][0].multiple_allowed
+
 
 def test_resolve_model_schema_configs_falls_back_to_institution():
     """Null model schema_configs uses institution allowed input schemas."""
@@ -496,6 +504,14 @@ def test_resolve_model_schema_configs_falls_back_to_institution():
         SchemaType.COURSE,
         SchemaType.STUDENT,
     ]
+
+
+def test_resolve_model_schema_configs_unknown_only_institution():
+    """Legacy/GenAI institutions with UNKNOWN-only schemas derive flexible batch rules."""
+    resolved = resolve_model_schema_configs(None, ["UNKNOWN"])
+    assert len(resolved) == 1
+    assert resolved[0][0].schema_type == SchemaType.UNKNOWN
+    assert resolved[0][0].multiple_allowed
 
 
 def test_trigger_inference_run_derives_schema_configs_when_null(
@@ -756,6 +772,93 @@ def test_trigger_es_inference_run_genai_institution(
     )
 
     assert response.status_code == 200
+    MOCK_DATABRICKS.run_es_inference.assert_called_once()
+    db_req = MOCK_DATABRICKS.run_es_inference.call_args[0][0]
+    assert db_req.is_genai_institution is True
+    assert db_req.batch_id == uuid_to_str(genai_batch.id)
+    MOCK_DATABRICKS.run_pdp_inference.assert_not_called()
+
+
+def test_trigger_es_inference_run_genai_unknown_only_schemas(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
+    """GenAI institutions with UNKNOWN-only schemas can run inference without model schema_configs."""
+    app.dependency_overrides[get_current_active_user] = lambda: DATAKINDER
+    MOCK_DATABRICKS.reset_mock()
+    genai_inst = InstTable(
+        id=uuid.uuid4(),
+        name="genai_school_unknown",
+        genai_id="genai_unknown_test_1",
+        schemas=[SchemaType.UNKNOWN],
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    genai_model = ModelTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="genai_model_no_schema_configs",
+        schema_configs=None,
+        valid=True,
+    )
+    genai_batch = BatchTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="genai_batch_unknown",
+        created_by=created_by_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+    )
+    genai_file_one = FileTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="student_file.csv",
+        source="MANUAL_UPLOAD",
+        batches={genai_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.STUDENT],
+    )
+    genai_file_two = FileTable(
+        id=uuid.uuid4(),
+        inst_id=genai_inst.id,
+        name="course_file.csv",
+        source="MANUAL_UPLOAD",
+        batches={genai_batch},
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        sst_generated=False,
+        valid=True,
+        schemas=[SchemaType.COURSE],
+    )
+    session.add_all(
+        [
+            genai_inst,
+            genai_model,
+            genai_batch,
+            genai_file_one,
+            genai_file_two,
+        ]
+    )
+    session.commit()
+
+    MOCK_DATABRICKS.run_es_inference.return_value = DatabricksInferenceRunResponse(
+        job_run_id=791
+    )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        version="1", run_id="run-genai-unknown"
+    )
+
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(genai_inst.id)
+        + "/models/genai_model_no_schema_configs/run-inference",
+        json={"batch_name": "genai_batch_unknown", "config_file_name": "config.toml"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == 791
     MOCK_DATABRICKS.run_es_inference.assert_called_once()
     db_req = MOCK_DATABRICKS.run_es_inference.call_args[0][0]
     assert db_req.is_genai_institution is True
