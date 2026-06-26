@@ -366,7 +366,7 @@ def test_trigger_inference_run(client: TestClient) -> None:
         job_run_id=123
     )
     MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
-        version="1", run_id="run-inference"
+        version=1, run_id="run-inference"
     )
     response = client.post(
         "/institutions/"
@@ -532,7 +532,7 @@ def test_trigger_inference_run_derives_schema_configs_when_null(
         job_run_id=456
     )
     MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
-        version="1", run_id="run-abc"
+        version=1, run_id="run-abc"
     )
 
     response = client.post(
@@ -668,7 +668,7 @@ def test_trigger_es_inference_run_edvise_institution(
         job_run_id=789
     )
     MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
-        version="2", run_id="run-es"
+        version=2, run_id="run-es"
     )
 
     response = client.post(
@@ -761,7 +761,7 @@ def test_trigger_es_inference_run_genai_institution(
         job_run_id=790
     )
     MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
-        version="1", run_id="run-genai"
+        version=1, run_id="run-genai"
     )
 
     response = client.post(
@@ -847,7 +847,7 @@ def test_trigger_es_inference_run_genai_unknown_only_schemas(
         job_run_id=791
     )
     MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
-        version="1", run_id="run-genai-unknown"
+        version=1, run_id="run-genai-unknown"
     )
 
     response = client.post(

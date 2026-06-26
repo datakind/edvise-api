@@ -1907,6 +1907,11 @@ def add_custom_school_job(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
         )
+        model_version = (
+            str(latest_model_version.version)
+            if latest_model_version.version is not None
+            else None
+        )
 
         job = JobTable(
             id=job_run_id,
@@ -1917,7 +1922,7 @@ def add_custom_school_job(
             model_id=query_result[0][0].id,
             output_valid=True,
             completed=True,
-            model_version=latest_model_version.version,
+            model_version=model_version,
             model_run_id=latest_model_version.run_id,
         )
         local_session.get().add(job)
@@ -1927,7 +1932,7 @@ def add_custom_school_job(
             "m_name": model_name,
             "run_id": job_run_id,
             "output_filename": f"{job_run_id}/inference_output.csv",
-            "model_version": latest_model_version.version,
+            "model_version": model_version,
             "model_run_id": latest_model_version.run_id,
             "created_by": current_user.user_id,
             "triggered_at": triggered_timestamp,
