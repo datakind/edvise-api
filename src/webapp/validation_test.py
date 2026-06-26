@@ -69,6 +69,33 @@ def test_validate_file_reader_legacy_accepts_student_id_column(tmp_path: Path) -
     assert list(result["normalized_df"].columns) == ["student_id", "grade", "term"]
 
 
+def test_validate_file_reader_legacy_accepts_course_metadata_name_columns(
+    tmp_path: Path,
+) -> None:
+    """Legacy course files allow *_name columns for course metadata (not people)."""
+    csv_path = tmp_path / "course_component.csv"
+    csv_path.write_text(
+        "datakind_id,class_course_name,component_name,course_name,grade\n"
+        "dk-1,Intro Math,Lecture,Intro Math,A\n",
+        encoding="utf-8",
+    )
+
+    result = validate_file_reader(
+        str(csv_path),
+        ["COURSE"],
+        institution_id="legacy",
+    )
+
+    assert result["validation_status"] == "passed"
+    assert list(result["normalized_df"].columns) == [
+        "datakind_id",
+        "class_course_name",
+        "component_name",
+        "course_name",
+        "grade",
+    ]
+
+
 def test_validate_file_reader_legacy_header_only_csv_passes(tmp_path: Path) -> None:
     """Legacy institutions accept header-only CSVs and still return the DataFrame."""
     csv_path = tmp_path / "header_only.csv"
