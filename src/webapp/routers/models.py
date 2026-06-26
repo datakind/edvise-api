@@ -211,6 +211,8 @@ class RunInfo(BaseModel):
     output_valid: bool = False
     completed: bool | None = None
     err_msg: str | None = None
+    model_run_id: str | None = None
+    model_version: str | None = None
 
 
 class InferenceRunRequest(BaseModel):
@@ -555,6 +557,8 @@ def read_inst_model_output(
                 "output_filename": elem.output_filename,
                 "output_valid": False if not elem.output_valid else elem.output_valid,
                 "completed": False if not elem.completed else elem.completed,
+                "model_run_id": elem.model_run_id,
+                "model_version": elem.model_version,
             }
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,

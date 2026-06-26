@@ -81,6 +81,8 @@ def same_run_info_orderless(a_elem: RunInfo, b_elem: RunInfo) -> bool:
         or a_elem.err_msg != b_elem.err_msg
         or a_elem.batch_name != b_elem.batch_name
         or a_elem.completed != b_elem.completed
+        or a_elem.model_run_id != b_elem.model_run_id
+        or a_elem.model_version != b_elem.model_version
     ):
         return False
     return True
@@ -298,6 +300,8 @@ def test_read_inst_model_outputs(client: TestClient) -> None:
         err_msg=None,
         inst_id="1d7c75c33eda42949c6675ea8af97b55",
         m_name="sample_model_for_school_1",
+        model_run_id="T2UFD",
+        model_version=None,
         output_filename="file_output_one",
         output_valid=False,
         run_id=123,
@@ -325,6 +329,8 @@ def test_read_inst_model_output(client: TestClient) -> None:
         err_msg=None,
         inst_id="1d7c75c33eda42949c6675ea8af97b55",
         m_name="sample_model_for_school_1",
+        model_run_id="T2UFD",
+        model_version=None,
         output_filename="file_output_one",
         output_valid=False,
         run_id=123,
@@ -359,6 +365,9 @@ def test_trigger_inference_run(client: TestClient) -> None:
     MOCK_DATABRICKS.run_pdp_inference.return_value = DatabricksInferenceRunResponse(
         job_run_id=123
     )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        version="1", run_id="run-inference"
+    )
     response = client.post(
         "/institutions/"
         + uuid_to_str(USER_VALID_INST_UUID)
@@ -391,6 +400,8 @@ def test_trigger_inference_run(client: TestClient) -> None:
     assert response.json()["created_by"] == uuid_to_str(USER_UUID)
     assert response.json()["triggered_at"] is not None
     assert response.json()["batch_name"] == "batch_foo"
+    assert response.json()["model_run_id"] == "run-inference"
+    assert response.json()["model_version"] == "1"
 
 
 def test_check_file_types_valid_schema_configs():
