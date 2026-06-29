@@ -219,6 +219,13 @@ class ModelInfo(BaseModel):
     deleted: bool | None = None
 
 
+def _model_version_as_str(version: Any) -> str | None:
+    """Databricks model versions are ints; RunInfo and job rows store them as str."""
+    if version is None:
+        return None
+    return str(version)
+
+
 class RunInfo(BaseModel):
     """The RunInfo object that's returned."""
 
@@ -740,6 +747,8 @@ def trigger_inference_run(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
         )
+        model_version = _model_version_as_str(latest_model_version.version)
+        model_run_id = latest_model_version.run_id
         job = JobTable(
             id=res.job_run_id,
             triggered_at=triggered_timestamp,
@@ -747,8 +756,8 @@ def trigger_inference_run(
             batch_name=req.batch_name,
             model_id=shared_model_result[0][0].id,
             output_valid=False,
-            model_version=latest_model_version.version,
-            model_run_id=latest_model_version.run_id,
+            model_version=model_version,
+            model_run_id=model_run_id,
         )
         local_session.get().add(job)
         return {
@@ -759,8 +768,8 @@ def trigger_inference_run(
             "triggered_at": triggered_timestamp,
             "batch_name": req.batch_name,
             "output_valid": False,
-            "model_version": latest_model_version.version,
-            "model_run_id": latest_model_version.run_id,
+            "model_version": model_version,
+            "model_run_id": model_run_id,
         }
 
     # PDP inference (existing logic)
@@ -846,6 +855,8 @@ def trigger_inference_run(
         inst_name=inst_result[0][0].name,
         model_name=model_name,
     )
+    model_version = _model_version_as_str(latest_model_version.version)
+    model_run_id = latest_model_version.run_id
     job = JobTable(
         id=res.job_run_id,
         triggered_at=triggered_timestamp,
@@ -853,8 +864,8 @@ def trigger_inference_run(
         batch_name=req.batch_name,
         model_id=query_result[0][0].id,
         output_valid=False,
-        model_version=latest_model_version.version,
-        model_run_id=latest_model_version.run_id,
+        model_version=model_version,
+        model_run_id=model_run_id,
     )
     local_session.get().add(job)
     return {
@@ -865,8 +876,8 @@ def trigger_inference_run(
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,
         "output_valid": False,
-        "model_version": latest_model_version.version,
-        "model_run_id": latest_model_version.run_id,
+        "model_version": model_version,
+        "model_run_id": model_run_id,
     }
 
 
