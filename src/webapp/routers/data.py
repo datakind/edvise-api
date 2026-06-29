@@ -3,7 +3,7 @@
 import json
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Annotated, Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
 from sqlalchemy import and_, false, or_
@@ -42,8 +42,6 @@ from ..database import (
     InstTable,
     JobTable,
     ModelTable,
-    SchemaRegistryTable,
-    DocType,
 )
 
 from ..databricks import (
@@ -64,7 +62,9 @@ logger.setLevel(logging.DEBUG)
 
 
 def _gcs_bronze_sync_skip_reason(
-    edvise_id: Optional[str], legacy_id: Optional[str]
+    edvise_id: Optional[str],
+    legacy_id: Optional[str],
+    genai_id: Optional[str],
 ) -> Optional[str]:
     """
     If sync should not run, return a stable reason code; otherwise None.
@@ -77,8 +77,8 @@ def _gcs_bronze_sync_skip_reason(
         "yes",
     ):
         return "env_disabled"
-    if edvise_id is None and legacy_id is None:
-        return "not_edvise_or_legacy"
+    if edvise_id is None and legacy_id is None and genai_id is None:
+        return "not_edvise_legacy_or_genai"
     return None
 
 
@@ -144,7 +144,8 @@ def _log_bronze_sync_trigger_failed(
 def _attempt_gcs_bronze_sync_trigger(
     inst_name: str,
     bucket: str,
-    validated_blob_path: str,
+    validated_blob_paths: list[str],
+    batch_id: str,
     databricks_control: DatabricksControl,
     trace_base: Dict[str, Any],
     correlation_id: str,
@@ -154,29 +155,70 @@ def _attempt_gcs_bronze_sync_trigger(
         DatabricksBronzeSyncRequest(
             inst_name=inst_name,
             gcp_bucket_name=bucket,
-            validated_blob_paths=[validated_blob_path],
+            validated_blob_paths=validated_blob_paths,
+            batch_id=batch_id,
         )
     )
-    _log_bronze_sync_success(trace_base, validated_blob_path, sync_resp.job_run_id)
+    path_for_log = (
+        validated_blob_paths[0]
+        if len(validated_blob_paths) == 1
+        else f"{len(validated_blob_paths)}_objects"
+    )
+    _log_bronze_sync_success(trace_base, path_for_log, sync_resp.job_run_id)
+
+
+def _load_batch_for_bronze_sync(
+    sess: Session, inst_id: str, batch_id: str
+) -> BatchTable:
+    """Return the batch row or raise HTTPException when batch_id is invalid."""
+    try:
+        batch = sess.execute(
+            select(BatchTable).where(
+                and_(
+                    BatchTable.id == str_to_uuid(batch_id),
+                    BatchTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        ).scalar_one_or_none()
+    except (ValueError, TypeError):
+        batch = None
+    if batch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Batch not found.",
+        )
+    if batch.deleted:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Batch is set for deletion, no modifications allowed.",
+        )
+    return batch
 
 
 def _trigger_gcs_bronze_sync_if_applicable(
     inst_name: str,
     edvise_id: Optional[str],
     legacy_id: Optional[str],
+    genai_id: Optional[str],
     inst_id: str,
     file_name: str,
     bucket: str,
     databricks_control: DatabricksControl,
     correlation_id: str,
+    batch_id: Optional[str],
 ) -> None:
     """Trigger Databricks job to copy validated/ into bronze without waiting for the copy."""
     trace_base = _bronze_sync_trace_base(correlation_id, inst_id, bucket, file_name)
+    if batch_id is not None:
+        trace_base["batch_id"] = batch_id
     _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
 
-    skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id)
+    skip_reason = _gcs_bronze_sync_skip_reason(edvise_id, legacy_id, genai_id)
     if skip_reason is not None:
         _log_bronze_sync_skipped(trace_base, skip_reason)
+        return
+    if batch_id is None:
+        _log_bronze_sync_skipped(trace_base, "no_batch_id")
         return
 
     validated_blob_path = f"validated/{file_name}"
@@ -184,13 +226,56 @@ def _trigger_gcs_bronze_sync_if_applicable(
         _attempt_gcs_bronze_sync_trigger(
             inst_name,
             bucket,
-            validated_blob_path,
+            [validated_blob_path],
+            batch_id,
             databricks_control,
             trace_base,
             correlation_id,
         )
     except Exception:
         _log_bronze_sync_trigger_failed(trace_base, validated_blob_path, correlation_id)
+
+
+def _trigger_batch_bronze_sync_if_applicable(
+    inst: InstTable,
+    inst_id: str,
+    batch_id: str,
+    file_names: list[str],
+    databricks_control: DatabricksControl,
+) -> None:
+    """After batch creation, copy validated batch files into bronze under batch_id."""
+    skip_reason = _gcs_bronze_sync_skip_reason(
+        inst.edvise_id, inst.legacy_id, inst.genai_id
+    )
+    if skip_reason is not None or not file_names:
+        return
+
+    correlation_id = str(uuid.uuid4())
+    bucket = get_external_bucket_name(inst_id)
+    trace_base: Dict[str, Any] = {
+        "correlation_id": correlation_id,
+        "inst_id": inst_id,
+        "bucket": bucket,
+        "batch_id": batch_id,
+        "trigger_source": "batch_create",
+    }
+    _log_validation_trace_json("gcs_bronze_sync_background_start", **trace_base)
+
+    validated_blob_paths = [f"validated/{name}" for name in file_names]
+    try:
+        _attempt_gcs_bronze_sync_trigger(
+            inst.name,
+            bucket,
+            validated_blob_paths,
+            batch_id,
+            databricks_control,
+            trace_base,
+            correlation_id,
+        )
+    except Exception:
+        _log_bronze_sync_trigger_failed(
+            trace_base, validated_blob_paths[0], correlation_id
+        )
 
 
 # Cache for EDA data - TTL of 10 minutes (600 seconds)
@@ -869,6 +954,7 @@ def create_batch(
     req: BatchCreationRequest,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
     """Create a new batch."""
     has_access_to_inst_or_err(inst_id, current_user)
@@ -886,6 +972,7 @@ def create_batch(
         )
         .all()
     )
+    created_new_batch = False
     if len(query_result) == 0:
         batch = BatchTable(
             name=req.name,
@@ -949,25 +1036,39 @@ def create_batch(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Database write of the batch created duplicate entries.",
             )
+        created_new_batch = True
     if len(query_result) > 1:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Batch with this name already exists.",
         )
+    batch_row = query_result[0][0]
+    batch_id_str = uuid_to_str(batch_row.id)
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is not None and created_new_batch:
+        _trigger_batch_bronze_sync_if_applicable(
+            inst,
+            inst_id,
+            batch_id_str,
+            [f.name for f in batch_row.files],
+            databricks_control,
+        )
     return {
-        "batch_id": uuid_to_str(query_result[0][0].id),
-        "inst_id": uuid_to_str(query_result[0][0].inst_id),
-        "name": query_result[0][0].name,
-        "file_names_to_ids": {
-            x.name: uuid_to_str(x.id) for x in query_result[0][0].files
-        },
-        "created_by": uuid_to_str(query_result[0][0].created_by),
+        "batch_id": batch_id_str,
+        "inst_id": uuid_to_str(batch_row.inst_id),
+        "name": batch_row.name,
+        "file_names_to_ids": {x.name: uuid_to_str(x.id) for x in batch_row.files},
+        "created_by": uuid_to_str(batch_row.created_by),
         "deleted": False,
         "completed": False,
         "deletion_request_time": None,
-        "created_at": query_result[0][0].created_at,
-        "updated_by": uuid_to_str(query_result[0][0].updated_by),
-        "updated_at": query_result[0][0].updated_at,
+        "created_at": batch_row.created_at,
+        "updated_by": uuid_to_str(batch_row.updated_by),
+        "updated_at": batch_row.updated_at,
     }
 
 
@@ -1397,20 +1498,13 @@ def download_url_inst_file(
 
 class _ValidationState:
     _ar_re = re.compile(r"(?<![A-Za-z0-9])ar(?![A-Za-z0-9])", re.IGNORECASE)
-    _base_cache: Dict[str, Any] = {"exp": 0.0, "val": None}
-    _ext_cache: Dict[str, Tuple[float, Any]] = {}
-    _pdp_cache: Tuple[float, Optional[dict]] = (0.0, None)
-    _edvise_cache: Tuple[float, Optional[dict]] = (0.0, None)
 
 
 STATE = _ValidationState()
 
-BASE_TTL = 300  # seconds; base schema cache TTL
-EXT_TTL = 120  # seconds; extension schema cache TTL
-
 
 def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]:
-    """Infer allowed schema names from file name; legacy may use any name (UNKNOWN).
+    """Infer allowed schema names from file name; legacy/genai may use any name (UNKNOWN).
 
     Args:
         file_name: Name of the file (used for keyword inference).
@@ -1420,7 +1514,7 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
         Sorted list of allowed schema names (e.g. ["COURSE"], ["STUDENT"], ["UNKNOWN"]).
 
     Raises:
-        HTTPException: 422 if name is non-descriptive and institution is not legacy.
+        HTTPException: 422 if name is non-descriptive and institution is not legacy/genai.
     """
     name = os.path.basename(file_name).lower()
     has_course = "course" in name
@@ -1454,111 +1548,8 @@ def _infer_allowed_schemas_from_filename(file_name: str, inst: Any) -> List[str]
     return sorted(inferred_from_name)
 
 
-def _get_validation_base_schema(sess: Session) -> Tuple[Any, Any, float]:
-    """Return (base_schema_id, base_schema, now) using cache.
-
-    Args:
-        sess: DB session for schema registry query.
-
-    Returns:
-        Tuple of (base_schema_id, base_schema dict, current time.monotonic()).
-
-    Raises:
-        RuntimeError: If no active base schema is registered.
-    """
-    import time
-
-    now = time.monotonic()
-    base_cache = STATE._base_cache
-    if now < base_cache["exp"] and base_cache["val"] is not None:
-        cached = base_cache["val"]
-        base_schema_id, base_schema = cached  # pylint: disable=unpacking-non-sequence
-        return (base_schema_id, base_schema, now)
-    row = sess.execute(
-        select(SchemaRegistryTable.schema_id, SchemaRegistryTable.json_doc)
-        .where(
-            SchemaRegistryTable.doc_type == DocType.base,
-            SchemaRegistryTable.is_active.is_(True),
-        )
-        .limit(1)
-    ).first()
-    if row is None:
-        raise RuntimeError("No active base schema found")
-    base_schema_id, base_schema = row
-    base_cache["exp"] = now + BASE_TTL
-    base_cache["val"] = (base_schema_id, base_schema)
-    return (base_schema_id, base_schema, now)
-
-
-def _resolve_edvise_schema(
-    sess: Session, now: float
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for Edvise Schema (ES) institutions."""
-    schema_namespace = "edvise"
-    edvise_exp, edvise_doc = STATE._edvise_cache
-    if now < edvise_exp and edvise_doc is not None:
-        inst_schema: Optional[Dict[str, Any]] = edvise_doc
-    else:
-        inst_schema = sess.execute(
-            select(SchemaRegistryTable.json_doc)
-            .where(
-                SchemaRegistryTable.is_edvise.is_(True),
-                SchemaRegistryTable.is_active.is_(True),
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        STATE._edvise_cache = (now + EXT_TTL, inst_schema)
-    if inst_schema is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Edvise Schema (ES) not found for institution with edvise_id. "
-            "Please ensure an active Edvise Schema (ES) extension is registered.",
-        )
-    return (schema_namespace, inst_schema)
-
-
-def _resolve_pdp_schema(
-    sess: Session, now: float
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema namespace and extension for PDP institutions."""
-    schema_namespace = "pdp"
-    pdp_exp, pdp_doc = STATE._pdp_cache
-    if now < pdp_exp and pdp_doc is not None:
-        inst_schema: Optional[Dict[str, Any]] = pdp_doc
-    else:
-        inst_schema = cast(
-            Optional[Dict[str, Any]],
-            sess.execute(
-                select(SchemaRegistryTable.json_doc)
-                .where(
-                    SchemaRegistryTable.is_pdp.is_(True),
-                    SchemaRegistryTable.is_active.is_(True),
-                )
-                .limit(1)
-            ).scalar_one_or_none(),
-        )
-        STATE._pdp_cache = (now + EXT_TTL, inst_schema)
-    if inst_schema is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="PDP schema not found for institution with pdp_id. "
-            "Please ensure an active PDP schema extension is registered.",
-        )
-    return (schema_namespace, inst_schema)
-
-
-def _resolve_schema_namespace_and_extension(
-    sess: Session,
-    inst: Any,
-    inst_id: str,
-    now: float,
-    allowed_schemas: List[str],
-    bucket: str,
-    base_schema: dict,
-    base_schema_id: Any,
-    file_name: str,
-) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Resolve schema_namespace and updated_inst_schema by institution type (edvise/pdp/legacy/genai)."""
+def _resolve_schema_namespace(inst: Any) -> str:
+    """Resolve validation namespace by institution type (edvise/pdp/legacy/genai)."""
     pdp_id = getattr(inst, "pdp_id", None)
     edvise_id = getattr(inst, "edvise_id", None)
     legacy_id = getattr(inst, "legacy_id", None)
@@ -1570,13 +1561,11 @@ def _resolve_schema_namespace_and_extension(
             "pdp_id, edvise_id, legacy_id, or genai_id set",
         )
     if edvise_id:
-        return _resolve_edvise_schema(sess, now)
+        return "edvise"
     if pdp_id:
-        return _resolve_pdp_schema(sess, now)
-    if legacy_id:
-        return ("legacy", None)
-    if genai_id:
-        return ("legacy", None)
+        return "pdp"
+    if legacy_id or genai_id:
+        return "legacy"
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=(
@@ -1590,8 +1579,6 @@ def _run_validation_and_upsert_file_record(
     bucket: str,
     file_name: str,
     allowed_schemas: List[str],
-    base_schema: dict,
-    updated_inst_schema: Optional[Dict[str, Any]],
     schema_namespace: str,
     inst_id: str,
     source_str: str,
@@ -1605,8 +1592,6 @@ def _run_validation_and_upsert_file_record(
             bucket,
             file_name,
             allowed_schemas,
-            base_schema,
-            updated_inst_schema,
             institution_id=schema_namespace,
             institution_identifier=inst_id if schema_namespace == "edvise" else None,
         )
@@ -1693,11 +1678,12 @@ def validation_helper(
     storage_control: StorageControl,
     sql_session: Session,
     databricks_control: DatabricksControl,
+    batch_id: Optional[str] = None,
 ) -> Any:
     """Run file validation for an institution and upsert the file record.
 
     Validates file name and institution, infers allowed schemas from filename
-    (or UNKNOWN for legacy when inference fails), resolves extension schema,
+    (or UNKNOWN for legacy when inference fails), resolves validation namespace,
     runs storage validation, then upserts the file record.
 
     Args:
@@ -1706,8 +1692,9 @@ def validation_helper(
         file_name: Name of the file (no path separators).
         current_user: Authenticated user; must have access to inst_id.
         storage_control: StorageControl instance for GCS and validate_file.
-        sql_session: DB session for institution, schema, and file record.
-        databricks_control: Starts the GCS→Databricks bronze sync after validation.
+        sql_session: DB session for institution and file record.
+        databricks_control: Starts the GCS→Databricks bronze sync after validation when
+            batch_id is provided (non-PDP schools only).
 
     Returns:
         Dict with name, inst_id, file_types, source, status.
@@ -1745,7 +1732,6 @@ def validation_helper(
         )
 
     allowed_schemas = _infer_allowed_schemas_from_filename(file_name, inst)
-    base_schema_id, base_schema, now = _get_validation_base_schema(sess)
     bucket = get_external_bucket_name(inst_id)
     correlation_id = str(uuid.uuid4())
     _log_validation_trace_json(
@@ -1756,23 +1742,11 @@ def validation_helper(
         file_name=file_name,
         validation_source=source_str,
     )
-    schema_namespace, updated_inst_schema = _resolve_schema_namespace_and_extension(
-        sess,
-        inst,
-        inst_id,
-        now,
-        allowed_schemas,
-        bucket,
-        base_schema,
-        base_schema_id,
-        file_name,
-    )
+    schema_namespace = _resolve_schema_namespace(inst)
     result = _run_validation_and_upsert_file_record(
         bucket,
         file_name,
         allowed_schemas,
-        base_schema,
-        updated_inst_schema,
         schema_namespace,
         inst_id,
         source_str,
@@ -1780,17 +1754,21 @@ def validation_helper(
         storage_control,
         sess,
     )
+    if batch_id is not None:
+        _load_batch_for_bronze_sync(sess, inst_id, batch_id)
     # GCS validated/ write is complete; start the Databricks run now. The API waits
     # only for run_now to return a run id, not for cluster startup or file copying.
     _trigger_gcs_bronze_sync_if_applicable(
         inst.name,
         inst.edvise_id,
         inst.legacy_id,
+        inst.genai_id,
         inst_id,
         file_name,
         bucket,
         databricks_control,
         correlation_id,
+        batch_id,
     )
     return result
 
@@ -1805,6 +1783,7 @@ def validate_file_sftp(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    batch_id: Annotated[Optional[str], Query()] = None,
 ) -> Any:
     """Validate a given file pulled from SFTP. The file_name should be url encoded."""
     file_name = decode_url_piece(file_name)
@@ -1821,6 +1800,7 @@ def validate_file_sftp(
         storage_control,
         sql_session,
         databricks_control,
+        batch_id=batch_id,
     )
 
 
@@ -1834,6 +1814,7 @@ def validate_file_manual_upload(
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    batch_id: Annotated[Optional[str], Query()] = None,
 ) -> Any:
     """Validate a given file. The file_name should be url encoded."""
 
@@ -1847,6 +1828,7 @@ def validate_file_manual_upload(
         storage_control,
         sql_session,
         databricks_control,
+        batch_id=batch_id,
     )
 
 
@@ -1925,6 +1907,11 @@ def add_custom_school_job(
             inst_name=inst_result[0][0].name,
             model_name=model_name,
         )
+        model_version = (
+            str(latest_model_version.version)
+            if latest_model_version.version is not None
+            else None
+        )
 
         job = JobTable(
             id=job_run_id,
@@ -1935,7 +1922,7 @@ def add_custom_school_job(
             model_id=query_result[0][0].id,
             output_valid=True,
             completed=True,
-            model_version=latest_model_version.version,
+            model_version=model_version,
             model_run_id=latest_model_version.run_id,
         )
         local_session.get().add(job)
@@ -1945,7 +1932,7 @@ def add_custom_school_job(
             "m_name": model_name,
             "run_id": job_run_id,
             "output_filename": f"{job_run_id}/inference_output.csv",
-            "model_version": latest_model_version.version,
+            "model_version": model_version,
             "model_run_id": latest_model_version.run_id,
             "created_by": current_user.user_id,
             "triggered_at": triggered_timestamp,

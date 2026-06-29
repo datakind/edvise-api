@@ -84,9 +84,9 @@ def get_edvise_schema_for_upload(
     """
     Return the edvise repo schema class for this upload, or None.
 
-    Use this as the single check: when not None, run that schema and skip JSON
-    Pandera. PDP and Edvise single-model STUDENT/COURSE uploads use repo
-    validation (edvise package required).
+    Use this as the single check: when not None, run that schema. PDP and
+    Edvise single-model STUDENT/COURSE uploads use repo validation (edvise
+    package required).
 
     Args:
         institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy").
@@ -95,7 +95,7 @@ def get_edvise_schema_for_upload(
     Returns:
         RawPDPCohortDataSchema for PDP+STUDENT, RawPDPCourseDataSchema for PDP+COURSE,
         RawEdviseStudentDataSchema for Edvise+STUDENT, RawEdviseCourseDataSchema for
-        Edvise+COURSE, or None (non-repo-schema or multi-model; use JSON-based validation).
+        Edvise+COURSE, or None for unsupported model sets.
     """
     if not institution_id or not isinstance(institution_id, str):
         return None
@@ -263,7 +263,7 @@ def validate_dataframe_with_edvise_schema(
         schema_class: RawPDPCohortDataSchema, RawPDPCourseDataSchema, or raw Edvise schema.
         raw_to_canon: Mapping from raw file headers to canonical names.
         canon_to_raw: Mapping from canonical names to raw file headers.
-        merged_specs: Merged JSON spec for formatter context.
+        merged_specs: Optional formatter context from callers that have column specs.
 
     Returns:
         Validated DataFrame returned by the upstream schema class.

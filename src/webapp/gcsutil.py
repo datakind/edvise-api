@@ -360,8 +360,6 @@ class StorageControl(BaseModel):
         bucket_name: str,
         file_name: str,
         allowed_schemas: list[str],
-        base_schema: dict,
-        inst_schema: Optional[Dict[Any, Any]] = None,
         institution_id: str = "pdp",
         institution_identifier: Optional[str] = None,
     ) -> List[str]:
@@ -375,10 +373,7 @@ class StorageControl(BaseModel):
             bucket_name: GCS bucket name.
             file_name: Blob name under unvalidated/.
             allowed_schemas: List of schema/model names allowed.
-            base_schema: Base schema dict.
-            inst_schema: Optional extension schema with institutions.* blocks.
-            institution_id: Key into inst_schema["institutions"]: "edvise", "pdp",
-                or "legacy" (any-format uploads). Default "pdp".
+            institution_id: Validation namespace: "edvise", "pdp", or "legacy".
             institution_identifier: Optional institution ID (e.g. UUID). Used by
                 Edvise upload validation for caller context.
 
@@ -411,8 +406,6 @@ class StorageControl(BaseModel):
                 blob,
                 file_name,
                 allowed_schemas,
-                base_schema,
-                inst_schema,
                 institution_id,
                 institution_identifier,
             )
@@ -453,8 +446,6 @@ class StorageControl(BaseModel):
         blob: Any,
         file_name: str,
         allowed_schemas: list[str],
-        base_schema: dict,
-        inst_schema: Optional[Dict[Any, Any]],
         institution_id: str,
         institution_identifier: Optional[str],
     ) -> tuple[List[str], Any]:
@@ -465,8 +456,6 @@ class StorageControl(BaseModel):
             result = validate_file_reader(
                 local_csv_path,
                 allowed_schemas,
-                base_schema,
-                inst_schema,
                 institution_id=institution_id,
                 institution_identifier=institution_identifier,
             )
