@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform != 'win32'",
@@ -695,8 +695,8 @@ wheels = [
 
 [[package]]
 name = "edvise"
-version = "1.0.0"
-source = { git = "https://github.com/datakind/edvise.git?rev=develop#9c0d28047acdc3a5e3e9ff96e81a8f7f04e83d1c" }
+version = "1.4.0"
+source = { git = "https://github.com/datakind/edvise.git?rev=develop#0352b3c3825463b6ad596646d594b914f697d1fe" }
 dependencies = [
     { name = "databricks-connect" },
     { name = "databricks-sdk" },
@@ -3127,7 +3127,7 @@ wheels = [
 
 [[package]]
 name = "src"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "bcrypt" },
