@@ -88,6 +88,42 @@ PII_FALSE_POSITIVE_PATTERNS = {
     "column_name",
     "table_name",
     "field_name",
+    "component_name",  # Course component metadata (legacy/DataKind course files)
+    "class_course_name",  # Course title metadata (legacy/DataKind course files)
+    "primary_class_section_name",  # Section identifier label (DataKind course files)
+}
+
+# Prefixes for *_name columns that describe entities, not people (e.g. course_name).
+# Used by the *_name suffix rule so course-file metadata is not treated as PII.
+NON_PERSON_NAME_PREFIXES = {
+    "course",
+    "component",
+    "school",
+    "district",
+    "institution",
+    "class",
+    "section",
+    "program",
+    "department",
+    "subject",
+    "catalog",
+    "title",
+    "file",
+    "column",
+    "table",
+    "field",
+}
+
+# Modifiers that may prefix entity *_name columns without implying a person's name
+# (e.g. primary_class_section_name -> substantive tokens class + section).
+NON_PERSON_NAME_QUALIFIERS = {
+    "primary",
+    "secondary",
+    "main",
+    "official",
+    "display",
+    "long",
+    "short",
 }
 
 # Limits for error message generation
@@ -547,10 +583,18 @@ def _is_pii_column(column_name: str) -> bool:
         return True
 
     # Also check for "*_name" patterns (student_name, employee_name, etc.)
-    # These are likely PII unless in the false positive denylist (already checked above)
-    # We check this after medium-risk indicators to catch patterns like "student_name"
+    # These are likely PII unless substantive prefix tokens refer to non-person entities
+    # (e.g. primary_class_section_name -> class + section; qualifiers like "primary" ignored).
     if col_lower.endswith("_name") and col_lower != "name":
-        # Already checked false positives above, so if we get here, it's likely PII
+        prefix = col_lower[: -len("_name")]
+        prefix_tokens = [t for t in prefix.split("_") if t]
+        substantive_tokens = [
+            t for t in prefix_tokens if t not in NON_PERSON_NAME_QUALIFIERS
+        ]
+        if substantive_tokens and all(
+            t in NON_PERSON_NAME_PREFIXES for t in substantive_tokens
+        ):
+            return False
         return True
 
     return False

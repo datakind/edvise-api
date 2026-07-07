@@ -26,7 +26,6 @@ def test_validate_file_raises_on_empty_file_name() -> None:
             bucket_name="test-bucket",
             file_name="",
             allowed_schemas=["STUDENT"],
-            base_schema={},
         )
 
 
@@ -38,7 +37,6 @@ def test_validate_file_raises_on_whitespace_only_file_name() -> None:
             bucket_name="test-bucket",
             file_name="   ",
             allowed_schemas=["STUDENT"],
-            base_schema={},
         )
 
 
@@ -50,7 +48,6 @@ def test_validate_file_raises_on_file_name_with_slash() -> None:
             bucket_name="test-bucket",
             file_name="path/to/file.csv",
             allowed_schemas=["STUDENT"],
-            base_schema={},
         )
 
 
@@ -62,7 +59,6 @@ def test_validate_file_raises_on_empty_allowed_schemas() -> None:
             bucket_name="test-bucket",
             file_name="cohort.csv",
             allowed_schemas=[],
-            base_schema={},
         )
 
 
@@ -88,7 +84,6 @@ def test_validate_file_raises_when_unvalidated_blob_not_found() -> None:
                 bucket_name="test-bucket",
                 file_name="cohort.csv",
                 allowed_schemas=["STUDENT"],
-                base_schema={},
             )
 
 
@@ -117,7 +112,6 @@ def test_validate_file_raises_when_normalized_df_none() -> None:
                     bucket_name="test-bucket",
                     file_name="cohort.csv",
                     allowed_schemas=["STUDENT"],
-                    base_schema={},
                 )
 
 
@@ -154,7 +148,6 @@ def test_validate_file_raises_when_validated_blob_already_exists() -> None:
                     bucket_name="test-bucket",
                     file_name="cohort.csv",
                     allowed_schemas=["STUDENT"],
-                    base_schema={},
                 )
 
 
@@ -203,7 +196,6 @@ def test_validate_file_success_archives_raw_writes_validated_deletes_unvalidated
                 bucket_name="test-bucket",
                 file_name="cohort.csv",
                 allowed_schemas=["STUDENT"],
-                base_schema={},
             )
 
     assert result == ["STUDENT"]
@@ -250,7 +242,6 @@ def test_validate_file_propagates_hard_validation_error() -> None:
                     bucket_name="test-bucket",
                     file_name="cohort.csv",
                     allowed_schemas=["STUDENT"],
-                    base_schema={},
                 )
 
 
@@ -280,8 +271,6 @@ def test_run_validation_and_get_normalized_df_returns_names_and_df() -> None:
             mock_blob,
             "cohort.csv",
             ["STUDENT"],
-            {},
-            None,
             "pdp",
             None,
         )
@@ -303,7 +292,7 @@ def test_run_validation_and_get_normalized_df_propagates_hard_validation_error()
     ):
         with pytest.raises(HardValidationError):
             control._run_validation_and_get_normalized_df(
-                mock_blob, "f.csv", ["STUDENT"], {}, None, "pdp", None
+                mock_blob, "f.csv", ["STUDENT"], "pdp", None
             )
 
 
@@ -319,7 +308,7 @@ def test_run_validation_and_get_normalized_df_propagates_value_error() -> None:
     ):
         with pytest.raises(ValueError, match="Invalid file format"):
             control._run_validation_and_get_normalized_df(
-                mock_blob, "f.csv", ["STUDENT"], {}, None, "pdp", None
+                mock_blob, "f.csv", ["STUDENT"], "pdp", None
             )
 
 
@@ -335,7 +324,7 @@ def test_run_validation_and_get_normalized_df_propagates_unicode_error() -> None
     ):
         with pytest.raises(UnicodeDecodeError):
             control._run_validation_and_get_normalized_df(
-                mock_blob, "f.csv", ["STUDENT"], {}, None, "pdp", None
+                mock_blob, "f.csv", ["STUDENT"], "pdp", None
             )
 
 
@@ -384,8 +373,6 @@ def test_run_validation_download_oserror_unlinks_temp_and_skips_validate() -> No
                     mock_blob,
                     "school_course.csv",
                     ["STUDENT"],
-                    {},
-                    None,
                     "pdp",
                     None,
                 )
@@ -411,8 +398,6 @@ def test_run_validation_download_oserror_logs_errno() -> None:
                     mock_blob,
                     "f.csv",
                     ["STUDENT"],
-                    {},
-                    None,
                     "pdp",
                     None,
                 )

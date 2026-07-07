@@ -1,5 +1,8 @@
-# Cloud Build config for webapp (dev-webapp trigger).
-# _REGION and _ENVIRONMENT are set by the trigger (Terraform).
+# Cloud Build config for webapp. Reused by per-environment triggers (dev, qa, staging, prod).
+# Each trigger sets _REGION and _ENVIRONMENT; deploys Cloud Run service "${_ENVIRONMENT}-webapp".
+substitutions:
+  _REGION: us-east4
+  _SERVICE: edvise-api
 steps:
   - name: ghcr.io/astral-sh/uv:debian
     entrypoint: bash
@@ -12,40 +15,40 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - build
-      - '-f'
+      - "-f"
       - src/webapp/Dockerfile
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/edvise-api/webapp:$COMMIT_SHA'
-      - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/edvise-api/webapp:latest'
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:latest"
       - .
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/edvise-api/webapp:$COMMIT_SHA'
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/edvise-api/webapp:latest'
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:latest"
   - name: gcr.io/cloud-builders/gcloud
     args:
       - run
       - deploy
-      - '${_ENVIRONMENT}-webapp'
-      - '--image'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/edvise-api/webapp:$COMMIT_SHA'
-      - '--region'
-      - '${_REGION}'
+      - "${_SERVICE}"
+      - "--image"
+      - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
+      - "--region"
+      - "${_REGION}"
   - name: curlimages/curl
     args:
-      - '-X'
+      - "-X"
       - POST
-      - '-H'
-      - 'Content-Type: application/json'
-      - '-f'
-      - '-d'
+      - "-H"
+      - "Content-Type: application/json"
+      - "-f"
+      - "-d"
       - >-
-        {"text":"🚀 *$REPO_NAME* deployed · `$BRANCH_NAME` · $TRIGGER_NAME · $BUILD_ID"}
+        {"text":"🚀 $TRIGGER_NAME → *$REPO_NAME* deployed · `$BRANCH_NAME`"}
       - >-
         https://hooks.slack.com/triggers/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
     id: notify-slack

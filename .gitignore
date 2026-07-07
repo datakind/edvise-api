@@ -79,7 +79,6 @@ profile_default/
 ipython_config.py
 
 # pyenv
-.python-version
 
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow
 __pypackages__/
@@ -96,6 +95,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local config / dev data
+config/local_inst_data.json
 
 # mkdocs documentation
 /site

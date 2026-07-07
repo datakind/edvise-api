@@ -1,0 +1,60 @@
+[
+  {
+    "inst_id": "inst-uuid-here",
+    "name": "Example institution",
+    "state": "XX",
+    "retention_days": null,
+    "pdp_id": "",
+    "edvise_id": null,
+    "batches": [
+      {
+        "batch_id": "batch-uuid-here",
+        "inst_id": "inst-uuid-here",
+        "file_names_to_ids": {
+          "example_course.csv": "file-id-course",
+          "example_student.csv": "file-id-student"
+        },
+        "name": "example_batch_1",
+        "created_by": "uploader-uuid-here",
+        "deleted": false,
+        "completed": true,
+        "deletion_request_time": null,
+        "created_at": "2025-01-15T12:00:00",
+        "updated_at": "2025-01-15T12:00:00",
+        "updated_by": ""
+      }
+    ],
+    "files": [
+      {
+        "name": "example_course.csv",
+        "data_id": "file-id-course",
+        "batch_ids": ["batch-uuid-here"],
+        "inst_id": "inst-uuid-here",
+        "uploader": "uploader-uuid-here",
+        "source": "MANUAL_UPLOAD",
+        "schemas": ["COURSE"],
+        "deleted": false,
+        "deletion_request_time": null,
+        "retention_days": null,
+        "sst_generated": false,
+        "valid": true,
+        "uploaded_date": "2025-01-15T11:58:00"
+      },
+      {
+        "name": "example_student.csv",
+        "data_id": "file-id-student",
+        "batch_ids": ["batch-uuid-here"],
+        "inst_id": "inst-uuid-here",
+        "uploader": "uploader-uuid-here",
+        "source": "MANUAL_UPLOAD",
+        "schemas": ["STUDENT"],
+        "deleted": false,
+        "deletion_request_time": null,
+        "retention_days": null,
+        "sst_generated": false,
+        "valid": true,
+        "uploaded_date": "2025-01-15T11:57:00"
+      }
+    ]
+  }
+]

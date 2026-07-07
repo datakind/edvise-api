@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+    branches: [main, develop, "release/*"]
+
+jobs:
+  pr-title:
+    uses: datakind/.github/.github/workflows/pr-title.yml@main
+    permissions:
+      pull-requests: read
+
+  asana:
+    uses: datakind/.github/.github/workflows/link-asana-task.yml@main
+    secrets:
+      ASANA_SECRET: ${{ secrets.ASANA_SECRET }}
+
+  dependency-review:
+    uses: datakind/.github/.github/workflows/dependency-review.yml@main
+    permissions:
+      contents: read
+
+  # Apps with develop/main branching: PRs into main must come from release/* or hotfix/*
+  enforce-targets:
+    uses: datakind/.github/.github/workflows/enforce-pr-targets.yml@main
+
+  # Release repos: require CHANGELOG.md updates on PRs to main
+  pre-release:
+    if: github.base_ref == 'main'
+    permissions:
+      pull-requests: read
+    uses: datakind/.github/.github/workflows/pre-release.yml@main
+
+  style:
+    uses: ./.github/workflows/style.yml
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  ci:
+    needs:
+      [
+        pr-title,
+        asana,
+        dependency-review,
+        enforce-targets,
+        pre-release,
+        style,
+        tests,
+      ]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require passing checks
+        run: |
+          for result in \
+            "${{ needs.pr-title.result }}" \
+            "${{ needs.asana.result }}" \
+            "${{ needs.dependency-review.result }}" \
+            "${{ needs.enforce-targets.result }}" \
+            "${{ needs.pre-release.result }}" \
+            "${{ needs.style.result }}" \
+            "${{ needs.tests.result }}"; do
+            case "$result" in success|skipped) ;; *) exit 1 ;; esac
+          done

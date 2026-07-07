@@ -8,7 +8,11 @@ from pydantic import BaseModel
 from sqlalchemy import and_, update, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
-from ..databricks import DatabricksControl, DatabricksInferenceRunRequest
+from ..databricks import (
+    DatabricksControl,
+    DatabricksPDPInferenceRunRequest,
+    DatabricksSharedInferenceRunRequest,
+)
 from ..utilities import (
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
@@ -21,6 +25,7 @@ from ..utilities import (
     SchemaType,
     decode_url_piece,
     LEGACY_TO_NEW_SCHEMA,
+    batch_input_validated_blob_paths,
 )
 from ..database import (
     get_session,
@@ -54,12 +59,117 @@ class SchemaConfigObj(BaseModel):
     multiple_allowed: bool = False
 
 
+# Input file schema types used when deriving batch rules from inst.schemas.
+_BATCH_INPUT_SCHEMA_ORDER: tuple[SchemaType, ...] = (
+    SchemaType.COURSE,
+    SchemaType.STUDENT,
+    SchemaType.SEMESTER,
+)
+_NON_INPUT_SCHEMA_TYPES: frozenset[SchemaType] = frozenset(
+    {SchemaType.UNKNOWN, SchemaType.SST_OUTPUT, SchemaType.PNG}
+)
+
+
+def default_schema_configs_from_inst_schemas(
+    inst_schemas: list[str] | None,
+) -> list[list[SchemaConfigObj]]:
+    """Build a required one-of-each batch config from institution allowed schemas."""
+    if not inst_schemas:
+        return []
+
+    allowed = {str(s) for s in inst_schemas}
+    ordered_types: list[SchemaType] = []
+    for schema_type in _BATCH_INPUT_SCHEMA_ORDER:
+        if schema_type.value in allowed:
+            ordered_types.append(schema_type)
+
+    for raw in sorted(allowed):
+        if raw in {t.value for t in _NON_INPUT_SCHEMA_TYPES}:
+            continue
+        try:
+            schema_type = SchemaType(raw)
+        except ValueError:
+            continue
+        if schema_type in _NON_INPUT_SCHEMA_TYPES or schema_type in ordered_types:
+            continue
+        ordered_types.append(schema_type)
+
+    if not ordered_types:
+        # Legacy and GenAI institutions allow arbitrary uploads (UNKNOWN only).
+        if SchemaType.UNKNOWN.value in allowed:
+            return [
+                [
+                    SchemaConfigObj(
+                        schema_type=SchemaType.UNKNOWN,
+                        optional=False,
+                        multiple_allowed=True,
+                    )
+                ]
+            ]
+        return []
+
+    return [
+        [
+            SchemaConfigObj(
+                schema_type=schema_type,
+                optional=False,
+                multiple_allowed=False,
+            )
+            for schema_type in ordered_types
+        ]
+    ]
+
+
+def resolve_model_schema_configs(
+    raw_config: Any,
+    inst_schemas: list[str] | None,
+) -> list[list[SchemaConfigObj]]:
+    """Return batch schema rules from the model row or derive from institution schemas."""
+    if raw_config is None:
+        derived = default_schema_configs_from_inst_schemas(inst_schemas)
+        if not derived:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Model has no schema_configs and the institution schemas could not "
+                    "be used to derive a default batch configuration. Configure input "
+                    "schema types on the institution (e.g. STUDENT, COURSE)."
+                ),
+            )
+        return derived
+
+    if not isinstance(raw_config, str):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Model schema_configs must be a jsonpickle-encoded string.",
+        )
+
+    normalized = raw_config
+    for legacy, new in LEGACY_TO_NEW_SCHEMA.items():
+        normalized = normalized.replace(f'"{legacy}"', f'"{new}"')
+    return cast(list[list[SchemaConfigObj]], jsonpickle.decode(normalized))
+
+
+def _is_any_format_schema_config(config: list[SchemaConfigObj]) -> bool:
+    """True when config means any upload schema is acceptable (legacy/genai)."""
+    return (
+        len(config) == 1
+        and config[0].schema_type == SchemaType.UNKNOWN
+        and config[0].multiple_allowed
+        and not config[0].optional
+    )
+
+
 def check_file_types_valid_schema_configs(
     file_types: list[list[SchemaType]],
     valid_schema_configs: list[list[SchemaConfigObj]],
 ) -> bool:
     """Check that a list of files are valid for a given schema configuration."""
     for config in valid_schema_configs:
+        if _is_any_format_schema_config(config):
+            if file_types:
+                return True
+            continue
         found = True
         map_file_to_schema_config_obj: dict = {}
         for idx, s in enumerate(file_types):
@@ -94,9 +204,6 @@ class ModelCreationRequest(BaseModel):
     """Model creation request object."""
 
     name: str
-    # valid = False, means the model is not ready for use.
-    valid: bool = False
-    schema_configs: list[list[SchemaConfigObj]]
 
 
 class ModelInfo(BaseModel):
@@ -108,8 +215,15 @@ class ModelInfo(BaseModel):
     inst_id: str
     # User id of created_by.
     created_by: str | None = None
-    valid: bool = False
+    valid: bool = True
     deleted: bool | None = None
+
+
+def _model_version_as_str(version: Any) -> str | None:
+    """Databricks model versions are ints; RunInfo and job rows store them as str."""
+    if version is None:
+        return None
+    return str(version)
 
 
 class RunInfo(BaseModel):
@@ -129,6 +243,8 @@ class RunInfo(BaseModel):
     output_valid: bool = False
     completed: bool | None = None
     err_msg: str | None = None
+    model_run_id: str | None = None
+    model_version: str | None = None
 
 
 class InferenceRunRequest(BaseModel):
@@ -138,6 +254,9 @@ class InferenceRunRequest(BaseModel):
     # Note: is_pdp is kept for backward compatibility but is ignored.
     # PDP status is derived from the institution's pdp_id field.
     is_pdp: bool = False
+    # Legacy schools inference parameters (optional passthrough; ignored for PDP)
+    config_file_name: str | None = None
+    features_table_name: str | None = None
 
 
 # Model related operations. Or model specific data.
@@ -215,8 +334,7 @@ def create_model(
             name=req.name,
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),
-            valid=req.valid,
-            schema_configs=jsonpickle.encode(req.schema_configs),
+            valid=True,
         )
         local_session.get().add(model)
         local_session.get().commit()
@@ -471,6 +589,8 @@ def read_inst_model_output(
                 "output_filename": elem.output_filename,
                 "output_valid": False if not elem.output_valid else elem.output_valid,
                 "completed": False if not elem.completed else elem.completed,
+                "model_run_id": elem.model_run_id,
+                "model_version": elem.model_version,
             }
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -524,11 +644,139 @@ def trigger_inference_run(
             + str(len(inst_result)),
         )
     inst = inst_result[0][0]
-    # Check PDP status from institution's pdp_id (ignore req.is_pdp for backward compat)
-    if not inst.pdp_id:
+    # Determine institution type: PDP, Edvise Schema (ES), Legacy, or GenAI.
+    # Follows the same pattern as validation_helper in data.py.
+    pdp_id = getattr(inst, "pdp_id", None)
+    edvise_id = getattr(inst, "edvise_id", None)
+    legacy_id = getattr(inst, "legacy_id", None)
+    genai_id = getattr(inst, "genai_id", None)
+    if sum(bool(x) for x in (pdp_id, edvise_id, legacy_id, genai_id)) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Institution configuration error: cannot have more than one of "
+                "pdp_id, edvise_id, legacy_id, or genai_id set"
+            ),
+        )
+    is_pdp = bool(pdp_id)
+    is_legacy = bool(legacy_id)
+    is_edvise = bool(edvise_id) or bool(genai_id)
+
+    # Legacy, Edvise Schema (ES), and GenAI inference
+    if is_legacy or is_edvise:
+        # or: legacy_or_edvise_model_result ?
+        shared_model_result = (
+            local_session.get()
+            .execute(
+                select(ModelTable).where(
+                    and_(
+                        ModelTable.name == model_name,
+                        ModelTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
+            .all()
+        )
+        if len(shared_model_result) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unexpected number of models found: Expected 1, got "
+                + str(len(shared_model_result)),
+            )
+
+        batch_result = (
+            local_session.get()
+            .execute(
+                select(BatchTable).where(
+                    and_(
+                        BatchTable.name == req.batch_name,
+                        BatchTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
+            .all()
+        )
+        if len(batch_result) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unexpected number of batches found: Expected 1, got "
+                + str(len(batch_result)),
+            )
+        batch = batch_result[0][0]
+        inst_file_schemas = [list({s for f in batch.files for s in f.schemas})]
+        schema_configs = resolve_model_schema_configs(
+            shared_model_result[0][0].schema_configs,
+            inst.schemas,
+        )
+        if not check_file_types_valid_schema_configs(
+            inst_file_schemas,
+            schema_configs,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
+            )
+
+        db_req = DatabricksSharedInferenceRunRequest(
+            inst_name=inst_result[0][0].name,
+            model_name=model_name,
+            config_file_name=req.config_file_name or "",
+            features_table_name=req.features_table_name or "",
+            gcp_external_bucket_name=get_external_bucket_name(inst_id),
+            email=current_user.email or "",
+            batch_id=uuid_to_str(batch.id),
+            validated_blob_paths=batch_input_validated_blob_paths(batch.files),
+            is_genai_institution=bool(genai_id),
+        )
+        try:
+            if is_legacy:
+                res = databricks_control.run_legacy_inference(db_req)
+            else:
+                res = databricks_control.run_es_inference(db_req)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logging.error(f"Databricks run failure:\n{tb}")
+            op = "run_legacy_inference" if is_legacy else "run_es_inference"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Databricks {op} error. Error = {str(e)}",
+            ) from e
+        triggered_timestamp = datetime.now()
+        latest_model_version = databricks_control.fetch_model_version(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=inst_result[0][0].name,
+            model_name=model_name,
+        )
+        model_version = _model_version_as_str(latest_model_version.version)
+        model_run_id = latest_model_version.run_id
+        job = JobTable(
+            id=res.job_run_id,
+            triggered_at=triggered_timestamp,
+            created_by=str_to_uuid(current_user.user_id),
+            batch_name=req.batch_name,
+            model_id=shared_model_result[0][0].id,
+            output_valid=False,
+            model_version=model_version,
+            model_run_id=model_run_id,
+        )
+        local_session.get().add(job)
+        return {
+            "inst_id": inst_id,
+            "m_name": model_name,
+            "run_id": res.job_run_id,
+            "created_by": current_user.user_id,
+            "triggered_at": triggered_timestamp,
+            "batch_name": req.batch_name,
+            "output_valid": False,
+            "model_version": model_version,
+            "model_run_id": model_run_id,
+        }
+
+    # PDP inference (existing logic)
+    if not is_pdp:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Currently, only PDP inference is supported.",
+            detail="Currently, only PDP, Legacy, and Edvise Schema (ES) schools inference are supported.",
         )
     query_result = (
         local_session.get()
@@ -570,15 +818,10 @@ def trigger_inference_run(
         )
     # inst_file_schemas = [x.schemas for x in batch_result[0][0].files]
     inst_file_schemas = [list({s for f in batch_result[0][0].files for s in f.schemas})]
-    raw_config = query_result[0][0].schema_configs
-
-    # Inline legacy → new mapping directly on the string
-    for legacy, new in LEGACY_TO_NEW_SCHEMA.items():
-        # This replaces every occurrence of "PDP_COURSE", "PDP_COHORT", etc.
-        raw_config = raw_config.replace(f'"{legacy}"', f'"{new}"')
-
-    schema_configs = jsonpickle.decode(raw_config)
-    # POTENTIAL_REVERSE: schema_configs = jsonpickle.decode(query_result[0][0].schema_configs)
+    schema_configs = resolve_model_schema_configs(
+        query_result[0][0].schema_configs,
+        inst.schemas,
+    )
 
     if not check_file_types_valid_schema_configs(
         inst_file_schemas,
@@ -589,7 +832,7 @@ def trigger_inference_run(
             detail=f"The files in this batch don't conform to the schema configs allowed by this model. For debugging reference - file_schema={inst_file_schemas} and model_schema={schema_configs}",
         )
     # Note to Datakind: In the long-term, this is where you would have a case block or something that would call different types of pipelines.
-    db_req = DatabricksInferenceRunRequest(
+    pdp_db_req = DatabricksPDPInferenceRunRequest(
         inst_name=inst_result[0][0].name,
         filepath_to_type=convert_files_to_dict(batch_result[0][0].files),
         model_name=model_name,
@@ -598,7 +841,7 @@ def trigger_inference_run(
         email=cast(str, current_user.email),
     )
     try:
-        res = databricks_control.run_pdp_inference(db_req)
+        res = databricks_control.run_pdp_inference(pdp_db_req)
     except Exception as e:
         tb = traceback.format_exc()
         logging.error(f"Databricks run failure:\n{tb}")
@@ -612,6 +855,8 @@ def trigger_inference_run(
         inst_name=inst_result[0][0].name,
         model_name=model_name,
     )
+    model_version = _model_version_as_str(latest_model_version.version)
+    model_run_id = latest_model_version.run_id
     job = JobTable(
         id=res.job_run_id,
         triggered_at=triggered_timestamp,
@@ -619,8 +864,8 @@ def trigger_inference_run(
         batch_name=req.batch_name,
         model_id=query_result[0][0].id,
         output_valid=False,
-        model_version=latest_model_version.version,
-        model_run_id=latest_model_version.run_id,
+        model_version=model_version,
+        model_run_id=model_run_id,
     )
     local_session.get().add(job)
     return {
@@ -631,8 +876,8 @@ def trigger_inference_run(
         "triggered_at": triggered_timestamp,
         "batch_name": req.batch_name,
         "output_valid": False,
-        "model_version": latest_model_version.version,
-        "model_run_id": latest_model_version.run_id,
+        "model_version": model_version,
+        "model_run_id": model_run_id,
     }
 
 

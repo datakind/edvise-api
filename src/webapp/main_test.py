@@ -1,7 +1,10 @@
 """Test file for the main.py file and constituent API functions."""
 
 import json
+from pathlib import Path
 from typing import Generator
+
+import tomllib
 import pytest
 from fastapi.testclient import TestClient
 import sqlalchemy
@@ -26,6 +29,13 @@ from .test_helper import (
     SAMPLE_UUID,
 )
 from .utilities import get_current_active_user
+
+
+def test_openapi_version_matches_pyproject() -> None:
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with pyproject.open("rb") as f:
+        expected = tomllib.load(f)["project"]["version"]
+    assert app.openapi()["info"]["version"] == expected
 
 
 @pytest.fixture(name="session")

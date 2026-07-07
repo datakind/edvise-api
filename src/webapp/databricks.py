@@ -2,8 +2,9 @@
 
 import os
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import DatabricksError
 from databricks.sdk.service import catalog
 from databricks.sdk.service.sql import (
     Format,
@@ -13,11 +14,9 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
-from .validation_extension import generate_extension_schema
 from .config import databricks_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, Optional
-from fastapi import HTTPException
 import requests
 import hashlib
 import json
@@ -25,7 +24,6 @@ import gzip
 from cachetools import TTLCache
 import threading
 import re
-import pandas as pd
 
 # Setting up logger
 LOGGER = logging.getLogger(__name__)
@@ -34,8 +32,30 @@ LOGGER = logging.getLogger(__name__)
 # List of data medallion levels
 MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 
-# The name of the deployed pipeline in Databricks. Must match directly.
+# The name of the deployed pipeline in Databricks. Must match the job's `name` in that workspace.
+# Override with LEGACY_INFERENCE_JOB_NAME, ES_INFERENCE_JOB_NAME (and PDP_INFERENCE_JOB_NAME)
+# when dev/staging deploy uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
+ES_INFERENCE_JOB_NAME = "github_sourced_genai_es_inference_pipeline"
+# Dev bundle prefix for the Cloud Run service principal job target.
+CLOUDRUN_BUNDLE_JOB_PREFIX = "[dev dev_cloudrun_sa]"
+# GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
+VALIDATED_BRONZE_SYNC_JOB_NAME = "edvise_validated_gcs_to_bronze_sync"
+# Optional: numeric Databricks job id. If unset, the job is resolved by name (must be unique).
+DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV = "DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID"
+# Environment-specific Databricks job ids for deployed API environments.
+VALIDATED_BRONZE_SYNC_JOB_IDS_BY_ENV = {
+    "DEV": 1005654397694881,
+    "STAGING": 611181637854021,
+}
+
+# Must match edvise bundle job parameters (github_validated_bronze_sync.yml).
+BRONZE_SYNC_GCS_SOURCE_PREFIX = "validated/"
+BRONZE_SYNC_BRONZE_SUBDIR = "gcs_uploads"
+BRONZE_SYNC_MAX_OBJECTS = "1000"
+BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE = "true"
+BRONZE_SYNC_STRICT_MODE = "auto"
 
 VALID_BRONZE_FILE_RE = re.compile(
     r"^[a-z0-9]+pdp_[a-z0-9]+_(course_level_)?ar_.*\.csv$",
@@ -43,8 +63,271 @@ VALID_BRONZE_FILE_RE = re.compile(
 )
 
 
-class DatabricksInferenceRunRequest(BaseModel):
-    """Databricks parameters for an inference run."""
+def _create_databricks_workspace_client(operation: str) -> WorkspaceClient:
+    """
+    Create a Databricks WorkspaceClient using configured host and GCP service account.
+
+    Args:
+        operation: Label for error messages (e.g. ``run_validated_gcs_to_bronze_sync``).
+
+    Returns:
+        Initialized workspace client.
+
+    Raises:
+        ValueError: If client creation fails.
+    """
+    try:
+        return WorkspaceClient(
+            host=databricks_vars["DATABRICKS_HOST_URL"],
+            google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        )
+    except (OSError, DatabricksError) as exc:
+        LOGGER.exception(
+            "Failed to create Databricks WorkspaceClient for %s: host=%s service_account=%s",
+            operation,
+            databricks_vars["DATABRICKS_HOST_URL"],
+            gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+        )
+        raise ValueError(f"{operation}(): Workspace client failed: {exc}") from exc
+
+
+def _run_databricks_job_now(
+    workspace: WorkspaceClient,
+    job_id: int,
+    job_parameters: dict[str, str],
+    operation: str,
+) -> int:
+    """
+    Start a Databricks job run and return the run id.
+
+    Raises:
+        ValueError: If the Jobs API does not return a run id.
+    """
+    try:
+        run_job: Any = workspace.jobs.run_now(job_id, job_parameters=job_parameters)
+    except DatabricksError as exc:
+        LOGGER.exception(
+            "Databricks job run failed for %s (job_id=%s).", operation, job_id
+        )
+        raise ValueError(f"{operation}(): Job could not be run: {exc}") from exc
+
+    if not run_job.response or run_job.response.run_id is None:
+        raise ValueError(f"{operation}(): No run_id returned.")
+
+    return int(run_job.response.run_id)
+
+
+def _resolve_validated_bronze_sync_job_id(w: WorkspaceClient) -> int:
+    """
+    Return the job id for the GCS→bronze sync job.
+
+    Prefer ``DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID`` when set (stable across renames).
+    Otherwise resolve by exact name, deployed environment, then a unique bundle-prefixed name.
+    """
+    raw = (os.environ.get(DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV) or "").strip()
+    if raw:
+        if not raw.isdigit():
+            raise ValueError(
+                f"{DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} must be a positive integer "
+                f"(Databricks job id) if set; got {raw!r}."
+            )
+        job_id = int(raw)
+        if job_id <= 0:
+            raise ValueError(
+                f"{DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} must be positive; got {job_id}."
+            )
+        LOGGER.info(
+            "Bronze sync job id from %s=%s",
+            DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
+            job_id,
+        )
+        return job_id
+
+    jobs = list(w.jobs.list(name=VALIDATED_BRONZE_SYNC_JOB_NAME))
+    if len(jobs) == 0:
+        env_job_id = _resolve_validated_bronze_sync_job_id_by_environment()
+        if env_job_id is not None:
+            return env_job_id
+    if len(jobs) == 0:
+        jobs = _find_validated_bronze_sync_jobs_by_suffix(w)
+    if len(jobs) == 0:
+        raise ValueError(
+            f"Job named {VALIDATED_BRONZE_SYNC_JOB_NAME!r} or a unique bundle-prefixed "
+            f"variant was not found. "
+            f"Deploy the bundle job or set {DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} "
+            "to the numeric job id from the Databricks UI / API."
+        )
+    if len(jobs) > 1:
+        ids = [j.job_id for j in jobs if j.job_id is not None]
+        raise ValueError(
+            f"Multiple ({len(jobs)}) jobs matched {VALIDATED_BRONZE_SYNC_JOB_NAME!r}; "
+            f"set {DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV} to the correct id. Found job_ids={ids}."
+        )
+    job = jobs[0]
+    if job.job_id is None:
+        raise ValueError(
+            f"Job matching {VALIDATED_BRONZE_SYNC_JOB_NAME!r} has no job_id in list response."
+        )
+    job_id = job.job_id
+    LOGGER.info(
+        "Resolved bronze sync job %r: job_id=%s",
+        _databricks_job_name(job) or VALIDATED_BRONZE_SYNC_JOB_NAME,
+        job_id,
+    )
+    return job_id
+
+
+def _resolve_validated_bronze_sync_job_id_by_environment() -> Optional[int]:
+    """Return the deployed Databricks job id for the current API environment."""
+    env = (os.environ.get("ENV") or "").strip().upper()
+    job_id = VALIDATED_BRONZE_SYNC_JOB_IDS_BY_ENV.get(env)
+    if job_id is not None:
+        LOGGER.info("Bronze sync job id from ENV=%s mapping: job_id=%s", env, job_id)
+    return job_id
+
+
+def _databricks_job_name(job: Any) -> Optional[str]:
+    """Return the display name from a Databricks job list item, if present."""
+    settings = getattr(job, "settings", None)
+    name = getattr(settings, "name", None)
+    if isinstance(name, str):
+        return name
+    name = getattr(job, "name", None)
+    if isinstance(name, str):
+        return name
+    return None
+
+
+def _find_validated_bronze_sync_jobs_by_suffix(w: WorkspaceClient) -> list[Any]:
+    """
+    Find a Databricks Asset Bundle dev-mode job with a prefixed display name.
+
+    Development-mode bundle jobs can be named like
+    ``[dev service_principal] edvise_validated_gcs_to_bronze_sync``. Only a
+    single suffix match is accepted by the caller.
+    """
+    suffix = f" {VALIDATED_BRONZE_SYNC_JOB_NAME}"
+    return [
+        job
+        for job in w.jobs.list()
+        if (name := _databricks_job_name(job)) is not None and name.endswith(suffix)
+    ]
+
+
+def _pdp_inference_job_name() -> str:
+    name = os.environ.get("PDP_INFERENCE_JOB_NAME", "").strip()
+    return name or PDP_INFERENCE_JOB_NAME
+
+
+def _legacy_inference_job_name() -> str:
+    name = os.environ.get("LEGACY_INFERENCE_JOB_NAME", "").strip()
+    return name or LEGACY_INFERENCE_JOB_NAME
+
+
+def _es_inference_job_name() -> str:
+    name = os.environ.get("ES_INFERENCE_JOB_NAME", "").strip()
+    return name or ES_INFERENCE_JOB_NAME
+
+
+def _disambiguate_pipeline_job_matches(
+    matches: list[tuple[str, Any]],
+    pipeline_type: str,
+    caller_label: str,
+) -> tuple[str, Any]:
+    """Prefer the Cloud Run bundle job when several dev-prefixed jobs match."""
+    cloudrun_matches = [
+        (name, job) for name, job in matches if CLOUDRUN_BUNDLE_JOB_PREFIX in name
+    ]
+    if len(cloudrun_matches) == 1:
+        return cloudrun_matches[0]
+    if len(cloudrun_matches) > 1:
+        picked_name, picked = sorted(cloudrun_matches, key=lambda item: item[0])[0]
+        LOGGER.warning(
+            "%s: Multiple Cloud Run bundle jobs match substring %r: %s; using %r.",
+            caller_label,
+            pipeline_type,
+            [name for name, _ in cloudrun_matches],
+            picked_name,
+        )
+        return picked_name, picked
+
+    picked_name, picked = sorted(matches, key=lambda item: item[0])[0]
+    LOGGER.warning(
+        "%s: Multiple jobs match substring %r: %s; no Cloud Run bundle job found; using first match %r.",
+        caller_label,
+        pipeline_type,
+        [name for name, _ in matches],
+        picked_name,
+    )
+    return picked_name, picked
+
+
+def _resolve_pipeline_job(w: Any, pipeline_type: str, caller_label: str) -> Any:
+    """Find a job by exact name, else by unique substring match on display name.
+
+    Development bundles often prefix job names (e.g. ``[dev vishakh] edvise_...``) while
+    the API passes the canonical base name. Optional env ``PDP_INFERENCE_JOB_NAME`` /
+    ``LEGACY_INFERENCE_JOB_NAME`` still wins when set to the full exact name.
+    """
+    job = next(w.jobs.list(name=pipeline_type), None)
+    if job is not None and getattr(job, "job_id", None) is not None:
+        LOGGER.info(
+            "%s: resolved job by exact name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            job.job_id,
+        )
+        return job
+
+    matches: list[tuple[str, Any]] = []
+    for j in w.jobs.list():
+        settings = getattr(j, "settings", None)
+        name = getattr(settings, "name", None) if settings is not None else None
+        if not name:
+            continue
+        if pipeline_type in name:
+            matches.append((name, j))
+
+    if len(matches) == 1:
+        picked_name, picked = matches[0]
+        if getattr(picked, "job_id", None) is None:
+            raise ValueError(
+                f"{caller_label}: Job name {picked_name!r} matched substring {pipeline_type!r} but has no job_id."
+            )
+        LOGGER.info(
+            "%s: resolved job by substring %r -> display name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            picked_name,
+            picked.job_id,
+        )
+        return picked
+
+    if len(matches) > 1:
+        picked_name, picked = _disambiguate_pipeline_job_matches(
+            matches, pipeline_type, caller_label
+        )
+        if getattr(picked, "job_id", None) is None:
+            raise ValueError(
+                f"{caller_label}: Job name {picked_name!r} matched substring {pipeline_type!r} but has no job_id."
+            )
+        LOGGER.info(
+            "%s: resolved job by substring %r -> display name %r (job_id=%s)",
+            caller_label,
+            pipeline_type,
+            picked_name,
+            picked.job_id,
+        )
+        return picked
+
+    raise ValueError(
+        f"{caller_label}: Job {pipeline_type!r} was not found (exact name or unique substring of settings.name) "
+        f"for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
+    )
+
+
+class DatabricksPDPInferenceRunRequest(BaseModel):
+    """Databricks parameters for a PDP inference run."""
 
     inst_name: str
     # Note that the following should be the filepath.
@@ -55,10 +338,91 @@ class DatabricksInferenceRunRequest(BaseModel):
     gcp_external_bucket_name: str
 
 
+class DatabricksSharedInferenceRunRequest(BaseModel):
+    """Databricks parameters for a legacy schools inference run."""
+
+    inst_name: str
+    model_name: str
+    config_file_name: str = ""
+    features_table_name: str = ""
+    # The email where notifications will get sent.
+    email: str = ""
+    gcp_external_bucket_name: str
+    # Batch UUID hex; bronze copies live under gcs_uploads/<batch_id>/.
+    batch_id: str = ""
+    # Full GCS object paths, e.g. ["validated/file.csv"].
+    validated_blob_paths: list[str] = []
+    # ES: True when institution has genai_id; False for edvise_id schools.
+    is_genai_institution: bool = True
+
+    @field_validator("config_file_name", "features_table_name", "email", mode="before")
+    @classmethod
+    def _none_to_empty_str(cls, v: object) -> object:
+        """Allow callers to omit or pass null; Databricks job treats empty like YAML defaults."""
+        return "" if v is None else v
+
+
 class DatabricksInferenceRunResponse(BaseModel):
     """Databricks parameters for an inference run."""
 
     job_run_id: int
+
+
+class DatabricksBronzeSyncRequest(BaseModel):
+    """Parameters to copy validated GCS objects into the institution bronze volume."""
+
+    inst_name: str
+    gcp_bucket_name: str
+    # Full object paths in the bucket, e.g. ["validated/file.csv"].
+    validated_blob_paths: list[str]
+    # When set, bronze copies land under gcs_uploads/<batch_id>/.
+    batch_id: str | None = None
+
+
+class DatabricksBronzeSyncResponse(BaseModel):
+    """Result of triggering the bronze sync Databricks job."""
+
+    job_run_id: int
+
+
+def _build_shared_inference_job_parameters(
+    req: DatabricksSharedInferenceRunRequest,
+    databricks_institution_name: str,
+) -> dict[str, str]:
+    """Build common job_parameters for legacy and ES inference runs."""
+    return {
+        "databricks_institution_name": databricks_institution_name,
+        "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+        "model_name": req.model_name,
+        "config_file_name": req.config_file_name,
+        "gcp_bucket_name": req.gcp_external_bucket_name,
+        "datakind_notification_email": req.email,
+        "DK_CC_EMAIL": req.email,
+        "batch_id": req.batch_id,
+        "validated_blob_paths_json": json.dumps(
+            req.validated_blob_paths, separators=(",", ":")
+        ),
+    }
+
+
+def _build_validated_bronze_sync_job_parameters(
+    req: DatabricksBronzeSyncRequest,
+    databricks_institution_name: str,
+) -> dict[str, str]:
+    """Build job_parameters dict for the GCS→bronze sync Databricks job."""
+    include_json = json.dumps(req.validated_blob_paths, separators=(",", ":"))
+    return {
+        "gcp_bucket_name": req.gcp_bucket_name,
+        "databricks_institution_name": databricks_institution_name,
+        "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+        "batch_id": (req.batch_id or "").strip(),
+        "gcs_source_prefix": BRONZE_SYNC_GCS_SOURCE_PREFIX,
+        "bronze_subdir": BRONZE_SYNC_BRONZE_SUBDIR,
+        "max_objects": BRONZE_SYNC_MAX_OBJECTS,
+        "require_at_least_one_file": BRONZE_SYNC_REQUIRE_AT_LEAST_ONE_FILE,
+        "strict_mode": BRONZE_SYNC_STRICT_MODE,
+        "include_blob_paths_json": include_json,
+    }
 
 
 def get_filepath_of_filetype(
@@ -281,7 +645,7 @@ class DatabricksControl(BaseModel):
     # E.g. there is one PDP inference pipeline, so one PDP inference function here.
 
     def run_pdp_inference(
-        self, req: DatabricksInferenceRunRequest
+        self, req: DatabricksPDPInferenceRunRequest
     ) -> DatabricksInferenceRunResponse:
         """Triggers PDP inference Databricks run."""
         LOGGER.info(f"Running PDP inference for institution: {req.inst_name}")
@@ -311,14 +675,10 @@ class DatabricksControl(BaseModel):
             )
 
         db_inst_name = databricksify_inst_name(req.inst_name)
-        pipeline_type = PDP_INFERENCE_JOB_NAME
+        pipeline_type = _pdp_inference_job_name()
 
         try:
-            job = next(w.jobs.list(name=pipeline_type), None)
-            if not job or job.job_id is None:
-                raise ValueError(
-                    f"run_pdp_inference(): Job '{pipeline_type}' was not found or has no job_id for '{gcs_vars['GCP_SERVICE_ACCOUNT_EMAIL']}' and '{databricks_vars['DATABRICKS_HOST_URL']}'."
-                )
+            job = _resolve_pipeline_job(w, pipeline_type, "run_pdp_inference")
             job_id = job.job_id
             LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
         except Exception as e:
@@ -358,6 +718,157 @@ class DatabricksControl(BaseModel):
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
 
         return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_legacy_inference(
+        self, req: DatabricksSharedInferenceRunRequest
+    ) -> DatabricksInferenceRunResponse:
+        """Triggers legacy schools inference Databricks run."""
+        LOGGER.info(f"Running legacy inference for institution: {req.inst_name}")
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"run_legacy_inference(): Workspace client initialization failed: {e}"
+            )
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        pipeline_type = _legacy_inference_job_name()
+
+        try:
+            job = _resolve_pipeline_job(w, pipeline_type, "run_legacy_inference")
+            job_id = job.job_id
+            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+        except Exception as e:
+            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            raise ValueError(f"run_legacy_inference(): Failed to find job: {e}")
+
+        try:
+            job_parameters = _build_shared_inference_job_parameters(req, db_inst_name)
+            job_parameters["features_table_name"] = req.features_table_name
+            run_job: Any = w.jobs.run_now(
+                job_id,
+                job_parameters=job_parameters,
+            )
+            LOGGER.info(
+                f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
+            )
+        except Exception as e:
+            LOGGER.exception("Failed to run the legacy inference job.")
+            raise ValueError(f"run_legacy_inference(): Job could not be run: {e}")
+
+        if not run_job.response or run_job.response.run_id is None:
+            raise ValueError(
+                "run_legacy_inference(): Job did not return a valid run_id."
+            )
+
+        run_id = run_job.response.run_id
+        LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
+
+        return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_es_inference(
+        self, req: DatabricksSharedInferenceRunRequest
+    ) -> DatabricksInferenceRunResponse:
+        """Triggers Edvise Schema (ES) inference Databricks run."""
+        LOGGER.info(f"Running ES inference for institution: {req.inst_name}")
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            LOGGER.info("Successfully created Databricks WorkspaceClient.")
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars["DATABRICKS_HOST_URL"],
+                gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+            raise ValueError(
+                f"run_es_inference(): Workspace client initialization failed: {e}"
+            ) from e
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        pipeline_type = _es_inference_job_name()
+
+        try:
+            job = _resolve_pipeline_job(w, pipeline_type, "run_es_inference")
+            job_id = job.job_id
+            LOGGER.info(f"Resolved job ID for '{pipeline_type}': {job_id}")
+        except Exception as e:
+            LOGGER.exception(f"Job lookup failed for '{pipeline_type}'.")
+            raise ValueError(f"run_es_inference(): Failed to find job: {e}") from e
+
+        try:
+            job_parameters = _build_shared_inference_job_parameters(req, db_inst_name)
+            job_parameters["schema_type"] = "edvise"
+            job_parameters["is_genai_institution"] = (
+                "true" if req.is_genai_institution else "false"
+            )
+            run_job: Any = w.jobs.run_now(
+                job_id,
+                job_parameters=job_parameters,
+            )
+            LOGGER.info(
+                f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
+            )
+        except Exception as e:
+            LOGGER.exception("Failed to run the ES inference job.")
+            raise ValueError(f"run_es_inference(): Job could not be run: {e}") from e
+
+        if not run_job.response or run_job.response.run_id is None:
+            raise ValueError("run_es_inference(): Job did not return a valid run_id.")
+
+        run_id = run_job.response.run_id
+        LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
+
+        return DatabricksInferenceRunResponse(job_run_id=run_id)
+
+    def run_validated_gcs_to_bronze_sync(
+        self, req: DatabricksBronzeSyncRequest
+    ) -> DatabricksBronzeSyncResponse:
+        """
+        Trigger the job that copies validated/ objects from GCS into bronze_volume/gcs_uploads.
+
+        Args:
+            req: Institution name, bucket, and full GCS object paths under validated/.
+
+        Returns:
+            Response containing the Databricks job run id (run started, not completed).
+
+        Raises:
+            ValueError: If paths are empty, configuration is invalid, or the job cannot start.
+        """
+        operation = "run_validated_gcs_to_bronze_sync"
+        if not req.validated_blob_paths:
+            raise ValueError(f"{operation}: validated_blob_paths must be non-empty.")
+
+        LOGGER.info(
+            "Triggering GCS→bronze sync for institution: %s (%s objects)",
+            req.inst_name,
+            len(req.validated_blob_paths),
+        )
+
+        workspace = _create_databricks_workspace_client(operation)
+        try:
+            job_id = _resolve_validated_bronze_sync_job_id(workspace)
+        except ValueError as exc:
+            LOGGER.exception("Job resolution failed for GCS→bronze sync.")
+            raise ValueError(f"{operation}(): Failed to resolve job: {exc}") from exc
+
+        db_inst_name = databricksify_inst_name(req.inst_name)
+        job_parameters = _build_validated_bronze_sync_job_parameters(req, db_inst_name)
+        run_id = _run_databricks_job_now(workspace, job_id, job_parameters, operation)
+        LOGGER.info("GCS→bronze sync job started. Run ID: %s", run_id)
+        return DatabricksBronzeSyncResponse(job_run_id=run_id)
 
     def delete_inst(self, inst_name: str) -> None:
         """Cleanup tasks required on the Databricks side to delete an institution."""
@@ -718,78 +1229,3 @@ class DatabricksControl(BaseModel):
                     return key
 
         return None
-
-    def create_custom_schema_extension(
-        self,
-        bucket_name: str,
-        inst_query: Any,
-        file_name: str,
-        base_schema: Dict[str, Any],  # pass base schema dict in
-        extension_schema: Optional[dict] = None,  # existing extension or None
-    ) -> Any:
-        if (
-            os.getenv("SST_SKIP_EXT_GEN") == "1"
-        ):  # skip using workspace client for tests
-            LOGGER.info("SST_SKIP_EXT_GEN=1; skipping Databricks extension generation.")
-            return None
-
-        inst_name = inst_query.name
-        inst_id = str(inst_query.id)
-
-        mapping = {
-            "course": [
-                "course.csv",
-                "courses.csv",
-                r"^(?=.*AR_DEIDENTIFIED)(?=.*COURSE).*\.csv$",
-            ],
-            "student": ["student.csv", r"^(?=.*AR_DEIDENTIFIED)(?!.*COURSE).*\.csv$"],
-            "semester": ["semester.csv"],
-        }
-
-        key = self.get_key_for_file(mapping, file_name)  # e.g., "student"
-        if key is None:
-            raise HTTPException(
-                404, detail=f"{file_name} not found in {inst_name} validation_mapping"
-            )
-
-        key_lc = key.lower()
-
-        # 4) If this model already exists in the provided extension for this institution, skip
-        if extension_schema is not None:
-            if not isinstance(extension_schema, dict):
-                raise HTTPException(
-                    400, detail="extension_schema must be a dict if provided"
-                )
-
-            inst_block = extension_schema.get("institutions", {}).get(inst_id, {})
-            data_models = inst_block.get("data_models", {})
-            existing_keys_lc = {str(k).lower() for k in data_models.keys()}
-
-            if key_lc in existing_keys_lc:
-                LOGGER.info(
-                    "Model '%s' already present for institution '%s' — skipping (return None).",
-                    key,
-                    inst_id,
-                )
-                return None  # <-- sentinel: do not write
-
-        # 5) Read the unvalidated CSV from GCS
-        try:
-            client = storage.Client()
-            bucket = client.bucket(bucket_name)
-            blob = bucket.blob(f"unvalidated/{file_name}")
-            with blob.open("r") as fh:
-                df = pd.read_csv(fh)
-        except Exception as e:
-            LOGGER.exception("Failed to read %s from GCS", file_name)
-            raise HTTPException(500, detail=f"Failed to read {file_name} from GCS: {e}")
-
-        updated_extension = generate_extension_schema(
-            df=df,
-            models=key,  # exactly one model
-            institution_id=inst_id,
-            base_schema=base_schema,  # reference only, not mutated
-            existing_extension=extension_schema,  # may be None
-        )
-
-        return updated_extension

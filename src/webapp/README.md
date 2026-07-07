@@ -53,16 +53,30 @@ In the long-term, look into a way to have the API key --> token conversion be ha
 
 All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/edvise-api/blob/develop/src/webapp/database.py).
 
+**Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24 (evidence: workspace `github/docs/dbtables/`). Re-export **dev** before Alembic stamp (PR 11).
+
+### Shared tables (same physical MySQL database as edvise-ui)
+
+| Table | DDL owner | Notes |
+|-------|-----------|-------|
+| `users` | **edvise-ui** (Laravel) | API reads/writes via `AccountTable`; keep ORM in sync with UI migrations |
+| `job` | **edvise-api** (Alembic, Phase 1+) | API writes; UI may read until Phase 1.5 |
+
+### Greenfield database bootstrap
+
+1. Run API migrations (`alembic upgrade head`) — API-owned tables including `inst`, `model`, `job`.
+2. Run UI migrations (`php artisan migrate`) — `users` and UI-only tables.
+
 At time of writing, the databases the API cares about and tracks, are as follows:
 
 * Institution Table ("inst"): the institutions, including info about them like PDP ID if applicable, creator/creation time, etc.
 * API Key Table ("apikey"): the API keys including access type, valid status (you can disable a key), etc.
-* Account Table ("users"): **THIS TABLE IS (the only table) SHARED WITH THE FRONTEND**. This contains enduser email/password, access types, inst if applicable etc. Because this table is shared with the frontend, any changes to the table definition should be reflected in both the ORM handling the table in the frontend _and_ the backend. Note that intentionally, there's no way to create new users from the backend. This is because the backend only uses API keys to authenticate and also lacks some reqiured fields such as team id generation that is required by Laravel to use the user table. The frontend can directly create users in the table which the backend will be able to read.
+* Account Table ("users"): **SHARED WITH THE FRONTEND** (DDL owned by Laravel in edvise-ui). This contains enduser email/password, access types, inst if applicable etc. Because this table is shared with the frontend, any changes to the table definition should be reflected in both the ORM handling the table in the frontend _and_ the backend. See [docs/DB_SCHEMA_CONTRACT.md](../../docs/DB_SCHEMA_CONTRACT.md). Note that intentionally, there's no way to create new users from the backend. This is because the backend only uses API keys to authenticate and also lacks some reqiured fields such as team id generation that is required by Laravel to use the user table. The frontend can directly create users in the table which the backend will be able to read.
 * Account History Table ("account_history"): audit trail of certain events undertaken by users. TODO: interactions with this table largely remain unimplemented.
 * File Table ("file"): tracks files
 * Batch Table ("batch"): tracks batches
 * Model Table ("model"): tracks models
-* Job Table ("job"): tracks Databricks jobs, storing the per-run unique job_run_id. Status of the job is also partially tracked here. Note that failed jobs are currently indistinguishable from incomplete jobs. 
+* Job Table ("job"): **SHARED WITH THE FRONTEND** (DDL owned by API after Phase 1). Tracks Databricks inference runs (`run_id`, `model_run_id`). API writes; UI reads for some pages until Phase 1.5. See [docs/DB_SCHEMA_CONTRACT.md](../../docs/DB_SCHEMA_CONTRACT.md).
 
 NOTE: naming convention is to use a singular descriptor for the table name, however, the "users" table has to follow Laravel's table naming convention, which has the users table called "users".
 
@@ -131,8 +145,8 @@ $ curl -X 'GET' \
 
 ### Before committing, run the formatter and run the unit tests
 
-1. Formatter: `black src/webapp/.`
-1. Unit tests: `coverage run -m pytest  -v -s ./src/webapp/`
+1. Lint: `uv run ruff check src/webapp/`
+1. Unit tests: `uv run coverage run -m pytest -v -s ./src/webapp/`
 
 #### Optionally run pylint
 
@@ -168,3 +182,25 @@ The process to upload a file involves three API calls:
 ## Local VSCode Debugging
 
 From the Run & Debug panel (⇧⌘D on 🍎) you can run the [debug launch config](../../.vscode/launch.json) for the webapp or worker modules. This will allow you to set breakpoints within the source code while the applications are running.
+
+## Local edvise development override
+
+Production uses a pinned Git reference for `edvise`. For local development, use an
+editable install after syncing the environment.
+
+1. Clone `edvise` alongside `edvise-api` (so `../edvise` exists).
+2. Run `uv sync`.
+3. Override locally: `uv pip install -e ../edvise`
+
+To revert back to the pinned Git dependency, run `uv sync --reinstall-package edvise`.
+
+## Local institutions (optional)
+
+You can seed the local database with institution, batch, and file metadata that matches dev or staging (names, UUIDs, batch membership) without checking secrets into Git.
+
+1. Copy `config/local_inst_data.example.json` to `config/local_inst_data.json`. The latter is gitignored.
+2. Edit `local_inst_data.json` to match your needs. Use the example file as the schema: one array element per institution, with `inst_id`, `name`, and optionally `state`, `pdp_id`, `batches`, and `files`.
+
+If the file is missing, startup skips this step and the default local seed in code still applies.
+
+**Limitation:** Endpoints that read uploaded CSV (for example EDA) load blobs from GCS under the bucket name `dev_<institution_uuid_hex>`, not from this JSON. To exercise those flows locally you still need GCP credentials and the corresponding objects in that bucket, or you rely on tests/mocks instead.
