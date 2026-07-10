@@ -23,7 +23,7 @@ def get_job_id(filename: str) -> int:
     return int(tmp.split("/")[0])
 
 
-def get_filename_without_approve_dir(filename: str) -> int:
+def get_filename_without_approve_dir(filename: str) -> str:
     """Remove the approved or unapproved prefix as that isn't a property of the filename itself
     and may change if the file gets approved or unapproved."""
     if filename.startswith("approved/"):
