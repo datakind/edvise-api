@@ -616,17 +616,14 @@ def delete_model_run(
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     sess = local_session.get()
-    query_result = (
-        sess.execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == model_name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
+    query_result = sess.execute(
+        select(ModelTable).where(
+            and_(
+                ModelTable.name == model_name,
+                ModelTable.inst_id == str_to_uuid(inst_id),
             )
         )
-        .all()
-    )
+    ).all()
     if len(query_result) == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
