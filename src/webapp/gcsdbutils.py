@@ -4,6 +4,7 @@ Helper functions that use storage and session.
 
 from sqlalchemy import and_, update
 from sqlalchemy.future import select
+from sqlalchemy.orm import Session
 
 from .utilities import (
     str_to_uuid,
@@ -15,6 +16,7 @@ from .database import (
     FileTable,
     JobTable,
 )
+from .gcsutil import StorageControl
 
 
 def get_job_id(filename: str) -> int:
@@ -43,14 +45,16 @@ def is_file_approved(filename: str) -> bool:
     raise ValueError("Unexpected filename structure.")
 
 
-def update_db_from_bucket(inst_id: str, session, storage_control):
+def update_db_from_bucket(
+    inst_id: str, session: Session, storage_control: StorageControl
+) -> None:
     """Updates the sql tables by checking if there are new files in the bucket.
 
     Note that while all output files will be added to the file table, potentially with their own approval status, the JobTable will only refer to the csv inference output and indicate validity (approval) value for that file.
     This means that for a single run it's possible to have some output files be approved and some be unapproved but that is confusing and we discourage it.
     Note that deleted files are handled upon file retrieval, not here."""
     dir_prefix = ["approved/", "unapproved/"]
-    all_files = []
+    all_files: list[str] = []
     for d in dir_prefix:
         all_files = all_files + storage_control.list_blobs_in_folder(
             get_external_bucket_name(inst_id), d
