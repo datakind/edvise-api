@@ -31,13 +31,14 @@ from ..database import (
     get_session,
     local_session,
     BatchTable,
+    FileTable,
     InstTable,
     ModelTable,
     JobTable,
 )
 import traceback
 import logging
-from ..gcsdbutils import update_db_from_bucket
+from ..gcsdbutils import get_filename_without_approve_dir, update_db_from_bucket
 from ..config import env_vars
 
 from ..gcsutil import StorageControl
@@ -596,6 +597,100 @@ def read_inst_model_output(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Run not found.",
     )
+
+
+@router.delete("/{inst_id}/models/{model_name}/run/{run_id}")
+def delete_model_run(
+    inst_id: str,
+    model_name: str,
+    run_id: int,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+) -> Any:
+    """Deletes a given execution of a given model.
+
+    Only visible to users of that institution or Datakinder access types.
+    """
+    model_name = decode_url_piece(model_name)
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    sess = local_session.get()
+    query_result = (
+        sess.execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
+        .all()
+    )
+    if len(query_result) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model not found.",
+        )
+    if len(query_result) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Multiple models of the same name found, this should not have happened.",
+        )
+    job = next(
+        (elem for elem in (query_result[0][0].jobs or []) if elem.id == run_id),
+        None,
+    )
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run not found.",
+        )
+
+    bucket = get_external_bucket_name(inst_id)
+    output_names: set[str] = set()
+    for dir_prefix in ("approved/", "unapproved/"):
+        for blob_path in storage_control.list_blobs_in_folder(
+            bucket, f"{dir_prefix}{run_id}/"
+        ):
+            try:
+                storage_control.delete_file(bucket_name=bucket, file_name=blob_path)
+                output_names.add(get_filename_without_approve_dir(blob_path))
+            except ValueError:
+                pass
+
+    if output_names:
+        file_rows = (
+            sess.execute(
+                select(FileTable).where(
+                    and_(
+                        FileTable.inst_id == str_to_uuid(inst_id),
+                        FileTable.name.in_(output_names),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for file_row in file_rows:
+            sess.delete(file_row)
+
+    try:
+        sess.delete(job)
+        sess.commit()
+    except Exception as e:
+        sess.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"DB run delete failed: {e}",
+        ) from e
+
+    return {
+        "inst_id": inst_id,
+        "model_name": model_name,
+        "run_id": run_id,
+        "status": "Run deleted",
+    }
 
 
 def convert_files_to_dict(files):
