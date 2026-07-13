@@ -340,7 +340,7 @@ def test_read_inst_model_output(client: TestClient) -> None:
 
 
 def test_delete_model_run(client: TestClient, session: sqlalchemy.orm.Session) -> None:
-    """Test DELETE /institutions/{inst_id}/models/{model_name}/run/{run_id}."""
+    """Test DELETE /institutions/{inst_id}/models/{model_name}/run/{job_run_id}."""
     MOCK_STORAGE.list_blobs_in_folder.return_value = []
     url = (
         "/institutions/"

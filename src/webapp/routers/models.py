@@ -599,16 +599,19 @@ def read_inst_model_output(
     )
 
 
-@router.delete("/{inst_id}/models/{model_name}/run/{run_id}")
+@router.delete("/{inst_id}/models/{model_name}/run/{job_run_id}")
 def delete_model_run(
     inst_id: str,
     model_name: str,
-    run_id: int,
+    job_run_id: int,
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
 ) -> Any:
-    """Deletes a given execution of a given model.
+    """Deletes a given inference job run for a model.
+
+    ``job_run_id`` is the Databricks Jobs run id (also ``job.id``), not the
+    MLflow ``model_run_id``.
 
     Only visible to users of that institution or Datakinder access types.
     """
@@ -635,7 +638,7 @@ def delete_model_run(
             detail="Multiple models of the same name found, this should not have happened.",
         )
     job = next(
-        (elem for elem in (query_result[0][0].jobs or []) if elem.id == run_id),
+        (elem for elem in (query_result[0][0].jobs or []) if elem.id == job_run_id),
         None,
     )
     if job is None:
@@ -648,7 +651,7 @@ def delete_model_run(
     output_names: set[str] = set()
     for dir_prefix in ("approved/", "unapproved/"):
         for blob_path in storage_control.list_blobs_in_folder(
-            bucket, f"{dir_prefix}{run_id}/"
+            bucket, f"{dir_prefix}{job_run_id}/"
         ):
             try:
                 storage_control.delete_file(bucket_name=bucket, file_name=blob_path)
@@ -685,7 +688,7 @@ def delete_model_run(
     return {
         "inst_id": inst_id,
         "model_name": model_name,
-        "run_id": run_id,
+        "run_id": job_run_id,
         "status": "Run deleted",
     }
 
