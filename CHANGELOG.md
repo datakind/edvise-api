@@ -1,6 +1,10 @@
 ## 1.2.0 (2026-07-15)
 - feat: list institution bronze volume CSVs via `/input/bronze-datasets` (#206)
 - feat: import a bronze volume dataset into GCS via `/input/upload-from-volume-to-gcs-bucket` (#206)
+- feat: add DELETE endpoint for model runs (`/{inst_id}/models/{model_name}/run/{job_run_id}`) (#268)
+- feat: seed models and runs from `local_inst_data.json` for local development (#268)
+- chore: pin `edvise` dependency to tag `v1.4.8`
+- ci: add post-release shared workflow
 
 ## 1.1.0 (2026-06-29)
 - feat: hook up Edvise Schema (ES) inference to the API (#253)
