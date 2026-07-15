@@ -339,6 +339,44 @@ def test_read_inst_model_output(client: TestClient) -> None:
     assert same_run_info_orderless(response_model, expected_model)
 
 
+def test_delete_model_run(client: TestClient, session: sqlalchemy.orm.Session) -> None:
+    """Test DELETE /institutions/{inst_id}/models/{model_name}/run/{job_run_id}."""
+    MOCK_STORAGE.list_blobs_in_folder.return_value = []
+    url = (
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/models/sample_model_for_school_1/run/"
+        + str(RUN_ID)
+    )
+
+    response = client.delete(url)
+    assert response.status_code == 200
+    assert response.json() == {
+        "inst_id": uuid_to_str(USER_VALID_INST_UUID),
+        "model_name": "sample_model_for_school_1",
+        "run_id": RUN_ID,
+        "status": "Run deleted",
+    }
+    assert session.get(JobTable, RUN_ID) is None
+
+    MOCK_STORAGE.list_blobs_in_folder.return_value = []
+    get_response = client.get(url)
+    assert get_response.status_code == 404
+    assert get_response.json() == {"detail": "Run not found."}
+
+
+def test_delete_model_run_not_found(client: TestClient) -> None:
+    """Deleting a missing run returns 404."""
+    MOCK_STORAGE.list_blobs_in_folder.return_value = []
+    response = client.delete(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/models/sample_model_for_school_1/run/999"
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Run not found."}
+
+
 def test_create_model(client: TestClient) -> None:
     """Depending on timeline, fellows may not get to this."""
     schema_config_1 = {

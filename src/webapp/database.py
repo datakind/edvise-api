@@ -104,6 +104,46 @@ def _setup_test_institutions(session: Session) -> None:
                             )  # type: ignore
                         )
                     session.merge(batch_table)
+                model_ids_by_name: dict[str, uuid.UUID] = {}
+                for model in inst.get("models", []):
+                    model_id = uuid.UUID(model["m_id"])
+                    model_ids_by_name[model["name"]] = model_id
+                    session.merge(
+                        ModelTable(
+                            id=model_id,
+                            inst_id=uuid.UUID(inst["inst_id"]),
+                            name=model["name"],
+                            created_by=LOCAL_USER_UUID,
+                            valid=model.get("valid", True),
+                            created_at=DATETIME_TESTING,
+                            updated_at=DATETIME_TESTING,
+                        )
+                    )
+                for run in inst.get("runs", []):
+                    model_name = run.get("model_name") or run.get("m_name")
+                    if not model_name or model_name not in model_ids_by_name:
+                        raise ValueError(
+                            f"Run {run.get('run_id')}: model_name must match a models[].name entry"
+                        )
+                    triggered_at = run.get("triggered_at")
+                    if isinstance(triggered_at, str):
+                        triggered_at = datetime.datetime.fromisoformat(triggered_at)
+                    if triggered_at is None:
+                        triggered_at = DATETIME_TESTING
+                    session.merge(
+                        JobTable(
+                            id=run["run_id"],
+                            model_id=model_ids_by_name[model_name],
+                            created_by=LOCAL_USER_UUID,
+                            triggered_at=triggered_at,
+                            batch_name=run["batch_name"],
+                            output_filename=run.get("output_filename"),
+                            output_valid=run.get("output_valid", False),
+                            completed=run.get("completed", False),
+                            model_run_id=run.get("model_run_id"),
+                            model_version=run.get("model_version"),
+                        )
+                    )
 
 
 @event.listens_for(Mapper, "before_insert")
