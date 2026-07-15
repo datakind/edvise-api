@@ -30,7 +30,7 @@ dependencies = [
     "mlflow~=2.22",
     "cachetools",
     "types-cachetools",
-    "edvise~=1.4.0",
+    "edvise~=1.5.0",
 ]
 
 [project.urls]
@@ -59,7 +59,7 @@ allow-direct-references = true
 default-groups = ["dev"]
 
 [tool.uv.sources]
-edvise = { git = "https://github.com/datakind/edvise.git", tag = "v1.4.8" }
+edvise = { git = "https://github.com/datakind/edvise.git", tag = "v1.5.0" }
 
 [tool.ruff]
 line-length = 88
