@@ -1,3 +1,7 @@
+## 1.2.0 (2026-07-15)
+- feat: list institution bronze volume CSVs via `/input/bronze-datasets` (#206)
+- feat: import a bronze volume dataset into GCS via `/input/upload-from-volume-to-gcs-bucket` (#206)
+
 ## 1.1.0 (2026-06-29)
 - feat: hook up Edvise Schema (ES) inference to the API (#253)
 - feat: use batch parameters for run-inference endpoint (GenAI/Edvise/Legacy) (#257)
