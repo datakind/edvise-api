@@ -1,0 +1,9 @@
+name: Post-release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  post-release:
+    uses: datakind/.github/.github/workflows/post-release.yml@main
