@@ -92,47 +92,15 @@ def test_validate_file_reader_pdp_course_calls_edvise_read_path(tmp_path: Path) 
         assert mock_pdp.call_args[0][2] == ["COURSE"]
 
 
-def test_validate_file_reader_edvise_student_calls_repo_schema_path(
+def test_validate_file_reader_edvise_student_skips_pandera(
     tmp_path: Path,
 ) -> None:
-    """When institution_id is edvise and allowed_schema is [STUDENT], Edvise repo schema path is used."""
-    csv_path = tmp_path / "edvise_student.csv"
-    pd.DataFrame({"learner_id": ["s1"]}).to_csv(csv_path, index=False)
-
-    with (
-        patch(
-            "src.webapp.validation._validate_edvise_with_repo_schema",
-            return_value={
-                "validation_status": "passed",
-                "schemas": ["STUDENT"],
-                "missing_optional": [],
-                "unknown_extra_columns": [],
-                "normalized_df": pd.DataFrame({"learner_id": ["s1"]}),
-            },
-        ) as mock_edvise_schema,
-    ):
-        result = validate_file_reader(
-            str(csv_path),
-            ["STUDENT"],
-            institution_id="edvise",
-        )
-        assert result["validation_status"] == "passed"
-        assert result["schemas"] == ["STUDENT"]
-        mock_edvise_schema.assert_called_once()
-        call_args = mock_edvise_schema.call_args[0]
-        assert call_args[2] == ["STUDENT"]
-        assert call_args[3] == "edvise"
-
-
-def test_validate_file_reader_edvise_routes_before_schema_merge(
-    tmp_path: Path,
-) -> None:
-    """Edvise repo validation should not depend on populated JSON schema docs."""
+    """When institution_id is edvise, uploads use any-format CSV (no Pandera)."""
     csv_path = tmp_path / "edvise_student.csv"
     pd.DataFrame({"learner_id": ["s1"]}).to_csv(csv_path, index=False)
 
     with patch(
-        "src.webapp.validation._validate_edvise_with_repo_schema",
+        "src.webapp.validation._validate_any_format_csv",
         return_value={
             "validation_status": "passed",
             "schemas": ["STUDENT"],
@@ -140,6 +108,27 @@ def test_validate_file_reader_edvise_routes_before_schema_merge(
             "unknown_extra_columns": [],
             "normalized_df": pd.DataFrame({"learner_id": ["s1"]}),
         },
+    ) as mock_any_format:
+        result = validate_file_reader(
+            str(csv_path),
+            ["STUDENT"],
+            institution_id="edvise",
+        )
+        assert result["validation_status"] == "passed"
+        assert result["schemas"] == ["STUDENT"]
+        mock_any_format.assert_called_once()
+        assert mock_any_format.call_args[0][2] == ["STUDENT"]
+
+
+def test_validate_file_reader_edvise_does_not_call_repo_schema_path(
+    tmp_path: Path,
+) -> None:
+    """ES upload validation must not invoke repo Pandera schema validation."""
+    csv_path = tmp_path / "edvise_student.csv"
+    pd.DataFrame({"learner_id": ["s1"]}).to_csv(csv_path, index=False)
+
+    with patch(
+        "src.webapp.validation._validate_edvise_with_repo_schema",
     ) as mock_edvise_schema:
         result = validate_file_reader(
             str(csv_path),
@@ -148,7 +137,7 @@ def test_validate_file_reader_edvise_routes_before_schema_merge(
         )
 
     assert result["validation_status"] == "passed"
-    mock_edvise_schema.assert_called_once()
+    mock_edvise_schema.assert_not_called()
 
 
 def test_validate_edvise_with_repo_schema_preserves_string_values(

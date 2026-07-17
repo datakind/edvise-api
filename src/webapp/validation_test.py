@@ -206,20 +206,18 @@ def test_validate_file_reader_pdp_student_routes_to_repo_validation(
     assert mock_validate.call_args.args[3] == "pdp"
 
 
-def test_validate_file_reader_edvise_course_routes_to_repo_validation(
+def test_validate_file_reader_edvise_course_skips_pandera(
     tmp_csv_file: str,
 ) -> None:
-    """Edvise COURSE uploads use repo-backed validation, not JSON schema docs."""
-    expected_df = pd.DataFrame({"course_id": ["c1"]})
-
+    """Edvise COURSE uploads skip Pandera and use any-format CSV validation."""
     with patch(
-        "src.webapp.validation._validate_edvise_with_repo_schema",
+        "src.webapp.validation._validate_any_format_csv",
         return_value={
             "validation_status": "passed",
             "schemas": ["COURSE"],
             "missing_optional": [],
             "unknown_extra_columns": [],
-            "normalized_df": expected_df,
+            "normalized_df": pd.DataFrame({"course_id": ["c1"]}),
         },
     ) as mock_validate:
         result = validate_file_reader(
@@ -229,10 +227,8 @@ def test_validate_file_reader_edvise_course_routes_to_repo_validation(
         )
 
     assert result["validation_status"] == "passed"
-    assert result["normalized_df"] is expected_df
     mock_validate.assert_called_once()
     assert mock_validate.call_args.args[2] == ["COURSE"]
-    assert mock_validate.call_args.args[3] == "edvise"
 
 
 def test_validate_file_reader_pdp_rejects_unsupported_model_set(
@@ -250,16 +246,35 @@ def test_validate_file_reader_pdp_rejects_unsupported_model_set(
     assert "SEMESTER" in str(exc_info.value)
 
 
-def test_validate_file_reader_edvise_rejects_multi_model_upload(
-    tmp_csv_file: str,
+def test_validate_file_reader_edvise_accepts_schema_invalid_csv(
+    tmp_path: Path,
 ) -> None:
-    """Edvise multi-model uploads are rejected instead of using old JSON validation."""
+    """ES uploads pass without Pandera so school converters can run later in Databricks."""
+    csv_path = tmp_path / "messy_student.csv"
+    csv_path.write_text("weird_col,another\nx,y\n", encoding="utf-8")
+
+    result = validate_file_reader(
+        str(csv_path),
+        ["STUDENT"],
+        institution_id="edvise",
+    )
+
+    assert result["validation_status"] == "passed"
+    assert result["schemas"] == ["STUDENT"]
+    assert list(result["normalized_df"].columns) == ["weird_col", "another"]
+
+
+def test_validate_file_reader_edvise_rejects_pii_columns(tmp_path: Path) -> None:
+    """ES any-format path still rejects PII-looking column names."""
+    csv_path = tmp_path / "with_pii.csv"
+    csv_path.write_text("learner_id,email\n1,a@b.com\n", encoding="utf-8")
+
     with pytest.raises(HardValidationError) as exc_info:
         validate_file_reader(
-            tmp_csv_file,
-            ["STUDENT", "COURSE"],
+            str(csv_path),
+            ["STUDENT"],
             institution_id="edvise",
         )
 
-    assert "edvise repo" in str(exc_info.value)
-    assert "STUDENT, COURSE" in str(exc_info.value)
+    assert "PII" in (exc_info.value.schema_errors or "")
+    assert "email" in (exc_info.value.failure_cases or [])

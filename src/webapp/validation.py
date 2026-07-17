@@ -1,8 +1,9 @@
 """File validation functions for upload workflows.
 
-PDP and Edvise uploads validate through Pandera schemas imported from the
-``edvise`` package. Legacy uploads keep the API's any-format CSV read plus PII
-guard. The old API-local JSON schema validation path has been removed.
+PDP uploads validate through Pandera schemas imported from the ``edvise``
+package. Edvise Schema (ES) and Legacy uploads use any-format CSV read plus a
+PII column-name guard (no Pandera at upload time; ES schema checks run later in
+Databricks). The old API-local JSON schema validation path has been removed.
 """
 
 from __future__ import annotations
@@ -411,7 +412,11 @@ def _validate_edvise_with_repo_schema(
     model_list: List[str],
     institution_id: str,
 ) -> Dict[str, Any]:
-    """Validate Edvise Schema uploads with upstream raw Edvise Pandera schemas."""
+    """Validate Edvise Schema uploads with upstream raw Edvise Pandera schemas.
+
+    Not used by the live upload router today (ES skips Pandera at upload time).
+    Kept for unit tests and a possible future restore of upload-time schema checks.
+    """
     schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
     if schema_class is None:
         raise HardValidationError(
@@ -529,16 +534,17 @@ def _validate_pdp_with_edvise_read(
 # --------------------------------------------------------------------------- #
 
 
-def _validate_legacy_any_format(
+def _validate_any_format_csv(
     filename: Src,
     enc: str,
     models: Union[str, List[str], None],
 ) -> Dict[str, Any]:
     """
-    Legacy institutions: accept any CSV format (encoding check only, no schema).
+    Accept any CSV format (encoding/parse + PII column-name guard; no Pandera).
 
-    Reads the file as CSV with no column or type checks; returns the DataFrame
-    as-is as normalized_df so it can be written to validated/.
+    Used for Legacy and Edvise Schema (ES) uploads. Reads the file as CSV with no
+    column or type checks; returns the DataFrame as-is as normalized_df so it can
+    be written to validated/. ES Pandera checks still run later in Databricks.
 
     Args:
         filename: Path or file-like object for the CSV.
@@ -573,15 +579,15 @@ def _validate_legacy_any_format(
             UnicodeDecodeError,
             OSError,
         ) as e:
-            logger.exception("Legacy CSV read failed: %s", e)
+            logger.exception("Any-format CSV read failed: %s", e)
             raise HardValidationError(
-                schema_errors="Legacy upload: could not read CSV.",
+                schema_errors="Upload: could not read CSV.",
                 failure_cases=[str(e)],
             ) from e
     if df is None or not isinstance(df, pd.DataFrame):
         df = pd.DataFrame()
 
-    # PII check: reject legacy uploads that contain columns indicating PII (before moving to raw/validated).
+    # PII check: reject uploads with columns indicating PII (before raw/validated).
     # Run whenever there are columns (including header-only CSVs: df.empty is True for 0 rows).
     if len(df.columns) > 0:
         # Lazy import to avoid circular dependency: validation_error_formatter imports from this module.
@@ -589,13 +595,12 @@ def _validate_legacy_any_format(
 
         pii_columns = [str(c) for c in df.columns if _is_pii_column(str(c))]
         if pii_columns:
-            logger.warning(
-                "Legacy upload rejected: PII columns detected: %s", pii_columns
-            )
+            logger.warning("Upload rejected: PII columns detected: %s", pii_columns)
             raise HardValidationError(
                 schema_errors=(
-                    "Legacy upload: file contains columns that may contain personally identifiable information (PII). "
-                    "Please remove or de-identify these columns before uploading."
+                    "Upload: file contains columns that may contain personally "
+                    "identifiable information (PII). Please remove or de-identify "
+                    "these columns before uploading."
                 ),
                 failure_cases=pii_columns,
             )
@@ -609,6 +614,10 @@ def _validate_legacy_any_format(
     }
 
 
+# Back-compat alias for callers/tests that still use the legacy name.
+_validate_legacy_any_format = _validate_any_format_csv
+
+
 def validate_dataset(
     filename: Src,
     models: Union[str, List[str], None] = None,
@@ -620,15 +629,16 @@ def validate_dataset(
     """
     Validate a dataset using the active institution upload workflow.
 
-    Detects encoding, then routes to legacy any-format handling or PDP/Edvise
+    Detects encoding, then routes to any-format handling for Legacy/ES, or PDP
     repo Pandera validation for supported single-model STUDENT/COURSE uploads.
-    Other PDP/Edvise model sets are rejected explicitly; the API-local JSON
-    schema validation fallback has been removed.
+    Other PDP model sets are rejected explicitly; the API-local JSON schema
+    validation fallback has been removed.
 
     Args:
         filename: CSV path or file-like object.
         models: Model name(s) to validate.
-        institution_id: Validation namespace, or ``"legacy"`` for any-format validation.
+        institution_id: Validation namespace (``"pdp"``, ``"edvise"``, or ``"legacy"``).
+            ``"edvise"`` and ``"legacy"`` skip Pandera at upload time.
         institution_identifier: Optional UUID string for caller context (e.g. Edvise).
         pdp_cohort_converter_func: Optional cohort transform before Pandera; default ``None``.
             Batch PDP jobs may still apply school-specific cohort converters via ``dataio``.
@@ -648,18 +658,13 @@ def validate_dataset(
         raise HardValidationError(schema_errors="decode_error", failure_cases=[str(ex)])
     _reset_to_start_if_possible(filename)
 
-    if institution_id == "legacy":
-        return _validate_legacy_any_format(filename, enc, models)
+    # ES and Legacy: parse CSV + PII guard only. ES Pandera runs in Databricks
+    # (optionally after school converters from bronze training_inputs/dataio.py).
+    if institution_id in ("legacy", "edvise"):
+        return _validate_any_format_csv(filename, enc, models)
 
     model_list = _model_list_from_models(models)
     schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
-    if schema_class is not None and institution_id == "edvise":
-        return _validate_edvise_with_repo_schema(
-            filename,
-            enc,
-            model_list,
-            institution_id,
-        )
     if schema_class is not None:
         return _validate_pdp_with_edvise_read(
             filename,
