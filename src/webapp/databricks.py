@@ -35,7 +35,7 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 # The name of the deployed pipeline in Databricks. Must match the job's `name` in that workspace.
 # Override with LEGACY_INFERENCE_JOB_NAME, ES_INFERENCE_JOB_NAME (and PDP_INFERENCE_JOB_NAME)
 # when dev/staging deploy uses a different bundle target or a stub job that matches the same parameters.
-PDP_INFERENCE_JOB_NAME = "edvise_github_sourced_pdp_inference_pipeline"
+PDP_INFERENCE_JOB_NAME = "edvise_versioned_inference_launcher"
 LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
 ES_INFERENCE_JOB_NAME = "github_sourced_genai_es_inference_pipeline"
 # Dev bundle prefix for the Cloud Run service principal job target.
