@@ -283,6 +283,25 @@ def test_read_inst_model(client: TestClient) -> None:
     assert same_model_orderless(response_model, expected_model)
 
 
+def test_archive_model(client: TestClient, session: sqlalchemy.orm.Session) -> None:
+    """Test PATCH /institutions/{inst_id}/models/{model_name}/archive."""
+    base = "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/models/"
+    assert client.patch(base + "missing_model/archive").status_code == 404
+
+    response = client.patch(base + "sample_model_for_school_1/archive")
+    assert response.status_code == 200
+    assert response.json() == {
+        "inst_id": uuid_to_str(USER_VALID_INST_UUID),
+        "model_name": "sample_model_for_school_1",
+        "archived": 1,
+        "status": "Model archived",
+    }
+    model_row = session.get(ModelTable, SAMPLE_UUID)
+    assert model_row is not None
+    assert model_row.archived == 1
+    assert client.patch(base + "sample_model_for_school_1/archive").status_code == 409
+
+
 def test_read_inst_model_outputs(client: TestClient) -> None:
     """Test GET /institutions/345/models/10/output."""
     MOCK_STORAGE.list_blobs_in_folder.return_value = []

@@ -466,6 +466,47 @@ def delete_model(
     }
 
 
+@router.patch("/{inst_id}/models/{model_name}/archive")
+def archive_model(
+    inst_id: str,
+    model_name: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> Any:
+    """Archive a model by setting ``archived`` from 0 to 1."""
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    has_access_to_inst_or_err(inst_id, current_user)
+
+    local_session.set(sql_session)
+    sess = local_session.get()
+
+    model = sess.execute(
+        select(ModelTable).where(
+            ModelTable.name == transformed_model_name,
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
+    ).scalar_one_or_none()
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Model not found."
+        )
+    if model.archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Model is already archived.",
+        )
+
+    model.archived = 1
+    sess.commit()
+
+    return {
+        "inst_id": inst_id,
+        "model_name": transformed_model_name,
+        "archived": 1,
+        "status": "Model archived",
+    }
+
+
 @router.get("/{inst_id}/models/{model_name}/runs", response_model=list[RunInfo])
 def read_inst_model_outputs(
     inst_id: str,
