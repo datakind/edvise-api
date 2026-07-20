@@ -206,33 +206,40 @@ def test_validate_file_reader_pdp_student_routes_to_repo_validation(
     assert mock_validate.call_args.args[3] == "pdp"
 
 
-def test_validate_file_reader_edvise_course_routes_to_repo_validation(
+def test_validate_file_reader_edvise_course_uses_repo_schema_path(
     tmp_csv_file: str,
 ) -> None:
-    """Edvise COURSE uploads use repo-backed validation, not JSON schema docs."""
-    expected_df = pd.DataFrame({"course_id": ["c1"]})
-
-    with patch(
-        "src.webapp.validation._validate_edvise_with_repo_schema",
-        return_value={
-            "validation_status": "passed",
-            "schemas": ["COURSE"],
-            "missing_optional": [],
-            "unknown_extra_columns": [],
-            "normalized_df": expected_df,
-        },
-    ) as mock_validate:
+    """Edvise COURSE uploads use read_raw_es_* + Pandera (not any-format)."""
+    with (
+        patch(
+            "src.webapp.validation.load_es_converters_from_bronze",
+            return_value=(None, None),
+        ),
+        patch(
+            "src.webapp.validation._validate_edvise_with_repo_schema",
+            return_value={
+                "validation_status": "passed",
+                "schemas": ["COURSE"],
+                "missing_optional": [],
+                "unknown_extra_columns": [],
+                "normalized_df": pd.DataFrame({"course_id": ["c1"]}),
+            },
+        ) as mock_validate,
+        patch(
+            "src.webapp.validation._validate_any_format_csv",
+        ) as mock_any_format,
+    ):
         result = validate_file_reader(
             tmp_csv_file,
             ["COURSE"],
             institution_id="edvise",
+            institution_identifier="edvise_school",
         )
 
     assert result["validation_status"] == "passed"
-    assert result["normalized_df"] is expected_df
     mock_validate.assert_called_once()
     assert mock_validate.call_args.args[2] == ["COURSE"]
-    assert mock_validate.call_args.args[3] == "edvise"
+    mock_any_format.assert_not_called()
 
 
 def test_validate_file_reader_pdp_rejects_unsupported_model_set(
@@ -250,16 +257,44 @@ def test_validate_file_reader_pdp_rejects_unsupported_model_set(
     assert "SEMESTER" in str(exc_info.value)
 
 
-def test_validate_file_reader_edvise_rejects_multi_model_upload(
-    tmp_csv_file: str,
+def test_validate_file_reader_edvise_rejects_schema_invalid_csv(
+    tmp_path: Path,
 ) -> None:
-    """Edvise multi-model uploads are rejected instead of using old JSON validation."""
-    with pytest.raises(HardValidationError) as exc_info:
-        validate_file_reader(
-            tmp_csv_file,
-            ["STUDENT", "COURSE"],
-            institution_id="edvise",
-        )
+    """ES uploads fail Pandera when columns do not match the raw Edvise schema."""
+    csv_path = tmp_path / "messy_student.csv"
+    csv_path.write_text("weird_col,another\nx,y\n", encoding="utf-8")
 
-    assert "edvise repo" in str(exc_info.value)
-    assert "STUDENT, COURSE" in str(exc_info.value)
+    with patch(
+        "src.webapp.validation.load_es_converters_from_bronze",
+        return_value=(None, None),
+    ):
+        with pytest.raises(HardValidationError) as exc_info:
+            validate_file_reader(
+                str(csv_path),
+                ["STUDENT"],
+                institution_id="edvise",
+                institution_identifier="edvise_school",
+            )
+
+    assert exc_info.value.schema_errors is not None or exc_info.value.failure_cases
+
+
+def test_validate_file_reader_edvise_rejects_pii_columns(tmp_path: Path) -> None:
+    """ES path still rejects PII-looking column names before schema validation."""
+    csv_path = tmp_path / "with_pii.csv"
+    csv_path.write_text("learner_id,email\n1,a@b.com\n", encoding="utf-8")
+
+    with patch(
+        "src.webapp.validation.load_es_converters_from_bronze",
+        return_value=(None, None),
+    ):
+        with pytest.raises(HardValidationError) as exc_info:
+            validate_file_reader(
+                str(csv_path),
+                ["STUDENT"],
+                institution_id="edvise",
+                institution_identifier="edvise_school",
+            )
+
+    assert "PII" in (exc_info.value.schema_errors or "")
+    assert "email" in (exc_info.value.failure_cases or [])

@@ -1464,7 +1464,7 @@ def test_validate_file_with_edvise_schema(edvise_client: TestClient) -> None:
     assert MOCK_STORAGE.validate_file.called
     call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
     assert call_kwargs.get("institution_id") == "edvise"
-    assert call_kwargs.get("institution_identifier") == uuid_to_str(EDVISE_INST_UUID)
+    assert call_kwargs.get("institution_identifier") == "edvise_school"
 
     # Non-PDP bronze sync runs only when batch_id is provided at validation time.
     MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
@@ -1856,7 +1856,7 @@ def test_validate_file_with_edvise_does_not_require_active_schema_doc(
     assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "edvise"
     assert MOCK_STORAGE.validate_file.call_args.kwargs.get(
         "institution_identifier"
-    ) == uuid_to_str(EDVISE_INST_UUID)
+    ) == "edvise_school"
 
 
 def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
@@ -1995,7 +1995,7 @@ def test_edvise_validation_does_not_pass_custom_schema_doc(
 
     assert captured_arg_count == 3
     assert captured_institution_id == "edvise"
-    assert captured_institution_identifier == uuid_to_str(EDVISE_INST_UUID)
+    assert captured_institution_identifier == "edvise_school"
 
     # Reset mock
     MOCK_STORAGE.validate_file.side_effect = None

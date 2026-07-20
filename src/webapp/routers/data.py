@@ -1613,6 +1613,7 @@ def _run_validation_and_upsert_file_record(
     current_user: BaseUser,
     storage_control: StorageControl,
     sess: Session,
+    institution_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run storage validate_file, then upsert file record and return response dict."""
     try:
@@ -1621,7 +1622,9 @@ def _run_validation_and_upsert_file_record(
             file_name,
             allowed_schemas,
             institution_id=schema_namespace,
-            institution_identifier=inst_id if schema_namespace == "edvise" else None,
+            institution_identifier=(
+                institution_name if schema_namespace == "edvise" else None
+            ),
         )
     except HardValidationError as e:
         logging.debug("Inferred Schemas FAILED (hard) %s", e)
@@ -1781,6 +1784,7 @@ def validation_helper(
         current_user,
         storage_control,
         sess,
+        institution_name=inst.name,
     )
     if batch_id is not None:
         _load_batch_for_bronze_sync(sess, inst_id, batch_id)
