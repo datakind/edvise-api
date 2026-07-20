@@ -296,7 +296,9 @@ def test_archive_model(client: TestClient, session: sqlalchemy.orm.Session) -> N
         "archived": 1,
         "status": "Model archived",
     }
-    assert session.get(ModelTable, SAMPLE_UUID).archived == 1
+    model_row = session.get(ModelTable, SAMPLE_UUID)
+    assert model_row is not None
+    assert model_row.archived == 1
     assert client.patch(base + "sample_model_for_school_1/archive").status_code == 409
 
 
