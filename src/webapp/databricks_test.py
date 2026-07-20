@@ -326,9 +326,7 @@ def test_download_bronze_training_inputs_file_builds_training_inputs_path(
         db_mod.databricks_vars, "DATABRICKS_HOST_URL", "https://example.databricks.com"
     )
     monkeypatch.setitem(db_mod.databricks_vars, "CATALOG_NAME", "dev_catalog")
-    monkeypatch.setitem(
-        db_mod.gcs_vars, "GCP_SERVICE_ACCOUNT_EMAIL", "sa@example.com"
-    )
+    monkeypatch.setitem(db_mod.gcs_vars, "GCP_SERVICE_ACCOUNT_EMAIL", "sa@example.com")
 
     mock_stream = MagicMock()
     mock_response = MagicMock()

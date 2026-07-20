@@ -353,9 +353,7 @@ def load_es_converters_from_bronze(
     course_converter: PDPConverterFunc = None
     try:
         cohort_converter = module.converter_func_cohort
-        logger.info(
-            "Loaded custom ES cohort converter for institution=%s", inst_name
-        )
+        logger.info("Loaded custom ES cohort converter for institution=%s", inst_name)
     except Exception as e:
         logger.info(
             "Running ES validation with default cohort converter for institution=%s",
@@ -364,9 +362,7 @@ def load_es_converters_from_bronze(
         logger.warning("Failed to load custom ES cohort converter: %s", e)
     try:
         course_converter = module.converter_func_course
-        logger.info(
-            "Loaded custom ES course converter for institution=%s", inst_name
-        )
+        logger.info("Loaded custom ES course converter for institution=%s", inst_name)
     except Exception as e:
         logger.info(
             "Running ES validation with default course converter for institution=%s",

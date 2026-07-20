@@ -37,9 +37,7 @@ def converter_func_course(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.attrs["school_marker"] = "{course_marker}"
     return out
-'''.encode(
-        "utf-8"
-    )
+'''.encode("utf-8")
 
 
 def test_load_es_converters_applies_cohort_rename(tmp_path: Path) -> None:
@@ -65,7 +63,9 @@ def test_load_es_converters_missing_dataio_soft_fallback() -> None:
     """Missing bronze dataio.py soft-falls back to no converters (job parity)."""
     with patch(
         "src.webapp.databricks.DatabricksControl.download_bronze_training_inputs_file",
-        side_effect=ValueError("Failed to download bronze training_inputs file: missing"),
+        side_effect=ValueError(
+            "Failed to download bronze training_inputs file: missing"
+        ),
     ):
         cohort_fn, course_fn = load_es_converters_from_bronze("school_missing")
 
@@ -207,7 +207,9 @@ def test_es_pandera_failure_returns_hard_validation_error(tmp_path: Path) -> Non
             "src.webapp.validation.pdp_edvise._convert_schema_errors_to_hard_validation_error",
             return_value=HardValidationError(
                 schema_errors="ES pandera failed",
-                failure_cases=[{"column": "entry_year", "check": "column_in_dataframe"}],
+                failure_cases=[
+                    {"column": "entry_year", "check": "column_in_dataframe"}
+                ],
             ),
         ),
     ):

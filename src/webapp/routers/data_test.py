@@ -1854,9 +1854,10 @@ def test_validate_file_with_edvise_does_not_require_active_schema_doc(
 
     assert response.status_code == 200
     assert MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_id") == "edvise"
-    assert MOCK_STORAGE.validate_file.call_args.kwargs.get(
-        "institution_identifier"
-    ) == "edvise_school"
+    assert (
+        MOCK_STORAGE.validate_file.call_args.kwargs.get("institution_identifier")
+        == "edvise_school"
+    )
 
 
 def test_validation_helper_pdp_and_edvise_mutual_exclusivity(
