@@ -14,8 +14,11 @@ from pandera.errors import SchemaError
 
 from src.webapp.validation import (
     HardValidationError,
+    _chain_es_course_converters,
     _import_dataio_module_isolated,
     load_es_converters_from_bronze,
+    load_es_institution_grade_map_from_bronze,
+    resolve_es_course_converter_for_upload,
     validate_file_reader,
 )
 
@@ -270,6 +273,9 @@ def test_pdp_routing_unchanged_does_not_load_es_converters(tmp_path: Path) -> No
             "src.webapp.validation.load_es_converters_from_bronze",
         ) as mock_load,
         patch(
+            "src.webapp.validation.load_es_institution_grade_map_from_bronze",
+        ) as mock_grade,
+        patch(
             "src.webapp.validation._validate_pdp_with_edvise_read",
             return_value={
                 "validation_status": "passed",
@@ -288,3 +294,106 @@ def test_pdp_routing_unchanged_does_not_load_es_converters(tmp_path: Path) -> No
 
     assert result["validation_status"] == "passed"
     mock_load.assert_not_called()
+    mock_grade.assert_not_called()
+
+
+def test_chain_es_course_converters_applies_grade_map_before_dataio() -> None:
+    """Job parity: grade_map runs first, then school course converter."""
+    order: list[str] = []
+
+    def school_converter(df: pd.DataFrame) -> pd.DataFrame:
+        order.append("dataio")
+        assert list(df["grade"]) == ["W"]  # already mapped
+        return df
+
+    chain = _chain_es_course_converters(school_converter, {"W1": "W"})
+    out = chain(pd.DataFrame({"grade": ["W1"]}))
+    assert order == ["dataio"]
+    assert list(out["grade"]) == ["W"]
+
+
+def test_load_es_institution_grade_map_missing_config_soft_fallback() -> None:
+    """Missing bronze config.toml soft-falls back to None (defaults applied by resolve)."""
+    with patch(
+        "src.webapp.databricks.DatabricksControl.download_bronze_training_inputs_file",
+        side_effect=ValueError("missing config"),
+    ):
+        assert load_es_institution_grade_map_from_bronze("school_x") is None
+
+
+def test_load_es_institution_grade_map_from_config_bytes() -> None:
+    """Parses preprocessing.features.grade_map from bronze config.toml."""
+    from types import SimpleNamespace
+
+    fake_cfg = SimpleNamespace(
+        preprocessing=SimpleNamespace(
+            features=SimpleNamespace(grade_map={"W1": "W", "NC": "NR"})
+        )
+    )
+    with (
+        patch(
+            "src.webapp.databricks.DatabricksControl.download_bronze_training_inputs_file",
+            return_value=io.BytesIO(b"placeholder = true\n"),
+        ),
+        patch("edvise.dataio.read.read_config", return_value=fake_cfg),
+    ):
+        grade_map = load_es_institution_grade_map_from_bronze("school_y")
+
+    assert grade_map == {"W1": "W", "NC": "NR"}
+
+
+def test_es_course_upload_chains_grade_map_into_read_raw_es(tmp_path: Path) -> None:
+    """COURSE upload passes a chained converter (grade_map + dataio) to read_raw_es_*."""
+    csv_path = tmp_path / "course.csv"
+    csv_path.write_text("learner_id,grade\ns1,W1\n", encoding="utf-8")
+
+    def school_converter(df: pd.DataFrame) -> pd.DataFrame:
+        return df.assign(from_dataio=True)
+
+    captured: dict[str, Any] = {}
+
+    def fake_read(**kwargs: Any) -> pd.DataFrame:
+        captured["converter_func"] = kwargs.get("converter_func")
+        conv = kwargs.get("converter_func")
+        assert conv is not None
+        result = conv(pd.DataFrame({"learner_id": ["s1"], "grade": ["W1"]}))
+        captured["after_converter"] = result
+        return result
+
+    with (
+        patch(
+            "src.webapp.validation.load_es_converters_from_bronze",
+            return_value=(None, school_converter),
+        ),
+        patch(
+            "src.webapp.validation.load_es_institution_grade_map_from_bronze",
+            return_value={"W1": "W"},
+        ),
+        patch(
+            "src.webapp.validation.read_raw_es_course_data",
+            side_effect=fake_read,
+        ),
+    ):
+        result = validate_file_reader(
+            str(csv_path),
+            ["COURSE"],
+            institution_id="edvise",
+            institution_identifier="edvise_school",
+        )
+
+    assert result["validation_status"] == "passed"
+    assert captured["converter_func"] is not school_converter
+    assert list(captured["after_converter"]["grade"]) == ["W"]
+    assert bool(captured["after_converter"]["from_dataio"].iloc[0]) is True
+
+
+def test_resolve_es_course_converter_uses_defaults_when_config_missing() -> None:
+    """Missing config still applies platform default grade_map (e.g. W1 -> W)."""
+    with patch(
+        "src.webapp.validation.load_es_institution_grade_map_from_bronze",
+        return_value=None,
+    ):
+        chain = resolve_es_course_converter_for_upload("school_z", None)
+
+    out = chain(pd.DataFrame({"grade": ["W1"]}))
+    assert list(out["grade"]) == ["W"]

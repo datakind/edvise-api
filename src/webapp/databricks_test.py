@@ -345,6 +345,32 @@ def test_download_bronze_training_inputs_file_builds_training_inputs_path(
     )
 
 
+def test_download_bronze_training_inputs_allows_config_toml(
+    monkeypatch: pytest.MonkeyPatch, ctrl: DatabricksControl
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(
+        db_mod.databricks_vars, "DATABRICKS_HOST_URL", "https://example.databricks.com"
+    )
+    monkeypatch.setitem(db_mod.databricks_vars, "CATALOG_NAME", "dev_catalog")
+    monkeypatch.setitem(db_mod.gcs_vars, "GCP_SERVICE_ACCOUNT_EMAIL", "sa@example.com")
+
+    mock_stream = MagicMock()
+    mock_response = MagicMock()
+    mock_response.contents = mock_stream
+    workspace = MagicMock()
+    workspace.files.download.return_value = mock_response
+
+    with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
+        result = ctrl.download_bronze_training_inputs_file("Edvise School", "config.toml")
+
+    assert result is mock_stream
+    workspace.files.download.assert_called_once_with(
+        "/Volumes/dev_catalog/edvise_school_bronze/bronze_volume/training_inputs/config.toml"
+    )
+
+
 def test_run_validated_gcs_to_bronze_sync_calls_run_now_with_bundle_params(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

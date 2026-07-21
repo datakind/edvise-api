@@ -216,6 +216,10 @@ def test_validate_file_reader_edvise_course_uses_repo_schema_path(
             return_value=(None, None),
         ),
         patch(
+            "src.webapp.validation.resolve_es_course_converter_for_upload",
+            side_effect=lambda _inst, conv: conv,
+        ),
+        patch(
             "src.webapp.validation._validate_edvise_with_repo_schema",
             return_value={
                 "validation_status": "passed",

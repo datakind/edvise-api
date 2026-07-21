@@ -63,7 +63,7 @@ VALID_BRONZE_FILE_RE = re.compile(
 )
 
 # Only these basenames may be read from bronze_volume/training_inputs/ (path traversal safe).
-ALLOWED_BRONZE_TRAINING_INPUTS_FILES = frozenset({"dataio.py"})
+ALLOWED_BRONZE_TRAINING_INPUTS_FILES = frozenset({"dataio.py", "config.toml"})
 
 
 def _create_databricks_workspace_client(operation: str) -> WorkspaceClient:
@@ -649,8 +649,8 @@ class DatabricksControl(BaseModel):
         """
         Download a file from ``bronze_volume/training_inputs/`` for an institution.
 
-        Only allowlisted basenames (currently ``dataio.py``) are permitted; nested
-        paths, ``..``, and absolute paths are rejected.
+        Only allowlisted basenames (currently ``dataio.py`` and ``config.toml``) are
+        permitted; nested paths, ``..``, and absolute paths are rejected.
 
         Args:
             inst_name: Institution display name (passed through ``databricksify_inst_name``).

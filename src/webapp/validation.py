@@ -2,10 +2,11 @@
 
 PDP uploads validate through Pandera schemas imported from the ``edvise``
 package (optional school converters may be passed in). Edvise Schema (ES)
-uploads fetch school ``training_inputs/dataio.py`` converters from the
-institution bronze volume (when present), then validate via
-``read_raw_es_*`` + ES Pandera schemas — parity with ES Databricks data-audit
-jobs. Legacy uploads use any-format CSV read plus a PII column-name guard.
+uploads fetch school ``training_inputs/dataio.py`` converters and
+``training_inputs/config.toml`` grade maps from the institution bronze volume
+(when present), then validate via ``read_raw_es_*`` + ES Pandera schemas —
+parity with ES Databricks data-audit jobs. Legacy uploads use any-format CSV
+read plus a PII column-name guard.
 The old API-local JSON schema validation path has been removed.
 """
 
@@ -37,6 +38,10 @@ from typing import (
 import pandas as pd
 from pandera.errors import SchemaError, SchemaErrors
 
+from edvise.data_audit.raw_course_grade_map import (
+    apply_raw_course_grade_map,
+    resolve_es_grade_map,
+)
 from edvise.dataio.read import (
     read_raw_es_cohort_data,
     read_raw_es_course_data,
@@ -384,6 +389,110 @@ def load_es_converters_from_bronze(
         course_converter = None
 
     return cohort_converter, course_converter
+
+
+def load_es_institution_grade_map_from_bronze(
+    inst_name: str,
+) -> Optional[Dict[str, str]]:
+    """
+    Download ``training_inputs/config.toml`` and return institution ``grade_map``.
+
+    Soft-falls back to ``None`` (caller should still apply platform defaults via
+    ``resolve_es_grade_map``) when config is missing or unreadable — parity with
+    jobs that always merge defaults even without school overrides.
+    """
+    from edvise.configs.es import ESProjectConfig
+    from edvise.dataio.read import read_config
+
+    from .databricks import DatabricksControl
+
+    tmp_path: Optional[str] = None
+    try:
+        stream = DatabricksControl().download_bronze_training_inputs_file(
+            inst_name, relative_path="config.toml"
+        )
+        raw = _read_stream_to_bytes(stream)
+        fd, tmp_path = tempfile.mkstemp(suffix="_config.toml", prefix="es_bronze_")
+        try:
+            os.write(fd, raw)
+        finally:
+            os.close(fd)
+
+        cfg = read_config(file_path=tmp_path, schema=ESProjectConfig)
+        pre = getattr(cfg, "preprocessing", None)
+        features = getattr(pre, "features", None) if pre is not None else None
+        grade_map = getattr(features, "grade_map", None) if features is not None else None
+        if grade_map:
+            logger.info(
+                "Loaded ES institution grade_map from bronze config for institution=%s "
+                "(%s entries)",
+                inst_name,
+                len(grade_map),
+            )
+        else:
+            logger.info(
+                "ES bronze config.toml for institution=%s has no grade_map; "
+                "using platform defaults only",
+                inst_name,
+            )
+        return cast(Optional[Dict[str, str]], grade_map)
+    except Exception as e:
+        logger.warning(
+            "ES bronze config.toml unavailable for institution=%s; using platform "
+            "grade_map defaults only: %s",
+            inst_name,
+            e,
+        )
+        return None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _chain_es_course_converters(
+    course_converter_func: PDPConverterFunc,
+    grade_map: Dict[str, str],
+) -> Callable[[pd.DataFrame], pd.DataFrame]:
+    """
+    Match ES data-audit order: config grade_map first, then school dataio converter.
+
+    Always returns a callable because ``resolve_es_grade_map`` yields at least
+    platform defaults.
+    """
+
+    def _course_converter_chain(df: pd.DataFrame) -> pd.DataFrame:
+        df = apply_raw_course_grade_map(df, grade_map)
+        if course_converter_func is not None:
+            df = course_converter_func(df)
+        return df
+
+    return _course_converter_chain
+
+
+def resolve_es_course_converter_for_upload(
+    inst_name: Optional[str],
+    course_converter_func: PDPConverterFunc,
+) -> Callable[[pd.DataFrame], pd.DataFrame]:
+    """
+    Build the course converter used at ES upload time (job parity).
+
+    Loads institution ``grade_map`` from bronze ``config.toml`` when ``inst_name``
+    is set (soft-fallback to platform defaults), then chains grade map + optional
+    ``dataio.converter_func_course``.
+    """
+    institution_map: Optional[Dict[str, str]] = None
+    if inst_name:
+        institution_map = load_es_institution_grade_map_from_bronze(inst_name)
+    else:
+        logger.warning(
+            "ES course validation without institution_identifier; using platform "
+            "grade_map defaults only"
+        )
+    grade_map = resolve_es_grade_map(institution_map)
+    return _chain_es_course_converters(course_converter_func, grade_map)
 
 
 def _validate_pdp_converter_callables(
@@ -886,7 +995,7 @@ def validate_dataset(
 
     model_list = _model_list_from_models(models)
 
-    # ES: bronze dataio converters (soft-fallback if missing) + read_raw_es_* + Pandera.
+    # ES: bronze dataio + config.toml grade_map (soft-fallback) + read_raw_es_* + Pandera.
     if institution_id == "edvise":
         schema_class = pdp_edvise.get_edvise_schema_for_upload(
             institution_id, model_list
@@ -911,6 +1020,11 @@ def validate_dataset(
             logger.warning(
                 "ES validation without institution_identifier; validating without "
                 "bronze dataio converters"
+            )
+        model_set = {str(m).strip().upper() for m in model_list if m}
+        if model_set == {"COURSE"}:
+            course_converter = resolve_es_course_converter_for_upload(
+                institution_identifier, course_converter
             )
         return _validate_edvise_with_repo_schema(
             filename,
