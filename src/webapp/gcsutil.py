@@ -396,8 +396,8 @@ class StorageControl(BaseModel):
             file_name: Blob name under unvalidated/.
             allowed_schemas: List of schema/model names allowed.
             institution_id: Validation namespace: "edvise", "pdp", or "legacy".
-            institution_identifier: Optional institution ID (e.g. UUID). Used by
-                Edvise upload validation for caller context.
+            institution_identifier: For ES, institution name used to fetch bronze
+                ``training_inputs/dataio.py`` converters. Unused for PDP/Legacy.
 
         Returns:
             List of inferred schema names (e.g. ["STUDENT"]).

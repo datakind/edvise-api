@@ -1,9 +1,9 @@
 """Pandera schemas re-exported from edvise for upload validation.
 
-Imports raw PDP and Edvise schema classes so uploads use the same column and type
-rules as edvise pipeline audits. Cohort row transforms run in ``validation.py``
-(optional converter) and can differ from batch ``dataio`` hooks; this module only
-supplies schema classes and helpers.
+Imports raw PDP and Edvise schema classes. PDP and ES uploads use these at
+upload time (ES after optional bronze ``dataio`` converters). Legacy uploads
+skip Pandera (any-format CSV + PII guard). This module supplies schema classes
+and helpers for the PDP/ES validation paths.
 
 Requires the ``edvise`` package (see pyproject.toml).
 """
@@ -34,7 +34,8 @@ def _get_hard_validation_error_class() -> type:
     return HardValidationError
 
 
-# Institution namespaces that use edvise repo schemas for single-model uploads.
+# Institution namespaces with edvise repo schema classes available.
+# Upload-time Pandera runs for both "pdp" and "edvise" single-model STUDENT/COURSE.
 PDP_EDVISE_NAMESPACES = frozenset({"pdp", "edvise"})
 
 
@@ -84,9 +85,8 @@ def get_edvise_schema_for_upload(
     """
     Return the edvise repo schema class for this upload, or None.
 
-    Use this as the single check: when not None, run that schema. PDP and
-    Edvise single-model STUDENT/COURSE uploads use repo validation (edvise
-    package required).
+    Use this as the single check: when not None, a repo schema class exists.
+    PDP and ES single-model STUDENT/COURSE uploads use these at upload time.
 
     Args:
         institution_id: Schema namespace (e.g. "pdp", "edvise", or "legacy").
