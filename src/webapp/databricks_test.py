@@ -308,7 +308,9 @@ def test_build_shared_inference_job_parameters_shape() -> None:
     )
 
 
-def test_download_bronze_training_inputs_rejects_path_traversal(ctrl) -> None:
+def test_download_bronze_training_inputs_rejects_path_traversal(
+    ctrl: DatabricksControl,
+) -> None:
     with pytest.raises(ValueError, match="basename"):
         ctrl.download_bronze_training_inputs_file("School", "../dataio.py")
     with pytest.raises(ValueError, match="basename"):
@@ -318,7 +320,7 @@ def test_download_bronze_training_inputs_rejects_path_traversal(ctrl) -> None:
 
 
 def test_download_bronze_training_inputs_file_builds_training_inputs_path(
-    monkeypatch: pytest.MonkeyPatch, ctrl
+    monkeypatch: pytest.MonkeyPatch, ctrl: DatabricksControl
 ) -> None:
     import src.webapp.databricks as db_mod
 
