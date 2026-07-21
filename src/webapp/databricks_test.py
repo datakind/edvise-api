@@ -363,7 +363,9 @@ def test_download_bronze_training_inputs_allows_config_toml(
     workspace.files.download.return_value = mock_response
 
     with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
-        result = ctrl.download_bronze_training_inputs_file("Edvise School", "config.toml")
+        result = ctrl.download_bronze_training_inputs_file(
+            "Edvise School", "config.toml"
+        )
 
     assert result is mock_stream
     workspace.files.download.assert_called_once_with(

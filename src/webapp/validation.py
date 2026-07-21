@@ -421,7 +421,9 @@ def load_es_institution_grade_map_from_bronze(
         cfg = read_config(file_path=tmp_path, schema=ESProjectConfig)
         pre = getattr(cfg, "preprocessing", None)
         features = getattr(pre, "features", None) if pre is not None else None
-        grade_map = getattr(features, "grade_map", None) if features is not None else None
+        grade_map = (
+            getattr(features, "grade_map", None) if features is not None else None
+        )
         if grade_map:
             logger.info(
                 "Loaded ES institution grade_map from bronze config for institution=%s "
