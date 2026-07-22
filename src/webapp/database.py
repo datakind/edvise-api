@@ -115,6 +115,7 @@ def _setup_test_institutions(session: Session) -> None:
                             name=model["name"],
                             created_by=LOCAL_USER_UUID,
                             valid=model.get("valid", True),
+                            archived=model.get("archived", 0),
                             created_at=DATETIME_TESTING,
                             updated_at=DATETIME_TESTING,
                         )

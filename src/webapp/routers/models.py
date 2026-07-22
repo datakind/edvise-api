@@ -218,6 +218,7 @@ class ModelInfo(BaseModel):
     created_by: str | None = None
     valid: bool = True
     deleted: bool | None = None
+    archived: int = 0
 
 
 def _model_version_as_str(version: Any) -> str | None:
@@ -297,6 +298,7 @@ def read_inst_models(
                 "created_by": uuid_to_str(elem[0].created_by),
                 "deleted": elem[0].deleted,
                 "valid": elem[0].valid,
+                "archived": elem[0].archived,
             }
         )
     return res
@@ -373,6 +375,7 @@ def create_model(
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
+        "archived": query_result[0][0].archived,
     }
 
 
@@ -420,6 +423,7 @@ def read_inst_model(
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
+        "archived": query_result[0][0].archived,
     }
 
 

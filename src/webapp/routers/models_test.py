@@ -63,6 +63,7 @@ def same_model_orderless(a_elem: ModelInfo, b_elem: ModelInfo) -> bool:
         or a_elem.m_id != b_elem.m_id
         or a_elem.valid != b_elem.valid
         or a_elem.deleted != b_elem.deleted
+        or a_elem.archived != b_elem.archived
     ):
         return False
     return True
@@ -247,6 +248,7 @@ def test_read_inst_models(client: TestClient) -> None:
             inst_id="1d7c75c33eda42949c6675ea8af97b55",
             deleted=None,
             valid=True,
+            archived=0,
         ),
     )
 
@@ -279,6 +281,7 @@ def test_read_inst_model(client: TestClient) -> None:
         m_id="e4862c62829440d8ab4c9c298f02f619",
         name="sample_model_for_school_1",
         valid=True,
+        archived=0,
     )
     assert same_model_orderless(response_model, expected_model)
 
