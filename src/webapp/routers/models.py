@@ -218,6 +218,7 @@ class ModelInfo(BaseModel):
     created_by: str | None = None
     valid: bool = True
     deleted: bool | None = None
+    archived: bool = False
 
 
 def _model_version_as_str(version: Any) -> str | None:
@@ -297,6 +298,7 @@ def read_inst_models(
                 "created_by": uuid_to_str(elem[0].created_by),
                 "deleted": elem[0].deleted,
                 "valid": elem[0].valid,
+                "archived": bool(elem[0].archived),
             }
         )
     return res
@@ -373,6 +375,7 @@ def create_model(
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
+        "archived": bool(query_result[0][0].archived),
     }
 
 
@@ -420,6 +423,7 @@ def read_inst_model(
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
+        "archived": bool(query_result[0][0].archived),
     }
 
 
@@ -463,6 +467,47 @@ def delete_model(
         "inst_id": inst_id,
         "model_name": transformed_model_name,
         "status": "Model deleted",
+    }
+
+
+@router.patch("/{inst_id}/models/{model_name}/archive")
+def archive_model(
+    inst_id: str,
+    model_name: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+) -> Any:
+    """Archive a model by setting ``archived`` from 0 to 1."""
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    has_access_to_inst_or_err(inst_id, current_user)
+
+    local_session.set(sql_session)
+    sess = local_session.get()
+
+    model = sess.execute(
+        select(ModelTable).where(
+            ModelTable.name == transformed_model_name,
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
+    ).scalar_one_or_none()
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Model not found."
+        )
+    if model.archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Model is already archived.",
+        )
+
+    model.archived = 1
+    sess.commit()
+
+    return {
+        "inst_id": inst_id,
+        "model_name": transformed_model_name,
+        "archived": 1,
+        "status": "Model archived",
     }
 
 

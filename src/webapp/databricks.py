@@ -62,6 +62,9 @@ VALID_BRONZE_FILE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Only these basenames may be read from bronze_volume/training_inputs/ (path traversal safe).
+ALLOWED_BRONZE_TRAINING_INPUTS_FILES = frozenset({"dataio.py", "config.toml"})
+
 
 def _create_databricks_workspace_client(operation: str) -> WorkspaceClient:
     """
@@ -634,6 +637,76 @@ class DatabricksControl(BaseModel):
         except Exception as e:
             LOGGER.exception("Failed to download from %s", volume_path)
             raise ValueError(f"Failed to download bronze dataset: {e}")
+
+        stream = getattr(response, "contents", None)
+        if stream is None:
+            raise ValueError("Databricks download returned no contents.")
+        return stream
+
+    def download_bronze_training_inputs_file(
+        self, inst_name: str, relative_path: str = "dataio.py"
+    ) -> Any:
+        """
+        Download a file from ``bronze_volume/training_inputs/`` for an institution.
+
+        Only allowlisted basenames (currently ``dataio.py`` and ``config.toml``) are
+        permitted; nested paths, ``..``, and absolute paths are rejected.
+
+        Args:
+            inst_name: Institution display name (passed through ``databricksify_inst_name``).
+            relative_path: Basename under ``training_inputs/`` (default ``dataio.py``).
+
+        Returns:
+            Byte stream of file contents (same shape as ``download_bronze_volume_file``).
+
+        Raises:
+            ValueError: If path is unsafe, Databricks is not configured, or download fails.
+        """
+        if not relative_path or not isinstance(relative_path, str):
+            raise ValueError("relative_path is required.")
+        if relative_path != os.path.basename(relative_path):
+            raise ValueError(
+                "relative_path must be a basename only (no directories or separators)."
+            )
+        if relative_path in (".", "..") or ".." in relative_path:
+            raise ValueError("relative_path must not contain path traversal.")
+        if relative_path not in ALLOWED_BRONZE_TRAINING_INPUTS_FILES:
+            raise ValueError(
+                f"relative_path must be one of {sorted(ALLOWED_BRONZE_TRAINING_INPUTS_FILES)}."
+            )
+        if not databricks_vars.get("DATABRICKS_HOST_URL") or not databricks_vars.get(
+            "CATALOG_NAME"
+        ):
+            raise ValueError("Databricks integration not configured.")
+        if not gcs_vars.get("GCP_SERVICE_ACCOUNT_EMAIL"):
+            raise ValueError("GCP service account email not configured.")
+
+        try:
+            w = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception as e:
+            LOGGER.exception(
+                "Failed to create Databricks WorkspaceClient with host: %s and service account: %s",
+                databricks_vars.get("DATABRICKS_HOST_URL"),
+                gcs_vars.get("GCP_SERVICE_ACCOUNT_EMAIL"),
+            )
+            raise ValueError(f"Workspace client creation failed: {e}") from e
+
+        db_inst_name = databricksify_inst_name(inst_name)
+        volume_path = (
+            f"/Volumes/{databricks_vars['CATALOG_NAME']}/"
+            f"{db_inst_name}_bronze/bronze_volume/training_inputs/{relative_path}"
+        )
+
+        try:
+            response = w.files.download(volume_path)
+        except Exception as e:
+            LOGGER.exception("Failed to download from %s", volume_path)
+            raise ValueError(
+                f"Failed to download bronze training_inputs file: {e}"
+            ) from e
 
         stream = getattr(response, "contents", None)
         if stream is None:

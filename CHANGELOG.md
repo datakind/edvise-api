@@ -1,3 +1,9 @@
+## 1.3.0 (2026-07-22)
+- feat: validate ES uploads with bronze `dataio` converters and Pandera (#273)
+- feat: apply bronze `config.toml` `grade_map` before ES course Pandera (#273)
+- feat: add PATCH endpoint to archive models (`/{inst_id}/models/{model_name}/archive`) (#274)
+- feat: expose `archived` on `/models` endpoint responses (#275)
+
 ## 1.2.0 (2026-07-15)
 - feat: list institution bronze volume CSVs via `/input/bronze-datasets` (#206)
 - feat: import a bronze volume dataset into GCS via `/input/upload-from-volume-to-gcs-bucket` (#206)

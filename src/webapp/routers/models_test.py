@@ -63,6 +63,7 @@ def same_model_orderless(a_elem: ModelInfo, b_elem: ModelInfo) -> bool:
         or a_elem.m_id != b_elem.m_id
         or a_elem.valid != b_elem.valid
         or a_elem.deleted != b_elem.deleted
+        or a_elem.archived != b_elem.archived
     ):
         return False
     return True
@@ -247,6 +248,7 @@ def test_read_inst_models(client: TestClient) -> None:
             inst_id="1d7c75c33eda42949c6675ea8af97b55",
             deleted=None,
             valid=True,
+            archived=False,
         ),
     )
 
@@ -279,8 +281,43 @@ def test_read_inst_model(client: TestClient) -> None:
         m_id="e4862c62829440d8ab4c9c298f02f619",
         name="sample_model_for_school_1",
         valid=True,
+        archived=False,
     )
     assert same_model_orderless(response_model, expected_model)
+
+
+def test_archive_model(client: TestClient, session: sqlalchemy.orm.Session) -> None:
+    """Test PATCH /institutions/{inst_id}/models/{model_name}/archive."""
+    base = "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/models/"
+    assert client.patch(base + "missing_model/archive").status_code == 404
+
+    response = client.patch(base + "sample_model_for_school_1/archive")
+    assert response.status_code == 200
+    assert response.json() == {
+        "inst_id": uuid_to_str(USER_VALID_INST_UUID),
+        "model_name": "sample_model_for_school_1",
+        "archived": 1,
+        "status": "Model archived",
+    }
+    model_row = session.get(ModelTable, SAMPLE_UUID)
+    assert model_row is not None
+    assert model_row.archived == 1
+    assert client.patch(base + "sample_model_for_school_1/archive").status_code == 409
+
+    # Confirm the archived state is reflected on the model read endpoints.
+    get_response = client.get(base + "sample_model_for_school_1")
+    assert get_response.status_code == 200
+    assert get_response.json()["archived"] is True
+
+    list_response = client.get(
+        "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/models"
+    )
+    assert list_response.status_code == 200
+    assert next(
+        m["archived"]
+        for m in list_response.json()
+        if m["name"] == "sample_model_for_school_1"
+    )
 
 
 def test_read_inst_model_outputs(client: TestClient) -> None:
