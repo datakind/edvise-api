@@ -37,6 +37,11 @@ jobs:
   tests:
     uses: ./.github/workflows/tests.yml
 
+  # Release branches: flag if a newer edvise major/minor release is available upstream
+  edvise-version-check:
+    if: startsWith(github.head_ref, 'release/')
+    uses: ./.github/workflows/edvise-version-check.yml
+
   ci:
     needs:
       [
@@ -47,6 +52,7 @@ jobs:
         pre-release,
         style,
         tests,
+        edvise-version-check,
       ]
     if: always()
     runs-on: ubuntu-latest
@@ -60,6 +66,7 @@ jobs:
             "${{ needs.enforce-targets.result }}" \
             "${{ needs.pre-release.result }}" \
             "${{ needs.style.result }}" \
-            "${{ needs.tests.result }}"; do
+            "${{ needs.tests.result }}" \
+            "${{ needs.edvise-version-check.result }}"; do
             case "$result" in success|skipped) ;; *) exit 1 ;; esac
           done

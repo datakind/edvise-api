@@ -1,0 +1,45 @@
+name: edvise-version-check
+
+on:
+  workflow_call:
+
+jobs:
+  check-edvise-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compare locked edvise version against latest upstream release
+        run: |
+          set -euo pipefail
+
+          current=$(grep -A1 -m1 '^name = "edvise"$' uv.lock | grep '^version' | sed -E 's/version = "(.*)"/\1/')
+          if [ -z "$current" ]; then
+            echo "::error::Could not determine the locked edvise version from uv.lock"
+            exit 1
+          fi
+
+          latest=$(git ls-remote --tags --refs https://github.com/datakind/edvise.git \
+            | sed -E 's#.*refs/tags/v##' \
+            | sort -V \
+            | tail -n1)
+          if [ -z "$latest" ]; then
+            echo "::error::Could not determine the latest edvise release tag"
+            exit 1
+          fi
+
+          echo "Locked edvise version:  $current"
+          echo "Latest edvise release:  v$latest"
+
+          current_major=$(echo "$current" | cut -d. -f1)
+          current_minor=$(echo "$current" | cut -d. -f2)
+          latest_major=$(echo "$latest" | cut -d. -f1)
+          latest_minor=$(echo "$latest" | cut -d. -f2)
+
+          if [ "$latest_major" -gt "$current_major" ] || { [ "$latest_major" -eq "$current_major" ] && [ "$latest_minor" -gt "$current_minor" ]; }; then
+            echo "::error::This release is pinned to edvise v$current, but a newer major/minor release (v$latest) is available upstream. Bump the 'edvise' dependency constraint in pyproject.toml and the matching [tool.uv.sources] tag, run 'uv lock', and commit the update before finishing this release (patch-only lag is fine)."
+            exit 1
+          fi
+
+          echo "edvise dependency is up to date at the major/minor level."
