@@ -774,7 +774,8 @@ class DatabricksControl(BaseModel):
                     ],  # is this value the same PER environ? dev/staging/prod
                     "gcp_bucket_name": req.gcp_external_bucket_name,
                     "model_name": req.model_name,
-                    "notification_email": req.email,
+                    "datakind_notification_email": req.email,
+                    "DK_CC_EMAIL": req.email,
                 },
             )
             LOGGER.info(

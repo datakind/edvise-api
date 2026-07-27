@@ -14,12 +14,14 @@ from .databricks import (
     DATABRICKS_VALIDATED_BRONZE_SYNC_JOB_ID_ENV,
     DatabricksBronzeSyncRequest,
     DatabricksControl,
+    DatabricksPDPInferenceRunRequest,
     DatabricksSharedInferenceRunRequest,
     _build_shared_inference_job_parameters,
     _build_validated_bronze_sync_job_parameters,
     _resolve_pipeline_job,
     _resolve_validated_bronze_sync_job_id,
 )
+from .utilities import SchemaType
 
 
 @pytest.fixture
@@ -398,3 +400,50 @@ def test_run_validated_gcs_to_bronze_sync_calls_run_now_with_bundle_params(
     params = run_kwargs["job_parameters"]
     assert params["include_blob_paths_json"] == '["validated/foo.csv"]'
     assert params["gcs_source_prefix"] == BRONZE_SYNC_GCS_SOURCE_PREFIX
+
+
+def test_run_pdp_inference_sends_datakind_notification_email_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_pdp_inference must send the archived job's real parameter names.
+
+    Regression test: this previously sent a stale ``notification_email`` key
+    that doesn't match any declared job parameter, so the value was silently
+    dropped and the launcher failed with a missing DK_CC_EMAIL error.
+    """
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(
+        db_mod.databricks_vars, "DATABRICKS_HOST_URL", "https://example.databricks.com"
+    )
+    monkeypatch.setitem(db_mod.databricks_vars, "DATABRICKS_WORKSPACE", "dev_sst_02")
+    monkeypatch.setitem(db_mod.gcs_vars, "GCP_SERVICE_ACCOUNT_EMAIL", "sa@example.com")
+
+    workspace = mock.Mock()
+    job = SimpleNamespace(job_id=123)
+    workspace.jobs.list.return_value = iter([job])
+    run_response = mock.Mock()
+    run_response.response.run_id = 9002
+    workspace.jobs.run_now.return_value = run_response
+
+    with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
+        ctrl = DatabricksControl()
+        req = DatabricksPDPInferenceRunRequest(
+            inst_name="My Inst",
+            filepath_to_type={
+                "student.csv": [SchemaType.STUDENT],
+                "course.csv": [SchemaType.COURSE],
+            },
+            model_name="retention_model",
+            email="user@example.com",
+            gcp_external_bucket_name="my-bucket",
+        )
+        resp = ctrl.run_pdp_inference(req)
+
+    assert resp.job_run_id == 9002
+    workspace.jobs.run_now.assert_called_once()
+    _run_args, run_kwargs = workspace.jobs.run_now.call_args
+    params = run_kwargs["job_parameters"]
+    assert params["datakind_notification_email"] == "user@example.com"
+    assert params["DK_CC_EMAIL"] == "user@example.com"
+    assert "notification_email" not in params
