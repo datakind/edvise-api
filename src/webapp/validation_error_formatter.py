@@ -101,6 +101,7 @@ NON_PERSON_NAME_PREFIXES = {
     "school",
     "district",
     "institution",
+    "campus",
     "class",
     "section",
     "program",
