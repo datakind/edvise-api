@@ -1,3 +1,8 @@
+## 1.4.0 (2026-07-28)
+- feat: update PDP Inference pipeline name for versioned inference pipeline (#272)
+- fix: send correct notification parameter names to PDP inference launcher (#281)
+- fix: treat campus_name as non-PII column (#282)
+
 ## 1.3.0 (2026-07-22)
 - feat: validate ES uploads with bronze `dataio` converters and Pandera (#273)
 - feat: apply bronze `config.toml` `grade_map` before ES course Pandera (#273)
