@@ -1,3 +1,6 @@
+## 1.4.0 (2026-07-27)
+- feat: update PDP Inference pipeline name for versioned inference pipeline 
+
 ## 1.3.0 (2026-07-22)
 - feat: validate ES uploads with bronze `dataio` converters and Pandera (#273)
 - feat: apply bronze `config.toml` `grade_map` before ES course Pandera (#273)
