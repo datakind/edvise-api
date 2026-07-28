@@ -37,9 +37,11 @@ jobs:
   tests:
     uses: ./.github/workflows/tests.yml
 
-  # Release branches: flag if a newer edvise major/minor release is available upstream
+  # Release branches: auto-bump the edvise pin if a newer major/minor release is available upstream
   edvise-version-check:
     if: startsWith(github.head_ref, 'release/')
+    permissions:
+      contents: write
     uses: ./.github/workflows/edvise-version-check.yml
 
   ci:

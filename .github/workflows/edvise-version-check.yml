@@ -4,13 +4,20 @@ on:
   workflow_call:
 
 jobs:
-  check-edvise-version:
+  bump-edvise-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
 
-      - name: Compare locked edvise version against latest upstream release
+      - name: Set up Python environment
+        uses: ./.github/actions/setup-python-env
+
+      - name: Bump locked edvise version if a newer major/minor release is available upstream
         run: |
           set -euo pipefail
 
@@ -37,9 +44,33 @@ jobs:
           latest_major=$(echo "$latest" | cut -d. -f1)
           latest_minor=$(echo "$latest" | cut -d. -f2)
 
-          if [ "$latest_major" -gt "$current_major" ] || { [ "$latest_major" -eq "$current_major" ] && [ "$latest_minor" -gt "$current_minor" ]; }; then
-            echo "::error::This release is pinned to edvise v$current, but a newer major/minor release (v$latest) is available upstream. Bump the 'edvise' dependency constraint in pyproject.toml and the matching [tool.uv.sources] tag, run 'uv lock', and commit the update before finishing this release (patch-only lag is fine)."
+          if [ "$latest_major" -lt "$current_major" ] || { [ "$latest_major" -eq "$current_major" ] && [ "$latest_minor" -le "$current_minor" ]; }; then
+            echo "edvise dependency is up to date at the major/minor level. Nothing to bump."
+            exit 0
+          fi
+
+          echo "::notice::Bumping edvise from v$current to v$latest (newer major/minor release available upstream)."
+
+          new_constraint="${latest_major}.${latest_minor}.0"
+
+          sed -i -E "s/edvise~=[0-9]+\.[0-9]+\.[0-9]+/edvise~=${new_constraint}/" pyproject.toml
+          sed -i -E "s#(edvise = \{ git = \"https://github.com/datakind/edvise.git\", tag = \")v[0-9]+\.[0-9]+\.[0-9]+(\" \})#\1v${latest}\2#" pyproject.toml
+
+          if ! grep -q "edvise~=${new_constraint}" pyproject.toml; then
+            echo "::error::Failed to update the 'edvise' dependency constraint in pyproject.toml"
+            exit 1
+          fi
+          if ! grep -q "tag = \"v${latest}\"" pyproject.toml; then
+            echo "::error::Failed to update the [tool.uv.sources] edvise tag in pyproject.toml"
             exit 1
           fi
 
-          echo "edvise dependency is up to date at the major/minor level."
+          uv lock
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock
+          git commit -m "chore: bump edvise to ~=${new_constraint} (v${latest})"
+          git push origin "HEAD:${{ github.head_ref }}"
+
+          echo "::notice::Pushed a commit bumping edvise to ~=${new_constraint} (tag v${latest}) onto ${{ github.head_ref }}."
