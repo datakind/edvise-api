@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform != 'win32'",
@@ -695,8 +695,8 @@ wheels = [
 
 [[package]]
 name = "edvise"
-version = "1.7.0"
-source = { git = "https://github.com/datakind/edvise.git?tag=v1.7.0#5fec14060c310114c97583e9045843e24cb06f0c" }
+version = "1.5.0"
+source = { git = "https://github.com/datakind/edvise.git?tag=v1.5.0#0f359a51c22e689cc21f42bfcf7279e71d2c41fb" }
 dependencies = [
     { name = "databricks-connect" },
     { name = "databricks-sdk" },
@@ -3128,7 +3128,7 @@ wheels = [
 
 [[package]]
 name = "src"
-version = "1.4.0"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "bcrypt" },
@@ -3178,7 +3178,7 @@ requires-dist = [
     { name = "cloud-sql-python-connector", extras = ["pymysql"], specifier = "~=1.14.0" },
     { name = "databricks-sdk", specifier = "~=0.38.0" },
     { name = "databricks-sql-connector", extras = ["pyarrow"], specifier = "~=4.2.0" },
-    { name = "edvise", git = "https://github.com/datakind/edvise.git?tag=v1.7.0" },
+    { name = "edvise", git = "https://github.com/datakind/edvise.git?tag=v1.5.0" },
     { name = "fastapi", extras = ["standard"], specifier = "~=0.115.4" },
     { name = "google-cloud-storage", specifier = "==2.19.0" },
     { name = "jsonpickle", specifier = "~=4.0.1" },
