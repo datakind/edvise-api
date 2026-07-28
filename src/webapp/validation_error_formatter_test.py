@@ -274,6 +274,7 @@ def test_is_pii_column_medium_risk_token_matching() -> None:
     assert _is_pii_column("primary_class_section_name") is False
     assert _is_pii_column("district_name") is False
     assert _is_pii_column("school_name") is False
+    assert _is_pii_column("campus_name") is False
     assert _is_pii_column("column_name") is False
     assert _is_pii_column("file_name") is False
     # Person-related *_name columns should still be flagged
