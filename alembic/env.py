@@ -40,7 +40,9 @@ def include_object(object, name, type_, reflected, compare_to):  # noqa: A002, A
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
-        raise ValueError(f"Missing {name} value. Required for Alembic database connection.")
+        raise ValueError(
+            f"Missing {name} value. Required for Alembic database connection."
+        )
     return value
 
 
