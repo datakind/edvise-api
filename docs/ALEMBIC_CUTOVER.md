@@ -10,7 +10,7 @@ See also: [DB_SCHEMA_CONTRACT.md](./DB_SCHEMA_CONTRACT.md).
 | Piece | Location |
 |-------|----------|
 | Alembic config | `alembic.ini`, `alembic/` |
-| Baseline revision | `alembic/versions/20260803_baseline_api_tables.py` |
+| Baseline revision | `alembic/versions/20260803_596894_baseline_api_tables.py` |
 | Cloud Run job | `${ENV}-api-migrate` (terraform `deployment` jobs) |
 | Cloud Build | webapp trigger runs api-migrate unless `_SKIP_API_MIGRATE=true` |
 | `create_all` | LOCAL only (`database.py` `setup_db`) |
@@ -50,7 +50,7 @@ uv run alembic stamp head
 uv run alembic upgrade head   # should be a no-op
 ```
 
-Or run the automated check: `uv run pytest src/webapp/alembic_baseline_test.py -q`
+Or run the automated check: `uv run pytest tests/alembic -q`
 
 ## Dev cutover (merge day)
 
@@ -89,7 +89,7 @@ Or run the automated check: `uv run pytest src/webapp/alembic_baseline_test.py -
    alembic upgrade head   # expect no-op
    ```
 
-5. Verify: `SELECT * FROM alembic_version;` → `20260803_baseline`
+5. Verify: `SELECT * FROM alembic_version;` → `20260803_596894`
 6. Flip skip off by changing terraform `_SKIP_API_MIGRATE` to `"false"` and applying
    (prefer this over Console-only edits — the next terraform apply would reset a Console-only change).
 7. Re-run webapp Cloud Build (or push a no-op commit); confirm migrate step succeeds
@@ -114,6 +114,16 @@ Staging `job` already has `VARCHAR(255)` `model_run_id` and FK to `model` — no
 | `alembic upgrade head` | Apply pending migrations |
 
 Existing DBs that already have API tables must **stamp** once before the first deploy that runs `upgrade`.
+
+## Creating future migrations
+
+```bash
+# Prefer Alembic's generator so revision ids stay unique (not date-only):
+uv run alembic revision -m "add_foo_column"
+```
+
+CI / pytest also checks that revision ids and version filenames are unique
+(`tests/alembic/test_revision_uniqueness.py`).
 
 ## Baseline and future model changes
 

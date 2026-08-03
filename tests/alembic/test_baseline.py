@@ -21,18 +21,18 @@ API_TABLES = {
     "job",
 }
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 @pytest.fixture()
 def alembic_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Config, Path]:
     db_path = tmp_path / "alembic_test.db"
     monkeypatch.setenv("ENV", "LOCAL")
     monkeypatch.setenv("ALEMBIC_SQLITE_URL", f"sqlite:///{db_path}")
-    # Clear override if present in the environment.
     monkeypatch.delenv("ALEMBIC_DATABASE_URL", raising=False)
 
-    root = Path(__file__).resolve().parents[2]
-    cfg = Config(str(root / "alembic.ini"))
-    cfg.set_main_option("script_location", str(root / "alembic"))
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
     return cfg, db_path
 
 
@@ -52,7 +52,6 @@ def test_alembic_upgrade_is_noop_after_stamp(
     alembic_cfg: tuple[Config, Path],
 ) -> None:
     cfg, db_path = alembic_cfg
-    # Pretend tables already exist (existing Cloud SQL cutover path).
     from webapp.database import Base
 
     engine = create_engine(f"sqlite:///{db_path}")

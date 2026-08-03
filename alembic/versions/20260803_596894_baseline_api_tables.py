@@ -1,6 +1,6 @@
 """Baseline API-owned tables.
 
-Revision ID: 20260803_baseline
+Revision ID: 20260803_596894
 Revises:
 Create Date: 2026-08-03
 
@@ -9,6 +9,9 @@ Does not create `users` (edvise-ui / Laravel DDL ownership).
 
 On existing Cloud SQL environments: run `alembic stamp head` instead of
 `upgrade` for the first cutover (tables already exist via create_all).
+
+Prefer generating future revisions with `alembic revision -m "..."` so
+revision ids stay unique (date + random suffix).
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from alembic import op
 from webapp.database import Base
 
 # revision identifiers, used by Alembic.
-revision: str = "20260803_baseline"
+revision: str = "20260803_596894"
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

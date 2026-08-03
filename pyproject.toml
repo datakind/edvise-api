@@ -97,7 +97,7 @@ filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::FutureWarning:pandera",
 ]
-testpaths = ["src"]
+testpaths = ["src", "tests"]
 
 [tool.mypy]
 files = ["src"]
