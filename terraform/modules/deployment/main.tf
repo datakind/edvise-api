@@ -68,6 +68,7 @@ module "jobs" {
   args          = each.value.args
   image         = each.value.image
   runtime       = each.value.runtime
+  max_retries   = 0
   environment   = var.environment
   region        = var.region
   database_name = var.database_name

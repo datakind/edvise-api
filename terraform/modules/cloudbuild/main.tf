@@ -66,10 +66,11 @@ resource "google_cloudbuild_trigger" "python_apps" {
   name            = "${var.environment}-${each.key}"
   description     = "Trigger for building and deploying ${each.key} service"
   service_account = var.cloudbuild_service_account_id
-  # Flip _SKIP_API_MIGRATE to "false" after alembic stamp on this env (webapp only).
-  substitutions = {
+  # Flip _SKIP_API_MIGRATE to "false" in terraform after alembic stamp (webapp only).
+  # Prefer terraform apply over Console-only changes so the next apply does not reset it.
+  substitutions = each.key == "webapp" ? {
     _SKIP_API_MIGRATE = "true"
-  }
+  } : {}
   dynamic "github" {
     for_each = var.environment == "dev" ? [1] : []
     content {
@@ -128,7 +129,8 @@ resource "google_cloudbuild_trigger" "python_apps" {
           gcloud run jobs deploy ${var.environment}-api-migrate \
             --image=${var.region}-docker.pkg.dev/${var.project}/edvise-api/webapp:$COMMIT_SHA \
             --region=${var.region} \
-            --execute-now
+            --execute-now \
+            --wait
           EOT
         ]
       }
@@ -236,7 +238,8 @@ resource "google_cloudbuild_trigger" "frontend" {
         "${var.environment}-migrate",
         "--image=${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA",
         "--region=${var.region}",
-        "--execute-now"
+        "--execute-now",
+        "--wait"
       ]
     }
     step {

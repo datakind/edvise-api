@@ -46,5 +46,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
-    tables = [Base.metadata.tables[name] for name in reversed(API_TABLES)]
+    tables = [Base.metadata.tables[name] for name in API_TABLES]
     Base.metadata.drop_all(bind=bind, tables=tables)

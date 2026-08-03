@@ -123,4 +123,4 @@ dmypy.json
 **/terraform.tfvars
 
 # Cursor rule files
-.cursor/__pycache__/
+.cursor/

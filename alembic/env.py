@@ -23,6 +23,8 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Tables Alembic must never create/drop/alter via autogenerate or baseline.
+# Laravel-only tables (teams, sessions, etc.) are not in Base.metadata, so
+# autogenerate will not see them; users is on AccountTable and must be excluded.
 EXCLUDED_TABLES = frozenset({"users"})
 
 
@@ -33,6 +35,13 @@ def include_object(object, name, type_, reflected, compare_to):  # noqa: A002, A
         if name and name.endswith("_backup"):
             return False
     return True
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ValueError(f"Missing {name} value. Required for Alembic database connection.")
+    return value
 
 
 def _database_url() -> str:
@@ -48,11 +57,11 @@ def _database_url() -> str:
 
     return URL.create(
         drivername="mysql+pymysql",
-        username=os.environ["DB_USER"],
-        password=os.environ["DB_PASS"],
-        host=os.environ["INSTANCE_HOST"],
+        username=_require_env("DB_USER"),
+        password=_require_env("DB_PASS"),
+        host=_require_env("INSTANCE_HOST"),
         port=int(os.environ.get("DB_PORT", "3306")),
-        database=os.environ["DB_NAME"],
+        database=_require_env("DB_NAME"),
     ).render_as_string(hide_password=False)
 
 
@@ -61,9 +70,9 @@ def _connect_args() -> dict:
     if env == "LOCAL" or os.environ.get("ALEMBIC_DATABASE_URL"):
         return {}
     return {
-        "ssl_ca": os.environ["DB_ROOT_CERT"],
-        "ssl_cert": os.environ["DB_CERT"],
-        "ssl_key": os.environ["DB_KEY"],
+        "ssl_ca": _require_env("DB_ROOT_CERT"),
+        "ssl_cert": _require_env("DB_CERT"),
+        "ssl_key": _require_env("DB_KEY"),
     }
 
 

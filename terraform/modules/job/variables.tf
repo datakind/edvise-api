@@ -62,3 +62,9 @@ variable "runtime" {
     error_message = "runtime must be laravel or python."
   }
 }
+
+# DDL migrations should not auto-retry (MySQL commits each statement).
+variable "max_retries" {
+  type    = number
+  default = 0
+}

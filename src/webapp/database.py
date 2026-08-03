@@ -894,6 +894,8 @@ def setup_db(env: str) -> Any:
     LocalSession = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
     # Cloud / shared DB: schema changes via Alembic (api-migrate job). Local SQLite
     # still uses create_all for a self-contained bootstrap.
+    # Non-LOCAL environments must already have tables (historical create_all or
+    # alembic upgrade/stamp) before init_db runs on DEV.
     if env == "LOCAL":
         Base.metadata.create_all(db_engine)
     if env in ("LOCAL", "DEV"):

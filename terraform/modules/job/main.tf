@@ -228,7 +228,7 @@ resource "google_cloud_run_v2_job" "migrate" {
       }
 
       execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
-      max_retries           = 3
+      max_retries           = var.max_retries
       service_account       = var.cloudrun_service_account_email
       timeout               = "600s"
 
@@ -287,6 +287,8 @@ resource "google_cloud_run_v2_job" "migrate" {
       }
     }
   }
+  # This is a workaround to avoid unnecessary updates to the container image
+  # (Cloud Build deploys new images out-of-band).
   lifecycle {
     ignore_changes = [
       template[0].template[0].containers[0].image,
