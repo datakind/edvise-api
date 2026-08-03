@@ -118,12 +118,16 @@ Existing DBs that already have API tables must **stamp** once before the first d
 ## Creating future migrations
 
 ```bash
-# Prefer Alembic's generator so revision ids stay unique (not date-only):
+# Prefer Alembic's generator so revision ids stay unique (random hex by default):
 uv run alembic revision -m "add_foo_column"
 ```
 
-CI / pytest also checks that revision ids and version filenames are unique
-(`tests/alembic/test_revision_uniqueness.py`).
+This baseline uses a date + short hash (`20260803_596894`) for readability;
+new revisions from `alembic revision` typically look like `a1b2c3d4e5f6_…`
+without a date prefix — that is expected and still unique.
+
+CI / pytest also checks that revision ids are unique and match the filename
+prefix (`tests/alembic/revision_uniqueness_test.py`).
 
 ## Baseline and future model changes
 

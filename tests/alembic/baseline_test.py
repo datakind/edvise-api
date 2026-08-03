@@ -9,6 +9,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
+from webapp.database import Base
+
 API_TABLES = {
     "inst",
     "apikey",
@@ -52,7 +54,6 @@ def test_alembic_upgrade_is_noop_after_stamp(
     alembic_cfg: tuple[Config, Path],
 ) -> None:
     cfg, db_path = alembic_cfg
-    from webapp.database import Base
 
     engine = create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(

@@ -11,7 +11,7 @@ On existing Cloud SQL environments: run `alembic stamp head` instead of
 `upgrade` for the first cutover (tables already exist via create_all).
 
 Prefer generating future revisions with `alembic revision -m "..."` so
-revision ids stay unique (date + random suffix).
+Alembic assigns a unique revision id (random hex by default).
 """
 
 from __future__ import annotations
