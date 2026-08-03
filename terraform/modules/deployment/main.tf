@@ -46,6 +46,14 @@ locals {
       image   = var.frontend_image
       command = ["launcher"]
       args    = ["php artisan migrate --force"]
+      runtime = "laravel"
+    },
+    {
+      name    = "api-migrate"
+      image   = var.webapp_image
+      command = ["alembic"]
+      args    = ["upgrade", "head"]
+      runtime = "python"
     }
   ]
 }
@@ -59,6 +67,7 @@ module "jobs" {
   command       = each.value.command
   args          = each.value.args
   image         = each.value.image
+  runtime       = each.value.runtime
   environment   = var.environment
   region        = var.region
   database_name = var.database_name

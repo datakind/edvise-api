@@ -34,11 +34,13 @@ RUN uv sync --frozen --no-editable
 ARG PYTHON_VERSION=3.12
 FROM python:${PYTHON_VERSION}-slim-bookworm
 
-# Copy the environment, but not the source code
+WORKDIR /app
+
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/src /app/src
+COPY --from=builder /app/alembic /app/alembic
+COPY --from=builder /app/alembic.ini /app/alembic.ini
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Run the application.
-CMD ["fastapi", "run", "app/src/webapp", "--port", "8080", "--host", "0.0.0.0"]
+CMD ["fastapi", "run", "src/webapp", "--port", "8080", "--host", "0.0.0.0"]

@@ -66,6 +66,10 @@ resource "google_cloudbuild_trigger" "python_apps" {
   name            = "${var.environment}-${each.key}"
   description     = "Trigger for building and deploying ${each.key} service"
   service_account = var.cloudbuild_service_account_id
+  # Flip _SKIP_API_MIGRATE to "false" after alembic stamp on this env (webapp only).
+  substitutions = {
+    _SKIP_API_MIGRATE = "true"
+  }
   dynamic "github" {
     for_each = var.environment == "dev" ? [1] : []
     content {
@@ -105,6 +109,29 @@ resource "google_cloudbuild_trigger" "python_apps" {
     step {
       name = "gcr.io/cloud-builders/docker"
       args = ["push", "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:latest"]
+    }
+    # Alembic migrate before webapp deploy. Skipped while _SKIP_API_MIGRATE=true
+    # (default) until the DB has been stamped — see docs/ALEMBIC_CUTOVER.md.
+    dynamic "step" {
+      for_each = each.key == "webapp" ? [1] : []
+      content {
+        id         = "RUN api-migrate job"
+        name       = "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+        entrypoint = "bash"
+        args = [
+          "-c",
+          <<-EOT
+          if [ "$${_SKIP_API_MIGRATE}" = "true" ]; then
+            echo "Skipping api-migrate (_SKIP_API_MIGRATE=true)"
+            exit 0
+          fi
+          gcloud run jobs deploy ${var.environment}-api-migrate \
+            --image=${var.region}-docker.pkg.dev/${var.project}/edvise-api/webapp:$COMMIT_SHA \
+            --region=${var.region} \
+            --execute-now
+          EOT
+        ]
+      }
     }
     step {
       name = "gcr.io/cloud-builders/gcloud"

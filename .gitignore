@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Alembic local scratch DBs
+alembic_local.db
+alembic_stamp_test.db
+*.db-journal
+
 # C extensions
 *.so
 
@@ -118,4 +123,4 @@ dmypy.json
 **/terraform.tfvars
 
 # Cursor rule files
-.cursor/
+.cursor/__pycache__/

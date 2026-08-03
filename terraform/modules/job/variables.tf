@@ -50,3 +50,15 @@ variable "subnetwork_id" {
 variable "cloudrun_service_account_email" {
   type = string
 }
+
+# "laravel" = UI migrate job (DB_USERNAME, /var/www/html/certs)
+# "python"  = API alembic job (DB_USER, /vol_mt/certs, ENV)
+variable "runtime" {
+  type    = string
+  default = "laravel"
+
+  validation {
+    condition     = contains(["laravel", "python"], var.runtime)
+    error_message = "runtime must be laravel or python."
+  }
+}

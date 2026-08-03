@@ -892,9 +892,10 @@ def setup_db(env: str) -> Any:
     # create SQLAlchemy ORM session
     global LocalSession
     LocalSession = sessionmaker(autocommit=False, autoflush=False, bind=db_engine)
-    # TODO: instead of create_all, check if exists and only create all if not existing
-    # https://stackoverflow.com/questions/33053241/sqlalchemy-if-table-does-not-exist
-    Base.metadata.create_all(db_engine)
+    # Cloud / shared DB: schema changes via Alembic (api-migrate job). Local SQLite
+    # still uses create_all for a self-contained bootstrap.
+    if env == "LOCAL":
+        Base.metadata.create_all(db_engine)
     if env in ("LOCAL", "DEV"):
         # Creates a fake user in the local db
         init_db(env)
