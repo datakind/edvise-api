@@ -13,9 +13,10 @@ See also: [DB_SCHEMA_CONTRACT.md](./DB_SCHEMA_CONTRACT.md).
 | Baseline revision | `alembic/versions/20260803_596894_baseline_api_tables.py` |
 | Cloud Run job | `${ENV}-api-migrate` (terraform `deployment` jobs) |
 | Cloud Build | webapp trigger runs api-migrate unless `_SKIP_API_MIGRATE=true` |
+| Skip flag | per-env terraform `skip_api_migrate` (default `true`) |
 | `create_all` | LOCAL only (`database.py` `setup_db`) |
 
-Default: **`_SKIP_API_MIGRATE=true`** so auto-deploy does not run `upgrade` before stamp.
+Default: **`skip_api_migrate = true`** so auto-deploy does not run `upgrade` before stamp.
 
 ## Local verification (before merge)
 
@@ -54,16 +55,29 @@ Or run the automated check: `uv run pytest tests/alembic -q`
 
 ## Dev cutover (merge day)
 
-1. Merge this PR to `develop` (auto-deploy; migrate step **skipped**).
+1. Merge this PR to `develop` (auto-deploy; migrate step **skipped** while
+   `skip_api_migrate=true`).
 2. Ensure terraform has applied so `${env}-api-migrate` exists.
    - The `${env}-terraform` Cloud Build trigger is **manual** (not push-on-develop).
    - Run that trigger, or `terraform apply` in `terraform/environments/dev`.
 3. Export / compare **dev** DDL to the schema contract if not already done.
 4. Stamp (pick one):
 
-   **Option A — Cloud Run job args override** (after image with Alembic is deployed).
+   **Option A — Cloud Run job** (required: refresh the job image first).
 
-   The job command is already `alembic`; override **args** only:
+   Terraform creates `${ENV}-api-migrate` once, then **ignores** later image
+   changes on the job. While Cloud Build skips migrate, it never updates that
+   image either. Before stamp, point the job at a post-merge webapp image that
+   contains Alembic:
+
+   ```bash
+   # Use the COMMIT_SHA (or :latest) from the merge deploy that includes alembic/
+   gcloud run jobs update ${ENV}-api-migrate \
+     --image=${REGION}-docker.pkg.dev/${PROJECT}/edvise-api/webapp:${COMMIT_SHA} \
+     --region=${REGION}
+   ```
+
+   Then stamp (job command is already `alembic`; override **args** only):
 
    ```bash
    gcloud run jobs execute ${ENV}-api-migrate \
@@ -72,7 +86,7 @@ Or run the automated check: `uv run pytest tests/alembic -q`
      --wait
    ```
 
-   Then verify with a no-op upgrade:
+   Verify with a no-op upgrade:
 
    ```bash
    gcloud run jobs execute ${ENV}-api-migrate \
@@ -90,17 +104,19 @@ Or run the automated check: `uv run pytest tests/alembic -q`
    ```
 
 5. Verify: `SELECT * FROM alembic_version;` → `20260803_596894`
-6. Flip skip off by changing terraform `_SKIP_API_MIGRATE` to `"false"` and applying
+6. Flip skip off **for this env only**: set `skip_api_migrate = false` in that
+   environment’s terraform variables / tfvars and `terraform apply`
    (prefer this over Console-only edits — the next terraform apply would reset a Console-only change).
 7. Re-run webapp Cloud Build (or push a no-op commit); confirm migrate step succeeds
-   (`--wait` so deploy does not proceed until migrate finishes).
+   (`jobs update` + `execute --wait` so deploy does not proceed until migrate finishes).
 8. Smoke: login/auth + inference run.
 
 ## Staging cutover (after short dev soak)
 
 1. Cloud SQL **on-demand backup**
-2. Stamp staging the same way
-3. Set staging `_SKIP_API_MIGRATE=false` via terraform + apply
+2. Refresh staging `${ENV}-api-migrate` image (same as Option A above), then stamp
+3. Set **staging** `skip_api_migrate = false` via terraform + apply (dev can stay
+   `false` independently; prod stays `true` until stamped)
 4. Manual Cloud Build for webapp
 5. Smoke auth, inference, UI pages that use run metadata
 
@@ -132,9 +148,28 @@ prefix (`tests/alembic/revision_uniqueness_test.py`).
 ## Baseline and future model changes
 
 The baseline revision builds tables from the **current** SQLAlchemy `Base.metadata`
-(filtered to API tables). After this lands, any ORM column/table change for API-owned
-tables **must** ship as a **new** Alembic revision. Do not rely on editing the baseline
-or on `create_all` in cloud.
+(filtered to API tables). That is convenient for cutover but is a footgun once ORM
+models diverge: greenfield `upgrade head` can create columns in the baseline step
+and then fail on a later ALTER. After this lands:
+
+- Any ORM column/table change for API-owned tables **must** ship as a **new** Alembic revision.
+- Before the first post-cutover ALTER, keep models matching the baseline **or** freeze the baseline as explicit `op.create_table` DDL.
+- Do not rely on `create_all` in cloud (LOCAL only).
+- Baseline `downgrade()` is refused (would drop shared API tables).
+
+## Greenfield / empty MySQL
+
+`account_history` has an FK to `users`. On empty MySQL:
+
+1. Run **Laravel** migrations first (`users` and UI tables).
+2. Then `alembic upgrade head` for API tables.
+
+Shared Cloud SQL cutover environments already have `users`; stamp-first is the production path.
+
+## Job retries
+
+Both `${env}-migrate` (Laravel) and `${env}-api-migrate` (Alembic) use
+`max_retries = 0` so failed DDL is not auto-retried.
 
 ## Exclusions
 

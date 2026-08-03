@@ -42,12 +42,17 @@ API_TABLES = (
 
 
 def upgrade() -> None:
+    # Uses live Base.metadata (not frozen DDL). Safe for stamp-first cutover on
+    # existing DBs. Before the first post-cutover ALTER migration, either keep
+    # ORM models matching this baseline until that revision ships, or replace
+    # this body with explicit op.create_table DDL frozen at cutover.
     bind = op.get_bind()
     tables = [Base.metadata.tables[name] for name in API_TABLES]
     Base.metadata.create_all(bind=bind, tables=tables)
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    tables = [Base.metadata.tables[name] for name in API_TABLES]
-    Base.metadata.drop_all(bind=bind, tables=tables)
+    raise NotImplementedError(
+        "Baseline downgrade is refused — dropping API tables on shared Cloud SQL "
+        "is unsafe. Restore from backup instead."
+    )

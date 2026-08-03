@@ -41,6 +41,12 @@ variable "vpc_host_project" {
   type = string
 }
 
+variable "skip_api_migrate" {
+  description = "When true, webapp Cloud Build skips the api-migrate job (keep true until alembic stamp per env)."
+  type        = bool
+  default     = true
+}
+
 variable "vpc_host_network" {
   type = string
 }

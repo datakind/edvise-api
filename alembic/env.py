@@ -14,6 +14,7 @@ from sqlalchemy import pool, create_engine
 from sqlalchemy.engine.url import URL
 
 from webapp.database import Base
+from webapp.alembic_filters import include_object
 
 config = context.config
 
@@ -21,20 +22,6 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-
-# Tables Alembic must never create/drop/alter via autogenerate or baseline.
-# Laravel-only tables (teams, sessions, etc.) are not in Base.metadata, so
-# autogenerate will not see them; users is on AccountTable and must be excluded.
-EXCLUDED_TABLES = frozenset({"users"})
-
-
-def include_object(object, name, type_, reflected, compare_to):  # noqa: A002, ANN001
-    if type_ == "table":
-        if name in EXCLUDED_TABLES:
-            return False
-        if name and name.endswith("_backup"):
-            return False
-    return True
 
 
 def _require_env(name: str) -> str:

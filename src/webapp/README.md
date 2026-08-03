@@ -55,6 +55,10 @@ All data is stored in MySQL databases for dev/staging/prod, these are databases 
 
 **Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24. Cutover steps: [docs/ALEMBIC_CUTOVER.md](../docs/ALEMBIC_CUTOVER.md).
 
+In cloud (DEV/STAGING/PROD), schema changes for API-owned tables go through the
+`${env}-api-migrate` Cloud Run job (Alembic). App startup no longer runs
+`create_all` outside LOCAL — there is no startup self-heal for missing tables.
+
 ### Shared tables (same physical MySQL database as edvise-ui)
 
 | Table | DDL owner | Notes |
@@ -64,8 +68,12 @@ All data is stored in MySQL databases for dev/staging/prod, these are databases 
 
 ### Greenfield database bootstrap
 
-1. Run API migrations (`alembic upgrade head`) — API-owned tables including `inst`, `model`, `job`.
-2. Run UI migrations (`php artisan migrate`) — `users` and UI-only tables.
+`account_history` references `users.id`, so Laravel must create `users` first on empty MySQL:
+
+1. Run UI migrations (`php artisan migrate`) — `users` and UI-only tables.
+2. Run API migrations (`alembic upgrade head`) — API-owned tables including `inst`, `model`, `job`, `account_history`.
+
+For existing shared Cloud SQL, use stamp-first cutover — see [docs/ALEMBIC_CUTOVER.md](../docs/ALEMBIC_CUTOVER.md).
 
 At time of writing, the databases the API cares about and tracks, are as follows:
 

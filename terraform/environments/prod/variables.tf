@@ -62,3 +62,9 @@ variable "vpc_host_network" {
   description = "The name of the VPC host network"
   type        = string
 }
+
+variable "skip_api_migrate" {
+  description = "When true, webapp Cloud Build skips the api-migrate job. Keep true until this env is alembic-stamped."
+  type        = bool
+  default     = true
+}

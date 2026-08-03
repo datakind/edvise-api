@@ -66,10 +66,10 @@ resource "google_cloudbuild_trigger" "python_apps" {
   name            = "${var.environment}-${each.key}"
   description     = "Trigger for building and deploying ${each.key} service"
   service_account = var.cloudbuild_service_account_id
-  # Flip _SKIP_API_MIGRATE to "false" in terraform after alembic stamp (webapp only).
+  # Per-env via var.skip_api_migrate (tfvars). Keep true until that env is stamped.
   # Prefer terraform apply over Console-only changes so the next apply does not reset it.
   substitutions = each.key == "webapp" ? {
-    _SKIP_API_MIGRATE = "true"
+    _SKIP_API_MIGRATE = var.skip_api_migrate ? "true" : "false"
   } : {}
   dynamic "github" {
     for_each = var.environment == "dev" ? [1] : []
@@ -126,10 +126,13 @@ resource "google_cloudbuild_trigger" "python_apps" {
             echo "Skipping api-migrate (_SKIP_API_MIGRATE=true)"
             exit 0
           fi
-          gcloud run jobs deploy ${var.environment}-api-migrate \
+          # Prefer update+execute so a missing terraform-managed job fails closed
+          # (deploy can create a minimal job whose CMD is FastAPI, not alembic).
+          gcloud run jobs update ${var.environment}-api-migrate \
             --image=${var.region}-docker.pkg.dev/${var.project}/edvise-api/webapp:$COMMIT_SHA \
+            --region=${var.region}
+          gcloud run jobs execute ${var.environment}-api-migrate \
             --region=${var.region} \
-            --execute-now \
             --wait
           EOT
         ]
