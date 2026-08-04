@@ -66,6 +66,11 @@ resource "google_cloudbuild_trigger" "python_apps" {
   name            = "${var.environment}-${each.key}"
   description     = "Trigger for building and deploying ${each.key} service"
   service_account = var.cloudbuild_service_account_id
+  # Per-env via var.skip_api_migrate (tfvars). Keep true until that env is stamped.
+  # Prefer terraform apply over Console-only changes so the next apply does not reset it.
+  substitutions = each.key == "webapp" ? {
+    _SKIP_API_MIGRATE = var.skip_api_migrate ? "true" : "false"
+  } : {}
   dynamic "github" {
     for_each = var.environment == "dev" ? [1] : []
     content {
@@ -105,6 +110,33 @@ resource "google_cloudbuild_trigger" "python_apps" {
     step {
       name = "gcr.io/cloud-builders/docker"
       args = ["push", "${var.region}-docker.pkg.dev/${var.project}/edvise-api/${each.key}:latest"]
+    }
+    # Alembic migrate before webapp deploy. Skipped while _SKIP_API_MIGRATE=true
+    # (default) until the DB has been stamped — see docs/ALEMBIC_CUTOVER.md.
+    dynamic "step" {
+      for_each = each.key == "webapp" ? [1] : []
+      content {
+        id         = "RUN api-migrate job"
+        name       = "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+        entrypoint = "bash"
+        args = [
+          "-c",
+          <<-EOT
+          if [ "$${_SKIP_API_MIGRATE}" = "true" ]; then
+            echo "Skipping api-migrate (_SKIP_API_MIGRATE=true)"
+            exit 0
+          fi
+          # Prefer update+execute so a missing terraform-managed job fails closed
+          # (deploy can create a minimal job whose CMD is FastAPI, not alembic).
+          gcloud run jobs update ${var.environment}-api-migrate \
+            --image=${var.region}-docker.pkg.dev/${var.project}/edvise-api/webapp:$COMMIT_SHA \
+            --region=${var.region}
+          gcloud run jobs execute ${var.environment}-api-migrate \
+            --region=${var.region} \
+            --wait
+          EOT
+        ]
+      }
     }
     step {
       name = "gcr.io/cloud-builders/gcloud"
@@ -209,7 +241,8 @@ resource "google_cloudbuild_trigger" "frontend" {
         "${var.environment}-migrate",
         "--image=${var.region}-docker.pkg.dev/${var.project}/edvise-ui/frontend:$COMMIT_SHA",
         "--region=${var.region}",
-        "--execute-now"
+        "--execute-now",
+        "--wait"
       ]
     }
     step {
