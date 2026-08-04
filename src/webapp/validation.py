@@ -43,6 +43,7 @@ from edvise.data_audit.raw_course_grade_map import (
     resolve_es_grade_map,
 )
 from edvise.dataio.read import (
+    from_csv_file,
     read_raw_es_cohort_data,
     read_raw_es_course_data,
     read_raw_pdp_cohort_data,
@@ -639,13 +640,15 @@ def _read_pdp_course_edvise(
     converters = (
         (course_converter_func,) if course_converter_func is not None else ()
     ) + default_converters
+    raw_df = from_csv_file(path)
+    schema = pdp_edvise.get_edvise_schema_for_models(["COURSE"])
     last_error: Optional[Exception] = None
     for converter in converters:
         for fmt in PDP_COURSE_DTTM_FORMATS:
             try:
                 return read_raw_pdp_course_data(
-                    file_path=path,
-                    schema=pdp_edvise.get_edvise_schema_for_models(["COURSE"]),
+                    df=raw_df,
+                    schema=schema,
                     dttm_format=fmt,
                     converter_func=converter,
                     spark_session=None,
