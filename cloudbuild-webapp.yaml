@@ -1,8 +1,13 @@
 # Cloud Build config for webapp. Reused by per-environment triggers (dev, qa, staging, prod).
-# Each trigger sets _REGION and _ENVIRONMENT; deploys Cloud Run service "${_ENVIRONMENT}-webapp".
+# Each trigger sets _REGION, _ENVIRONMENT, and _SERVICE (Cloud Run service name).
+# Alembic: runs ${_ENVIRONMENT}-api-migrate before deploy unless _SKIP_API_MIGRATE=true.
+# Default skip=true so QA/unstamped envs are safe; set false on stamped env triggers only
+# (e.g. edvise-api-web-dev after alembic stamp). See docs/ALEMBIC_CUTOVER.md.
 substitutions:
   _REGION: us-east4
   _SERVICE: edvise-api
+  _ENVIRONMENT: dev
+  _SKIP_API_MIGRATE: "true"
 steps:
   - name: ghcr.io/astral-sh/uv:debian
     entrypoint: bash
@@ -30,6 +35,28 @@ steps:
     args:
       - push
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:latest"
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: RUN api-migrate job
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -e
+        if [ "${_SKIP_API_MIGRATE}" = "true" ]; then
+          echo "Skipping api-migrate (_SKIP_API_MIGRATE=true)"
+          exit 0
+        fi
+        IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
+        JOB="${_ENVIRONMENT}-api-migrate"
+        echo "Updating and executing Cloud Run job $${JOB} with $${IMAGE}"
+        # Prefer update+execute so a missing job fails closed (deploy would create a
+        # minimal job whose CMD is FastAPI, not alembic).
+        gcloud run jobs update "$${JOB}" \
+          --image="$${IMAGE}" \
+          --region="${_REGION}"
+        gcloud run jobs execute "$${JOB}" \
+          --region="${_REGION}" \
+          --wait
   - name: gcr.io/cloud-builders/gcloud
     args:
       - run

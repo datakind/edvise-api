@@ -11,12 +11,16 @@ See also: [DB_SCHEMA_CONTRACT.md](./DB_SCHEMA_CONTRACT.md).
 |-------|----------|
 | Alembic config | `alembic.ini`, `alembic/` |
 | Baseline revision | `alembic/versions/20260803_596894_baseline_api_tables.py` |
-| Cloud Run job | `${ENV}-api-migrate` (terraform `deployment` jobs) |
-| Cloud Build | webapp trigger runs api-migrate unless `_SKIP_API_MIGRATE=true` |
-| Skip flag | per-env terraform `skip_api_migrate` (default `true`) |
+| Cloud Run job | `${ENV}-api-migrate` (create via terraform or `gcloud run jobs create`) |
+| Cloud Build (live path) | `cloudbuild-webapp.yaml` on triggers like `edvise-api-web-dev` |
+| Skip flag | `_SKIP_API_MIGRATE` substitution (default `"true"` in the YAML) |
 | `create_all` | LOCAL only (`database.py` `setup_db`) |
 
-Default: **`skip_api_migrate = true`** so auto-deploy does not run `upgrade` before stamp.
+**Important:** pushes to `develop` deploy via **`edvise-api-web-dev`** + `cloudbuild-webapp.yaml`,
+not the terraform-inline `dev-webapp` trigger. Enable auto-migrate by setting that trigger’s
+`_SKIP_API_MIGRATE=false` **after** stamp (and only once `${env}-api-migrate` exists).
+
+Default in YAML: **`_SKIP_API_MIGRATE=true`** so QA / unstamped envs skip migrate.
 
 ## Local verification (before merge)
 
@@ -103,20 +107,28 @@ Or run the automated check: `uv run pytest tests/alembic -q`
    alembic upgrade head   # expect no-op
    ```
 
-5. Verify: `SELECT * FROM alembic_version;` → `20260803_596894`
-6. Flip skip off **for this env only**: set `skip_api_migrate = false` in that
-   environment’s terraform variables / tfvars and `terraform apply`
-   (prefer this over Console-only edits — the next terraform apply would reset a Console-only change).
-7. Re-run webapp Cloud Build (or push a no-op commit); confirm migrate step succeeds
-   (`jobs update` + `execute --wait` so deploy does not proceed until migrate finishes).
+5. Verify stamp (pick one):
+   - `gcloud run jobs execute ${ENV}-api-migrate --region=${REGION} --args=current --wait`
+     and check logs for `20260803_596894`
+   - or `SELECT * FROM alembic_version;` → `20260803_596894`
+6. Enable auto-migrate on the **live** webapp trigger (Console):
+   - Trigger: `edvise-api-web-dev` (project `dev-sst-02`)
+   - Substitution: `_SKIP_API_MIGRATE` = `false`
+   - Leave other env triggers at `true` until those DBs are stamped and have
+     `${_ENVIRONMENT}-api-migrate`.
+   - Do **not** rely on a full `dev-terraform` apply to flip this; that apply can
+     reconcile large unrelated drift. Prefer Console (or a narrowly scoped change).
+7. Re-run webapp Cloud Build (or push a no-op commit); confirm the
+   `RUN api-migrate job` step updates/executes `${_ENVIRONMENT}-api-migrate` with
+   `--wait` before deploy.
 8. Smoke: login/auth + inference run.
 
 ## Staging cutover (after short dev soak)
 
 1. Cloud SQL **on-demand backup**
-2. Refresh staging `${ENV}-api-migrate` image (same as Option A above), then stamp
-3. Set **staging** `skip_api_migrate = false` via terraform + apply (dev can stay
-   `false` independently; prod stays `true` until stamped)
+2. Ensure staging `${ENV}-api-migrate` exists; refresh image, then stamp
+3. Set that staging webapp trigger’s `_SKIP_API_MIGRATE=false` (Console), leave
+   prod/other envs at `true` until stamped
 4. Manual Cloud Build for webapp
 5. Smoke auth, inference, UI pages that use run metadata
 
