@@ -151,14 +151,17 @@ Existing DBs that already have API tables must **stamp** once before the first d
 
 ## Creating future migrations
 
+Alembic’s stock CLI invents bare 12-hex revision ids. Use the project wrapper
+so new ids are `YYYYMMDD_<6hex>` (same shape as baseline `20260803_596894`):
+
 ```bash
-# Prefer Alembic's generator so revision ids stay unique (random hex by default):
-uv run alembic revision -m "add_foo_column"
+uv run edvise-alembic revision -m "add_foo_column"
 ```
 
-This baseline uses a date + short hash (`20260803_596894`) for readability;
-new revisions from `alembic revision` typically look like `a1b2c3d4e5f6_…`
-without a date prefix — that is expected and still unique.
+That is a thin wrapper around Alembic (`src/webapp/alembic_cli.py`) that only
+changes how revision ids are generated. All other Alembic commands work the
+same (`uv run edvise-alembic upgrade head`, `current`, etc.), or you can keep
+using `uv run alembic …` for non-revision commands.
 
 CI / pytest also checks that revision ids are unique and match the filename
 prefix (`tests/alembic/revision_uniqueness_test.py`).
