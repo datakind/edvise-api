@@ -431,7 +431,7 @@ def test_read_pdp_course_edvise_success_returns_dataframe() -> None:
 def test_read_pdp_course_edvise_all_attempts_fail_raises_hard_validation_error() -> (
     None
 ):
-    """When all converter/format attempts raise ValueError, HardValidationError is raised."""
+    """When all converter attempts raise ValueError, HardValidationError is raised."""
     with patch(
         "src.webapp.validation.read_raw_pdp_course_data",
         side_effect=ValueError("bad datetime"),
@@ -445,23 +445,18 @@ def test_read_pdp_course_edvise_all_attempts_fail_raises_hard_validation_error()
 
 
 def test_read_pdp_course_edvise_falls_back_after_custom_converter_fails() -> None:
-    """When custom converter fails all datetime formats, default PDP converter is used."""
+    """When custom converter fails, default PDP converter is used."""
     expected = pd.DataFrame({"course_id": ["c1"]})
     with patch(
         "src.webapp.validation.read_raw_pdp_course_data",
-        side_effect=[
-            ValueError("bad datetime"),
-            ValueError("bad datetime"),
-            ValueError("bad datetime"),
-            expected,
-        ],
+        side_effect=[ValueError("bad converter"), expected],
     ) as mock_read:
         result = _read_pdp_course_edvise(
             "/path.csv",
             course_converter_func=lambda df: df,  # noqa: ARG005
         )
     pd.testing.assert_frame_equal(result, expected)
-    assert mock_read.call_count == 4
+    assert mock_read.call_count == 2
 
 
 def test_read_pdp_course_edvise_custom_converter_tried_first() -> None:
