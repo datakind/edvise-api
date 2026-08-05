@@ -1,8 +1,10 @@
 # Cloud Build config for webapp. Reused by per-environment triggers (dev, qa, staging, prod).
 # Each trigger sets _REGION, _ENVIRONMENT, and _SERVICE (Cloud Run service name).
-# Alembic: runs ${_ENVIRONMENT}-api-migrate before deploy unless _SKIP_API_MIGRATE=true.
-# Default skip=true so QA/unstamped envs are safe; set false on stamped env triggers only
-# (e.g. edvise-api-web-dev after alembic stamp). See docs/ALEMBIC_CUTOVER.md.
+# Alembic: runs ${_ENVIRONMENT}-api-migrate before deploy only when _SKIP_API_MIGRATE=false.
+# Default skip is anything other than "false" so QA/unstamped envs are safe. Set
+# _SKIP_API_MIGRATE=false only on stamped env triggers (e.g. edvise-api-web-dev after
+# alembic stamp), and only when that trigger's _ENVIRONMENT matches the intended DB/job
+# (QA must not reuse _ENVIRONMENT=dev while skip is false). See docs/ALEMBIC_CUTOVER.md.
 substitutions:
   _REGION: us-east4
   _SERVICE: edvise-api
@@ -10,6 +12,7 @@ substitutions:
   _SKIP_API_MIGRATE: "true"
 steps:
   - name: ghcr.io/astral-sh/uv:debian
+    id: upgrade-edvise-lock
     entrypoint: bash
     args:
       - -c
@@ -18,6 +21,8 @@ steps:
         apt-get update && apt-get install -y --no-install-recommends git
         uv lock --upgrade-package edvise
   - name: gcr.io/cloud-builders/docker
+    id: build-webapp
+    waitFor: ["upgrade-edvise-lock"]
     args:
       - build
       - "-f"
@@ -28,22 +33,28 @@ steps:
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:latest"
       - .
   - name: gcr.io/cloud-builders/docker
+    id: push-webapp-sha
+    waitFor: ["build-webapp"]
     args:
       - push
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
   - name: gcr.io/cloud-builders/docker
+    id: push-webapp-latest
+    waitFor: ["build-webapp"]
     args:
       - push
       - "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:latest"
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     id: RUN api-migrate job
+    waitFor: ["push-webapp-sha"]
     entrypoint: bash
     args:
       - -c
       - |
         set -e
-        if [ "${_SKIP_API_MIGRATE}" = "true" ]; then
-          echo "Skipping api-migrate (_SKIP_API_MIGRATE=true)"
+        # Fail-closed toward skip: only run migrate when explicitly "false".
+        if [ "${_SKIP_API_MIGRATE}" != "false" ]; then
+          echo "Skipping api-migrate (_SKIP_API_MIGRATE=${_SKIP_API_MIGRATE})"
           exit 0
         fi
         IMAGE="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/webapp:$COMMIT_SHA"
@@ -52,12 +63,16 @@ steps:
         # Prefer update+execute so a missing job fails closed (deploy would create a
         # minimal job whose CMD is FastAPI, not alembic).
         gcloud run jobs update "$${JOB}" \
+          --project="${PROJECT_ID}" \
           --image="$${IMAGE}" \
           --region="${_REGION}"
         gcloud run jobs execute "$${JOB}" \
+          --project="${PROJECT_ID}" \
           --region="${_REGION}" \
           --wait
   - name: gcr.io/cloud-builders/gcloud
+    id: deploy-webapp
+    waitFor: ["RUN api-migrate job"]
     args:
       - run
       - deploy
@@ -67,6 +82,8 @@ steps:
       - "--region"
       - "${_REGION}"
   - name: curlimages/curl
+    id: notify-slack
+    waitFor: ["deploy-webapp"]
     args:
       - "-X"
       - POST
@@ -78,7 +95,6 @@ steps:
         {"text":"🚀 $TRIGGER_NAME → *$REPO_NAME* deployed · `$BRANCH_NAME`"}
       - >-
         https://hooks.slack.com/triggers/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
-    id: notify-slack
 timeout: 600s
 options:
   logging: CLOUD_LOGGING_ONLY

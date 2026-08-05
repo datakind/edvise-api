@@ -59,20 +59,23 @@ Or run the automated check: `uv run pytest tests/alembic -q`
 
 ## Dev cutover (merge day)
 
-1. Merge this PR to `develop` (auto-deploy; migrate step **skipped** while
-   `skip_api_migrate=true`).
-2. Ensure terraform has applied so `${env}-api-migrate` exists.
+1. Merge Alembic + (this) Cloud Build PR to `develop`. Auto-deploy uses
+   **`edvise-api-web-dev`** + `cloudbuild-webapp.yaml`; migrate stays **skipped**
+   while `_SKIP_API_MIGRATE` is not exactly `false` (YAML default `"true"`).
+   Ignore the terraform-inline `${env}-webapp` trigger for enablement — it is
+   not the live develop deploy path.
+2. Ensure `${env}-api-migrate` exists (prefer `gcloud run jobs create` mirroring
+   webapp DB/VPC wiring, or a narrowly scoped terraform change). Avoid a full
+   blind `dev-terraform` apply — live GCP has substantial drift from the
+   checked-in modules.
    - The `${env}-terraform` Cloud Build trigger is **manual** (not push-on-develop).
-   - Run that trigger, or `terraform apply` in `terraform/environments/dev`.
 3. Export / compare **dev** DDL to the schema contract if not already done.
 4. Stamp (pick one):
 
    **Option A — Cloud Run job** (required: refresh the job image first).
 
-   Terraform creates `${ENV}-api-migrate` once, then **ignores** later image
-   changes on the job. While Cloud Build skips migrate, it never updates that
-   image either. Before stamp, point the job at a post-merge webapp image that
-   contains Alembic:
+   The job image may lag the latest webapp build. Before stamp, point the job
+   at a post-merge webapp image that contains Alembic:
 
    ```bash
    # Use the COMMIT_SHA (or :latest) from the merge deploy that includes alembic/
@@ -114,10 +117,13 @@ Or run the automated check: `uv run pytest tests/alembic -q`
 6. Enable auto-migrate on the **live** webapp trigger (Console):
    - Trigger: `edvise-api-web-dev` (project `dev-sst-02`)
    - Substitution: `_SKIP_API_MIGRATE` = `false`
-   - Leave other env triggers at `true` until those DBs are stamped and have
-     `${_ENVIRONMENT}-api-migrate`.
-   - Do **not** rely on a full `dev-terraform` apply to flip this; that apply can
-     reconcile large unrelated drift. Prefer Console (or a narrowly scoped change).
+   - Confirm that trigger’s `_ENVIRONMENT` is the env you stamped (e.g. `dev`).
+   - **Do not** set `_SKIP_API_MIGRATE=false` on `edvise-api-web-qa` (or other
+     shared-YAML triggers) while their `_ENVIRONMENT` still points at `dev` —
+     that would run `dev-api-migrate` from a QA deploy.
+   - Leave other env triggers without `false` until those DBs are stamped and
+     have `${_ENVIRONMENT}-api-migrate`.
+   - Do **not** rely on a full `dev-terraform` apply to flip this.
 7. Re-run webapp Cloud Build (or push a no-op commit); confirm the
    `RUN api-migrate job` step updates/executes `${_ENVIRONMENT}-api-migrate` with
    `--wait` before deploy.
