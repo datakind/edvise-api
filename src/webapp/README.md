@@ -53,7 +53,10 @@ In the long-term, look into a way to have the API key --> token conversion be ha
 
 All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/edvise-api/blob/develop/src/webapp/database.py).
 
-**Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24. Cutover steps: [docs/ALEMBIC_CUTOVER.md](../docs/ALEMBIC_CUTOVER.md).
+**Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24.
+
+**Adding / testing a migration locally:** [docs/ALEMBIC.md](../docs/ALEMBIC.md).  
+**Cloud cutover / stamp / migrate-on-deploy:** [docs/ALEMBIC_CUTOVER.md](../docs/ALEMBIC_CUTOVER.md).
 
 In cloud (DEV/STAGING/PROD), schema changes for API-owned tables go through the
 `${env}-api-migrate` Cloud Run job (Alembic). App startup no longer runs
