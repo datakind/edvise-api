@@ -1,5 +1,8 @@
 # Alembic cutover runbook (edvise-api)
 
+**Looking for day-to-day “how do I add a migration locally?”**  
+→ Use **[ALEMBIC.md](./ALEMBIC.md)** (this file is the Cloud SQL cutover / deploy runbook).
+
 Phase 1: API-owned tables are migrated with Alembic. Shared Cloud SQL `all_tables`
 still holds UI tables; Laravel continues to own `users` DDL.
 
@@ -151,17 +154,12 @@ Existing DBs that already have API tables must **stamp** once before the first d
 
 ## Creating future migrations
 
-```bash
-# Prefer Alembic's generator so revision ids stay unique (random hex by default):
-uv run alembic revision -m "add_foo_column"
-```
+Step-by-step local develop + test instructions live in **[ALEMBIC.md](./ALEMBIC.md)**.
 
-This baseline uses a date + short hash (`20260803_596894`) for readability;
-new revisions from `alembic revision` typically look like `a1b2c3d4e5f6_…`
-without a date prefix — that is expected and still unique.
-
-CI / pytest also checks that revision ids are unique and match the filename
-prefix (`tests/alembic/revision_uniqueness_test.py`).
+Summary: use `uv run edvise-alembic revision -m "..."` (dated `YYYYMMDD_<hash>`
+ids), fill in `upgrade()` / `downgrade()`, then `uv run alembic upgrade head`
+against `alembic_local.db`. CI checks revision id uniqueness
+(`tests/alembic/revision_uniqueness_test.py`).
 
 ## Baseline and future model changes
 
