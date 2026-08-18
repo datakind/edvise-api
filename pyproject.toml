@@ -31,7 +31,7 @@ dependencies = [
     "mlflow~=2.22",
     "cachetools",
     "types-cachetools",
-    "edvise~=1.9.0",
+    "edvise~=1.9.1",
 ]
 
 [project.urls]
