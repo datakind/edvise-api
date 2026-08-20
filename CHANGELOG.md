@@ -1,3 +1,11 @@
+## 1.5.0 (2026-08-10)
+- feat: cut over DB schema management to Alembic with `api-migrate` and skip flag (#286)
+- feat: enable Alembic `api-migrate` on webapp Cloud Build (#289)
+- feat: add `edvise-alembic` CLI for dated revision ids (#291)
+- perf: stop reloading PDP course CSV for each datetime format during validation (#290)
+- ci: bump stale edvise major/minor pin on release branches (#280)
+- docs: add Alembic day-to-day local migration guide (#291)
+
 ## 1.4.0 (2026-07-28)
 - feat: update PDP Inference pipeline name for versioned inference pipeline (#272)
 - fix: send correct notification parameter names to PDP inference launcher (#281)
