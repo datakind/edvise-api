@@ -46,6 +46,14 @@ locals {
       image   = var.frontend_image
       command = ["launcher"]
       args    = ["php artisan migrate --force"]
+      runtime = "laravel"
+    },
+    {
+      name    = "api-migrate"
+      image   = var.webapp_image
+      command = ["alembic"]
+      args    = ["upgrade", "head"]
+      runtime = "python"
     }
   ]
 }
@@ -59,6 +67,9 @@ module "jobs" {
   command       = each.value.command
   args          = each.value.args
   image         = each.value.image
+  runtime       = each.value.runtime
+  # DDL jobs should not auto-retry (Laravel migrate + Alembic api-migrate).
+  max_retries   = 0
   environment   = var.environment
   region        = var.region
   database_name = var.database_name
@@ -239,6 +250,7 @@ module "cloudbuild" {
   subnet_ip_cidr_range = var.subnet_ip_cidr_range
   vpc_host_network     = var.vpc_host_network
   vpc_host_project     = var.vpc_host_project
+  skip_api_migrate     = var.skip_api_migrate
 
   cloudbuild_service_account_id = module.iam.cloudbuild_service_account_id
   terraform_service_account_id  = module.iam.terraform_service_account_id

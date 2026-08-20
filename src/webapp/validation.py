@@ -57,15 +57,8 @@ PDPConverterFunc = Optional[Callable[[pd.DataFrame], pd.DataFrame]]
 
 
 def _default_pdp_course_duplicate_converter(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    PDP course duplicate cleanup for read_raw_pdp_course_data.
-
-    Passes the schema selector as the second *positional* argument so this works
-    with current edvise (``schema_type``) and older builds that used the same slot
-    for ``school_type``. Do not pass bare ``handling_duplicates`` as a converter:
-    read_raw_pdp_course_data calls ``converter_func(df)`` with a single argument.
-    """
-    return handling_duplicates(df, "pdp")
+    """PDP course duplicate cleanup for ``read_raw_pdp_course_data``."""
+    return handling_duplicates(df)
 
 
 # --------------------------------------------------------------------------- #
@@ -239,9 +232,6 @@ def _model_list_from_models(models: Union[str, List[str], None]) -> List[str]:
 # to None so PDP validated row sets can differ from batch jobs that use dataio
 # converters.
 # --------------------------------------------------------------------------- #
-
-# Datetime formats to try for PDP course (same order as pdp_data_audit)
-PDP_COURSE_DTTM_FORMATS = ("ISO8601", "%Y%m%d.0", "%Y%m%d")
 
 # Datetime formats for ES cohort/course (same order as es_data_audit)
 ES_DTTM_FORMATS = ("ISO8601", "%Y%m%d.0")
@@ -615,65 +605,39 @@ def _read_pdp_course_edvise(
     course_converter_func: PDPConverterFunc = None,
 ) -> pd.DataFrame:
     """
-    Read and validate a PDP course CSV using edvise helpers.
+    Read and validate a PDP course CSV via :func:`read_raw_pdp_course_data`.
 
-    Tries each value in ``PDP_COURSE_DTTM_FORMATS`` with each converter: optional
-    ``course_converter_func`` first, then :func:`_default_pdp_course_duplicate_converter`.
-
-    Batch PDP jobs may also try school-specific converters from ``dataio``; this
-    path only runs converters passed in here, so results may differ from those jobs.
+    Uses the COURSE schema and ``course_converter_func`` when provided, otherwise
+    :func:`_default_pdp_course_duplicate_converter`.
 
     Args:
         path: Path to course CSV.
-        course_converter_func: Optional school-specific converter; if None, only the
-            default duplicate-handling converter is used.
+        course_converter_func: Optional school-specific converter.
 
     Returns:
-        Validated DataFrame from ``read_raw_pdp_course_data`` for the first successful
-        converter and datetime format.
+        Validated DataFrame.
 
     Raises:
-        HardValidationError: If every converter and format combination fails.
+        HardValidationError: If the file cannot be read or validated.
     """
-    default_converters = (_default_pdp_course_duplicate_converter,)
-    converters = (
-        (course_converter_func,) if course_converter_func is not None else ()
-    ) + default_converters
-    last_error: Optional[Exception] = None
-    for converter in converters:
-        for fmt in PDP_COURSE_DTTM_FORMATS:
-            try:
-                return read_raw_pdp_course_data(
-                    file_path=path,
-                    schema=pdp_edvise.get_edvise_schema_for_models(["COURSE"]),
-                    dttm_format=fmt,
-                    converter_func=converter,
-                    spark_session=None,
-                )
-            except ValueError as e:
-                last_error = e
-            except TypeError as e:
-                if "school_type" in str(e) or "schema_type" in str(e):
-                    last_error = None
-                    break
-                raise
-    error_message = (
-        "Course data did not parse with any known datetime format."
-        if last_error is not None
-        else "Course validation failed (datetime format or schema)."
+    converter = (
+        course_converter_func
+        if course_converter_func is not None
+        else _default_pdp_course_duplicate_converter
     )
-    validation_error = HardValidationError(
-        schema_errors=error_message,
-        failure_cases=[str(last_error)] if last_error else [],
-    )
-    logger.error(
-        "PDP course validation failed: path=%s, last_error=%s",
-        path,
-        last_error,
-    )
-    if last_error is not None:
-        raise validation_error from last_error
-    raise validation_error
+    try:
+        return read_raw_pdp_course_data(
+            file_path=path,
+            schema=pdp_edvise.get_edvise_schema_for_models(["COURSE"]),
+            converter_func=converter,
+            spark_session=None,
+        )
+    except ValueError as e:
+        logger.error("PDP course validation failed: path=%s, error=%s", path, e)
+        raise HardValidationError(
+            schema_errors=str(e),
+            failure_cases=[str(e)],
+        ) from e
 
 
 def _validate_edvise_with_repo_schema(

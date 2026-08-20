@@ -4,7 +4,10 @@ Canonical DDL and ownership rules for the **shared Cloud SQL database** used by 
 
 **Staging verified:** 2026-06-24 against Cloud SQL database `all_tables` (staging instance). Evidence: workspace `github/docs/dbtables/` (`SHOW CREATE TABLE` CSV exports).
 
-See also: migration plan in workspace `github/.cursor/docs/database_table_ownership.md`.
+See also:
+- Day-to-day Alembic how-to: [ALEMBIC.md](./ALEMBIC.md)
+- Cutover / stamp runbook: [ALEMBIC_CUTOVER.md](./ALEMBIC_CUTOVER.md)
+- Migration plan in workspace `github/.cursor/docs/database_table_ownership.md`
 
 ---
 

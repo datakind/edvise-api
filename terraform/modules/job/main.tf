@@ -9,58 +9,162 @@ resource "google_cloud_run_v2_job" "migrate" {
       containers {
         command = var.command
         args    = var.args
+        image   = var.image
 
-        env {
-          name  = "DB_USERNAME"
-          value = "root"
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "DB_USERNAME"
+            value = "root"
+          }
         }
 
-        env {
-          name  = "DB_DATABASE"
-          value = var.database_name
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "DB_DATABASE"
+            value = var.database_name
+          }
         }
 
-        env {
-          name  = "DB_HOST"
-          value = var.database_instance_private_ip
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "DB_HOST"
+            value = var.database_instance_private_ip
+          }
         }
 
-        env {
-          name  = "DB_CONNECTION"
-          value = "mysql"
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "DB_CONNECTION"
+            value = "mysql"
+          }
         }
 
-        env {
-          name  = "DB_PORT"
-          value = "3306"
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "DB_PORT"
+            value = "3306"
+          }
         }
 
-        env {
-          name  = "SSL_CA_PATH"
-          value = "\"/var/www/html/certs/server/server-ca.pem\""
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "SSL_CA_PATH"
+            value = "\"/var/www/html/certs/server/server-ca.pem\""
+          }
         }
 
-        env {
-          name  = "SSL_KEY_PATH"
-          value = "\"/var/www/html/certs/key/client-key.pem\""
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "SSL_KEY_PATH"
+            value = "\"/var/www/html/certs/key/client-key.pem\""
+          }
         }
 
-        env {
-          name  = "SSL_CERT_PATH"
-          value = "\"/var/www/html/certs/cert/client-cert.pem\""
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name  = "SSL_CERT_PATH"
+            value = "\"/var/www/html/certs/cert/client-cert.pem\""
+          }
         }
 
-        env {
-          name = "DB_PASSWORD"
-          value_source {
-            secret_key_ref {
-              secret  = var.database_password_secret_id
-              version = "latest"
+        dynamic "env" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            name = "DB_PASSWORD"
+            value_source {
+              secret_key_ref {
+                secret  = var.database_password_secret_id
+                version = "latest"
+              }
             }
           }
         }
 
-        image = var.image
+        # Python / Alembic (mirrors webapp service env)
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "ENV"
+            value = upper(var.environment)
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "DB_USER"
+            value = "root"
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "DB_NAME"
+            value = var.database_name
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "INSTANCE_HOST"
+            value = var.database_instance_private_ip
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "DB_PORT"
+            value = "3306"
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "DB_ROOT_CERT"
+            value = "/vol_mt/certs/server/server-ca.pem"
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "DB_CERT"
+            value = "/vol_mt/certs/cert/client-cert.pem"
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name  = "DB_KEY"
+            value = "/vol_mt/certs/key/client-key.pem"
+          }
+        }
+
+        dynamic "env" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            name = "DB_PASS"
+            value_source {
+              secret_key_ref {
+                secret  = var.database_password_secret_id
+                version = "latest"
+              }
+            }
+          }
+        }
 
         resources {
           limits = {
@@ -69,19 +173,52 @@ resource "google_cloud_run_v2_job" "migrate" {
           }
         }
 
-        volume_mounts {
-          mount_path = "/var/www/html/certs/cert"
-          name       = "${var.environment}-client-cert-red-rok-fuj"
+        dynamic "volume_mounts" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            mount_path = "/var/www/html/certs/cert"
+            name       = "${var.environment}-client-cert-red-rok-fuj"
+          }
         }
 
-        volume_mounts {
-          mount_path = "/var/www/html/certs/key"
-          name       = "${var.environment}-client-key-tax-gap-beq"
+        dynamic "volume_mounts" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            mount_path = "/var/www/html/certs/key"
+            name       = "${var.environment}-client-key-tax-gap-beq"
+          }
         }
 
-        volume_mounts {
-          mount_path = "/var/www/html/certs/server"
-          name       = "${var.environment}-server-ca-vah-faw-wup"
+        dynamic "volume_mounts" {
+          for_each = var.runtime == "laravel" ? [1] : []
+          content {
+            mount_path = "/var/www/html/certs/server"
+            name       = "${var.environment}-server-ca-vah-faw-wup"
+          }
+        }
+
+        dynamic "volume_mounts" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            mount_path = "/vol_mt/certs/cert"
+            name       = "${var.environment}-client-cert-red-rok-fuj"
+          }
+        }
+
+        dynamic "volume_mounts" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            mount_path = "/vol_mt/certs/key"
+            name       = "${var.environment}-client-key-tax-gap-beq"
+          }
+        }
+
+        dynamic "volume_mounts" {
+          for_each = var.runtime == "python" ? [1] : []
+          content {
+            mount_path = "/vol_mt/certs/server"
+            name       = "${var.environment}-server-ca-vah-faw-wup"
+          }
         }
 
         volume_mounts {
@@ -91,7 +228,7 @@ resource "google_cloud_run_v2_job" "migrate" {
       }
 
       execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
-      max_retries           = 3
+      max_retries           = var.max_retries
       service_account       = var.cloudrun_service_account_email
       timeout               = "600s"
 
@@ -151,6 +288,7 @@ resource "google_cloud_run_v2_job" "migrate" {
     }
   }
   # This is a workaround to avoid unnecessary updates to the container image
+  # (Cloud Build deploys new images out-of-band).
   lifecycle {
     ignore_changes = [
       template[0].template[0].containers[0].image,

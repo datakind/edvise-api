@@ -53,19 +53,30 @@ In the long-term, look into a way to have the API key --> token conversion be ha
 
 All data is stored in MySQL databases for dev/staging/prod, these are databases in GCP's Cloud SQL. In the local environment, the database is sqlite. The main file you'll want to look at for database table definitions is [src/webapp/database.py](https://github.com/datakind/edvise-api/blob/develop/src/webapp/database.py).
 
-**Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24 (evidence: workspace `github/docs/dbtables/`). Re-export **dev** before Alembic stamp (PR 11).
+**Schema contract:** Shared and owned tables are documented in [docs/DB_SCHEMA_CONTRACT.md](../docs/DB_SCHEMA_CONTRACT.md). Update that file whenever `users` or `job` columns change. Staging `all_tables` DDL was verified 2026-06-24.
+
+**Adding / testing a migration locally:** [docs/ALEMBIC.md](../docs/ALEMBIC.md).  
+**Cloud cutover / stamp / migrate-on-deploy:** [docs/ALEMBIC_CUTOVER.md](../docs/ALEMBIC_CUTOVER.md).
+
+In cloud (DEV/STAGING/PROD), schema changes for API-owned tables go through the
+`${env}-api-migrate` Cloud Run job (Alembic). App startup no longer runs
+`create_all` outside LOCAL — there is no startup self-heal for missing tables.
 
 ### Shared tables (same physical MySQL database as edvise-ui)
 
 | Table | DDL owner | Notes |
 |-------|-----------|-------|
 | `users` | **edvise-ui** (Laravel) | API reads/writes via `AccountTable`; keep ORM in sync with UI migrations |
-| `job` | **edvise-api** (Alembic, Phase 1+) | API writes; UI may read until Phase 1.5 |
+| `job` | **edvise-api** (Alembic) | API writes; UI must use API endpoints for `model_run_id` (no MySQL `Job::find`) |
 
 ### Greenfield database bootstrap
 
-1. Run API migrations (`alembic upgrade head`) — API-owned tables including `inst`, `model`, `job`.
-2. Run UI migrations (`php artisan migrate`) — `users` and UI-only tables.
+`account_history` references `users.id`, so Laravel must create `users` first on empty MySQL:
+
+1. Run UI migrations (`php artisan migrate`) — `users` and UI-only tables.
+2. Run API migrations (`alembic upgrade head`) — API-owned tables including `inst`, `model`, `job`, `account_history`.
+
+For existing shared Cloud SQL, use stamp-first cutover — see [docs/ALEMBIC_CUTOVER.md](../docs/ALEMBIC_CUTOVER.md).
 
 At time of writing, the databases the API cares about and tracks, are as follows:
 
@@ -76,7 +87,7 @@ At time of writing, the databases the API cares about and tracks, are as follows
 * File Table ("file"): tracks files
 * Batch Table ("batch"): tracks batches
 * Model Table ("model"): tracks models
-* Job Table ("job"): **SHARED WITH THE FRONTEND** (DDL owned by API after Phase 1). Tracks Databricks inference runs (`run_id`, `model_run_id`). API writes; UI reads for some pages until Phase 1.5. See [docs/DB_SCHEMA_CONTRACT.md](../../docs/DB_SCHEMA_CONTRACT.md).
+* Job Table ("job"): **SHARED DATA** (DDL owned by API / Alembic). Tracks Databricks inference runs (`run_id`, `model_run_id`). API writes; UI reads via API only. See [docs/DB_SCHEMA_CONTRACT.md](../../docs/DB_SCHEMA_CONTRACT.md) and [docs/ALEMBIC_CUTOVER.md](../../docs/ALEMBIC_CUTOVER.md).
 
 NOTE: naming convention is to use a singular descriptor for the table name, however, the "users" table has to follow Laravel's table naming convention, which has the users table called "users".
 

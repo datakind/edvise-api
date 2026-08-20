@@ -16,6 +16,7 @@ from pandera.errors import SchemaErrors
 
 from src.webapp.validation import (
     HardValidationError,
+    _default_pdp_course_duplicate_converter,
     _path_for_edvise_read,
     _read_pdp_course_edvise,
     _validate_edvise_with_repo_schema,
@@ -423,49 +424,30 @@ def test_read_pdp_course_edvise_success_returns_dataframe() -> None:
     with patch(
         "src.webapp.validation.read_raw_pdp_course_data",
         return_value=expected,
-    ):
+    ) as mock_read:
         result = _read_pdp_course_edvise("/nonexistent/path.csv")
     pd.testing.assert_frame_equal(result, expected)
+    assert mock_read.call_count == 1
+    assert (
+        mock_read.call_args[1]["converter_func"]
+        is _default_pdp_course_duplicate_converter
+    )
 
 
-def test_read_pdp_course_edvise_all_attempts_fail_raises_hard_validation_error() -> (
-    None
-):
-    """When all converter/format attempts raise ValueError, HardValidationError is raised."""
+def test_read_pdp_course_edvise_value_error_raises_hard_validation_error() -> None:
+    """ValueError from edvise is raised as HardValidationError with that message."""
     with patch(
         "src.webapp.validation.read_raw_pdp_course_data",
         side_effect=ValueError("bad datetime"),
     ):
-        with pytest.raises(HardValidationError, match="datetime format") as exc_info:
+        with pytest.raises(HardValidationError, match="bad datetime") as exc_info:
             _read_pdp_course_edvise("/nonexistent/path.csv")
-    assert (
-        "datetime" in str(exc_info.value.schema_errors).lower()
-        or "format" in str(exc_info.value.schema_errors).lower()
-    )
+    assert exc_info.value.schema_errors == "bad datetime"
+    assert exc_info.value.failure_cases == ["bad datetime"]
 
 
-def test_read_pdp_course_edvise_falls_back_after_custom_converter_fails() -> None:
-    """When custom converter fails all datetime formats, default PDP converter is used."""
-    expected = pd.DataFrame({"course_id": ["c1"]})
-    with patch(
-        "src.webapp.validation.read_raw_pdp_course_data",
-        side_effect=[
-            ValueError("bad datetime"),
-            ValueError("bad datetime"),
-            ValueError("bad datetime"),
-            expected,
-        ],
-    ) as mock_read:
-        result = _read_pdp_course_edvise(
-            "/path.csv",
-            course_converter_func=lambda df: df,  # noqa: ARG005
-        )
-    pd.testing.assert_frame_equal(result, expected)
-    assert mock_read.call_count == 4
-
-
-def test_read_pdp_course_edvise_custom_converter_tried_first() -> None:
-    """When course_converter_func is provided, it is tried before default converters."""
+def test_read_pdp_course_edvise_uses_custom_converter() -> None:
+    """When course_converter_func is provided, it is passed to edvise."""
     expected = pd.DataFrame({"course_id": ["c1"]})
     custom_converter = lambda df: df  # noqa: E731
     with patch(
@@ -476,6 +458,5 @@ def test_read_pdp_course_edvise_custom_converter_tried_first() -> None:
             "/path.csv", course_converter_func=custom_converter
         )
     pd.testing.assert_frame_equal(result, expected)
-    # Custom converter should have been used (first call succeeds)
     assert mock_read.call_count == 1
     assert mock_read.call_args[1]["converter_func"] is custom_converter
