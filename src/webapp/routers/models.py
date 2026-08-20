@@ -259,6 +259,26 @@ class InferenceRunRequest(BaseModel):
     # Legacy schools inference parameters (optional passthrough; ignored for PDP)
     config_file_name: str | None = None
     features_table_name: str | None = None
+    # Academic terms, e.g. ["fall 2024-25"]; omitted to use the pipeline config.
+    term_filter: list[str] | None = None
+
+
+def _validated_term_filter(term_filter: list[str] | None) -> list[str] | None:
+    """Validate and normalize an optional inference academic-term filter."""
+    if term_filter is None:
+        return None
+    if not term_filter:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one term is required when term_filter is provided.",
+        )
+    normalized = [str(label).strip().lower() for label in term_filter]
+    if any(not label for label in normalized):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="term_filter values must be non-empty strings.",
+        )
+    return normalized
 
 
 # Model related operations. Or model specific data.
@@ -759,12 +779,13 @@ def trigger_inference_run(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
-    """Returns top-level info around all executions of a given model.
+    """Trigger inference, optionally limited to academic terms.
 
     Only visible to users of that institution or Datakinder access types.
     """
     model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
+    term_filter = _validated_term_filter(req.term_filter)
     local_session.set(sql_session)
     inst_result = (
         local_session.get()
@@ -867,6 +888,7 @@ def trigger_inference_run(
             batch_id=uuid_to_str(batch.id),
             validated_blob_paths=batch_input_validated_blob_paths(batch.files),
             is_genai_institution=bool(genai_id),
+            term_filter=term_filter,
         )
         try:
             if is_legacy:
@@ -881,6 +903,12 @@ def trigger_inference_run(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Databricks {op} error. Error = {str(e)}",
             ) from e
+        logging.info(
+            "run-inference: user=%s term_filter=%s job_run_id=%s",
+            current_user.email,
+            term_filter,
+            res.job_run_id,
+        )
         triggered_timestamp = datetime.now()
         latest_model_version = databricks_control.fetch_model_version(
             catalog_name=str(env_vars["CATALOG_NAME"]),
@@ -954,7 +982,7 @@ def trigger_inference_run(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unexpected number of batches found: Expected 1, got "
-            + str(len(inst_result)),
+            + str(len(batch_result)),
         )
     # inst_file_schemas = [x.schemas for x in batch_result[0][0].files]
     inst_file_schemas = [list({s for f in batch_result[0][0].files for s in f.schemas})]
@@ -979,6 +1007,7 @@ def trigger_inference_run(
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
+        term_filter=term_filter,
     )
     try:
         res = databricks_control.run_pdp_inference(pdp_db_req)
@@ -989,6 +1018,12 @@ def trigger_inference_run(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Databricks run_pdp_inference error. Error = {str(e)}",
         ) from e
+    logging.info(
+        "run-inference: user=%s term_filter=%s job_run_id=%s",
+        current_user.email,
+        term_filter,
+        res.job_run_id,
+    )
     triggered_timestamp = datetime.now()
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),

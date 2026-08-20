@@ -3,7 +3,7 @@
 import json
 import uuid
 from datetime import datetime, date
-from typing import Annotated, Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Query
 from sqlalchemy import and_, false, or_
@@ -33,6 +33,7 @@ from ..utilities import (
     decode_url_piece,
     expand_batch_file_name_lookups,
     file_name_variants_for_lookup,
+    SchemaType,
 )
 
 from ..database import (
@@ -53,7 +54,7 @@ from ..databricks import (
 from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
-from ..config import env_vars
+from ..config import ENV_TO_VOLUME_SCHEMA, env_vars
 from edvise.data_audit.eda import EdaSummary
 
 # Set the logging
@@ -436,6 +437,363 @@ class DataOverview(BaseModel):
 
     batches: list[BatchInfo]
     files: list[DataInfo]
+
+
+class EligibleInferenceTerm(BaseModel):
+    """An academic term with students eligible for inference."""
+
+    term_label: str
+    valid_student_count: int
+
+
+class EligibleInferenceTermsResponse(BaseModel):
+    """Eligible academic terms for a model and input batch."""
+
+    status: Literal["valid", "invalid"]
+    batch_name: str | None = None
+    terms: list[EligibleInferenceTerm] = Field(default_factory=list)
+    reason: str | None = None
+
+
+_ACADEMIC_TERM_ORDER = {"FALL": 1, "WINTER": 2, "SPRING": 3, "SUMMER": 4}
+
+
+def _invalid_eligible_terms(
+    reason: str, batch_name: str | None = None
+) -> EligibleInferenceTermsResponse:
+    """Build a consistent invalid eligible-terms response."""
+    logger.warning("Eligible inference terms unavailable: %s", reason)
+    return EligibleInferenceTermsResponse(
+        status="invalid",
+        batch_name=batch_name,
+        reason=reason,
+    )
+
+
+def _batch_has_student_and_course(batch: BatchTable) -> bool:
+    """Return whether a batch contains student and course input files."""
+    schemas = {
+        str(schema)
+        for file_record in batch.files
+        if not file_record.sst_generated and not file_record.deleted
+        for schema in file_record.schemas
+    }
+    return SchemaType.STUDENT.value in schemas and SchemaType.COURSE.value in schemas
+
+
+def _academic_year_sort_value(value: object) -> int:
+    """Return the ending year from an academic-year label."""
+    years = re.findall(r"\d{2,4}", str(value))
+    if not years:
+        return -1
+    year = int(years[-1])
+    return year if year >= 100 else 2000 + year
+
+
+def _shared_student_id_column(
+    students: pd.DataFrame,
+    courses: pd.DataFrame,
+) -> str | None:
+    """Return a supported student identifier present in both DataFrames."""
+    for column in ("student_id", "study_id"):
+        if column in students.columns and column in courses.columns:
+            return column
+    return None
+
+
+def _exclude_training_cohorts(
+    students: pd.DataFrame,
+    training_cohorts: list[str],
+) -> tuple[pd.DataFrame, str | None]:
+    """Exclude students whose entry cohort was used for model training."""
+    if not training_cohorts:
+        return students, None
+    if {"cohort", "cohort_term"}.issubset(students.columns):
+        year_column, term_column = "cohort", "cohort_term"
+    elif {"entry_year", "entry_term"}.issubset(students.columns):
+        year_column, term_column = "entry_year", "entry_term"
+    else:
+        return (
+            students.iloc[0:0],
+            "Student file is missing entry cohort columns needed to exclude training cohorts.",
+        )
+
+    labels = (
+        students[term_column].astype(str).str.strip().str.lower()
+        + " "
+        + students[year_column].astype(str).str.strip().str.lower()
+    )
+    excluded = {str(label).strip().lower() for label in training_cohorts}
+    return students.loc[~labels.isin(excluded)].copy(), None
+
+
+def _apply_student_criteria(
+    students: pd.DataFrame,
+    config: dict[str, Any],
+) -> tuple[pd.DataFrame, str | None]:
+    """Apply the training selection criteria to inference students."""
+    criteria = config.get("student_criteria")
+    if not isinstance(criteria, dict):
+        return students, None
+    missing = sorted(str(column) for column in criteria if column not in students)
+    if missing:
+        return (
+            students.iloc[0:0],
+            f"Missing columns for selection criteria: {', '.join(missing)}.",
+        )
+    filtered = students.copy()
+    for column, value in criteria.items():
+        if isinstance(value, list):
+            if all(isinstance(item, str) for item in value):
+                expected = {item.strip().casefold() for item in value}
+                normalized = (
+                    filtered[column]
+                    .astype("string")
+                    .str.strip()
+                    .str.casefold()
+                    .fillna("")
+                )
+                filtered = filtered[normalized.isin(expected)]
+            else:
+                filtered = filtered[filtered[column].isin(value)]
+        elif isinstance(value, str):
+            normalized = (
+                filtered[column].astype("string").str.strip().str.casefold().fillna("")
+            )
+            filtered = filtered[normalized == value.strip().casefold()]
+        else:
+            filtered = filtered[filtered[column] == value]
+    return filtered, None
+
+
+def resolve_eligible_inference_terms(
+    students: pd.DataFrame,
+    courses: pd.DataFrame,
+    config: dict[str, Any],
+    batch_name: str | None = None,
+) -> EligibleInferenceTermsResponse:
+    """Return newest-first academic terms containing eligible students."""
+    required_course_columns = {"academic_term", "academic_year"}
+    missing_course_columns = sorted(required_course_columns - set(courses.columns))
+    if missing_course_columns:
+        return _invalid_eligible_terms(
+            "Course file is missing academic term columns: "
+            + ", ".join(missing_course_columns)
+            + ".",
+            batch_name,
+        )
+
+    student_id_column = _shared_student_id_column(students, courses)
+    if student_id_column is None:
+        return _invalid_eligible_terms(
+            "Student and course files must share student_id or study_id.",
+            batch_name,
+        )
+
+    selected_students, criteria_error = _apply_student_criteria(students, config)
+    if criteria_error is not None:
+        return _invalid_eligible_terms(criteria_error, batch_name)
+    selected_students, cohort_error = _exclude_training_cohorts(
+        selected_students,
+        config.get("training_cohorts", []),
+    )
+    if cohort_error is not None:
+        return _invalid_eligible_terms(cohort_error, batch_name)
+
+    eligible_student_ids = set(
+        selected_students[student_id_column].dropna().astype(str).str.strip().unique()
+    )
+    normalized_course_ids = (
+        courses[student_id_column].astype("string").str.strip().fillna("")
+    )
+    eligible_courses = courses[normalized_course_ids.isin(eligible_student_ids)].copy()
+    eligible_courses = eligible_courses[
+        eligible_courses["academic_term"].notna()
+        & eligible_courses["academic_year"].notna()
+    ].copy()
+    eligible_courses["_academic_term_label"] = (
+        eligible_courses["academic_term"].astype(str).str.strip().str.lower()
+    )
+    eligible_courses["_academic_year_label"] = (
+        eligible_courses["academic_year"].astype(str).str.strip().str.lower()
+    )
+    eligible_courses = eligible_courses[
+        (eligible_courses["_academic_term_label"] != "")
+        & (eligible_courses["_academic_year_label"] != "")
+    ]
+
+    terms: list[EligibleInferenceTerm] = []
+    for (academic_year, academic_term), rows in eligible_courses.groupby(
+        ["_academic_year_label", "_academic_term_label"]
+    ):
+        valid_student_count = int(
+            rows[student_id_column].dropna().astype(str).str.strip().nunique()
+        )
+        if valid_student_count:
+            terms.append(
+                EligibleInferenceTerm(
+                    term_label=f"{academic_term} {academic_year}",
+                    valid_student_count=valid_student_count,
+                )
+            )
+    terms.sort(
+        key=lambda term: (
+            _academic_year_sort_value(term.term_label),
+            _ACADEMIC_TERM_ORDER.get(term.term_label.split(" ", 1)[0].upper(), -1),
+        ),
+        reverse=True,
+    )
+    if not terms:
+        return _invalid_eligible_terms(
+            "No academic term has eligible students with course data.",
+            batch_name,
+        )
+    return EligibleInferenceTermsResponse(
+        status="valid",
+        batch_name=batch_name,
+        terms=terms,
+    )
+
+
+def _registered_model_for_inference(
+    session: Session,
+    inst_id: str,
+    model_name: str | None,
+) -> tuple[ModelTable | None, str | None]:
+    """Resolve a requested model or the institution's sole registered model."""
+    query = select(ModelTable).where(
+        and_(
+            ModelTable.inst_id == str_to_uuid(inst_id),
+            ModelTable.valid == True,
+            or_(ModelTable.deleted == False, ModelTable.deleted.is_(None)),
+            or_(ModelTable.archived == 0, ModelTable.archived.is_(None)),
+        )
+    )
+    models = list(session.scalars(query).all())
+    if model_name is not None:
+        decoded_name = decode_url_piece(model_name)
+        model = next((item for item in models if item.name == decoded_name), None)
+        return (
+            (model, None)
+            if model is not None
+            else (None, "Registered model not found for institution.")
+        )
+    if len(models) == 1:
+        return models[0], None
+    if not models:
+        return None, "No registered model found for institution."
+    return None, "Multiple registered models found; model_name is required."
+
+
+def _batch_for_inference(
+    session: Session,
+    inst_id: str,
+    batch_name: str | None,
+) -> BatchTable | None:
+    """Resolve a named batch or the newest completed inference-ready batch."""
+    query = (
+        select(BatchTable)
+        .where(
+            and_(
+                BatchTable.inst_id == str_to_uuid(inst_id),
+                or_(BatchTable.deleted == False, BatchTable.deleted.is_(None)),
+            )
+        )
+        .order_by(BatchTable.created_at.desc())
+    )
+    batches = list(session.scalars(query).all())
+    if batch_name is not None:
+        decoded_name = decode_url_piece(batch_name)
+        return next(
+            (
+                batch
+                for batch in batches
+                if batch.name == decoded_name
+                and batch.completed
+                and _batch_has_student_and_course(batch)
+            ),
+            None,
+        )
+    return next(
+        (
+            batch
+            for batch in batches
+            if batch.completed and _batch_has_student_and_course(batch)
+        ),
+        None,
+    )
+
+
+@router.get(
+    "/{inst_id}/eligible-inference-terms",
+    response_model=EligibleInferenceTermsResponse,
+)
+def get_eligible_inference_terms(
+    inst_id: str,
+    current_user: Annotated[BaseUser, Depends(get_current_active_user)],
+    sql_session: Annotated[Session, Depends(get_session)],
+    storage_control: Annotated[StorageControl, Depends(StorageControl)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
+    model_name: str | None = None,
+    batch_name: str | None = None,
+) -> EligibleInferenceTermsResponse:
+    """Return academic terms eligible for inference for a selected batch."""
+    has_access_to_inst_or_err(inst_id, current_user)
+    local_session.set(sql_session)
+    session = local_session.get()
+    institution = session.scalar(
+        select(InstTable).where(InstTable.id == str_to_uuid(inst_id))
+    )
+    if institution is None:
+        return _invalid_eligible_terms("Institution not found.")
+
+    model, model_error = _registered_model_for_inference(session, inst_id, model_name)
+    if model_error is not None or model is None:
+        return _invalid_eligible_terms(model_error or "Model not found.")
+    try:
+        model_version = databricks_control.fetch_model_version(
+            catalog_name=str(env_vars["CATALOG_NAME"]),
+            inst_name=institution.name,
+            model_name=model.name,
+        )
+    except Exception:
+        logger.exception("Could not resolve latest model version for %s", model.name)
+        return _invalid_eligible_terms("Latest model version could not be resolved.")
+    model_run_id = getattr(model_version, "run_id", None)
+    if not model_run_id:
+        return _invalid_eligible_terms("Latest model version has no training run id.")
+
+    current_env = str(env_vars["ENV"]).strip().upper()
+    if current_env not in ENV_TO_VOLUME_SCHEMA:
+        return _invalid_eligible_terms(
+            f"Training config volumes are not configured for ENV={current_env}."
+        )
+    config = databricks_control.read_volume_training_config(
+        institution.name, str(model_run_id)
+    )
+    if config is None:
+        return _invalid_eligible_terms("Training config could not be loaded.")
+
+    batch = _batch_for_inference(session, inst_id, batch_name)
+    if batch is None:
+        return _invalid_eligible_terms(
+            "Batch not found or missing student and course files.",
+            decode_url_piece(batch_name) if batch_name else None,
+        )
+    try:
+        dataframes = read_batch_files_as_dataframes(
+            inst_id, batch.files, storage_control
+        )
+    except HTTPException as exc:
+        return _invalid_eligible_terms(str(exc.detail), batch.name)
+    students = dataframes.get(SchemaType.STUDENT.value)
+    courses = dataframes.get(SchemaType.COURSE.value)
+    if students is None or courses is None:
+        return _invalid_eligible_terms(
+            "Batch is missing readable student or course data.",
+            batch.name,
+        )
+    return resolve_eligible_inference_terms(students, courses, config, batch.name)
 
 
 # Data related operations. Input files mean files sourced from the institution. Output files are generated by SST.

@@ -2,6 +2,7 @@
 
 import os
 import logging
+import tomllib
 from pydantic import BaseModel, field_validator
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import DatabricksError
@@ -14,7 +15,7 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
-from .config import databricks_vars, gcs_vars
+from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, Optional
 import requests
@@ -339,6 +340,7 @@ class DatabricksPDPInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
+    term_filter: list[str] | None = None
 
 
 class DatabricksSharedInferenceRunRequest(BaseModel):
@@ -357,6 +359,7 @@ class DatabricksSharedInferenceRunRequest(BaseModel):
     validated_blob_paths: list[str] = []
     # ES: True when institution has genai_id; False for edvise_id schools.
     is_genai_institution: bool = True
+    term_filter: list[str] | None = None
 
     @field_validator("config_file_name", "features_table_name", "email", mode="before")
     @classmethod
@@ -388,12 +391,36 @@ class DatabricksBronzeSyncResponse(BaseModel):
     job_run_id: int
 
 
+def _build_pdp_inference_job_parameters(
+    req: DatabricksPDPInferenceRunRequest,
+    databricks_institution_name: str,
+) -> dict[str, str]:
+    """Build PDP inference parameters, including an optional academic-term filter."""
+    parameters = {
+        "cohort_file_name": get_filepath_of_filetype(
+            req.filepath_to_type, SchemaType.STUDENT
+        ),
+        "course_file_name": get_filepath_of_filetype(
+            req.filepath_to_type, SchemaType.COURSE
+        ),
+        "databricks_institution_name": databricks_institution_name,
+        "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
+        "gcp_bucket_name": req.gcp_external_bucket_name,
+        "model_name": req.model_name,
+        "datakind_notification_email": req.email,
+        "DK_CC_EMAIL": req.email,
+    }
+    if req.term_filter is not None:
+        parameters["term_filter"] = json.dumps(req.term_filter)
+    return parameters
+
+
 def _build_shared_inference_job_parameters(
     req: DatabricksSharedInferenceRunRequest,
     databricks_institution_name: str,
 ) -> dict[str, str]:
     """Build common job_parameters for legacy and ES inference runs."""
-    return {
+    parameters = {
         "databricks_institution_name": databricks_institution_name,
         "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
         "model_name": req.model_name,
@@ -406,6 +433,9 @@ def _build_shared_inference_job_parameters(
             req.validated_blob_paths, separators=(",", ":")
         ),
     }
+    if req.term_filter is not None:
+        parameters["term_filter"] = json.dumps(req.term_filter)
+    return parameters
 
 
 def _build_validated_bronze_sync_job_parameters(
@@ -453,6 +483,73 @@ def _sha256_json(obj: Any) -> str:
             obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _parse_training_config(raw: bytes) -> dict[str, Any] | None:
+    """Extract inference eligibility settings from a training TOML file."""
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+
+    preprocessing = data.get("preprocessing")
+    selection = (
+        preprocessing.get("selection") if isinstance(preprocessing, dict) else None
+    )
+    if not isinstance(selection, dict):
+        return None
+
+    result = dict(selection)
+    modeling = data.get("modeling")
+    training = modeling.get("training") if isinstance(modeling, dict) else None
+    training_cohorts = training.get("cohort") if isinstance(training, dict) else None
+    if isinstance(training_cohorts, list):
+        result["training_cohorts"] = [
+            str(label).strip() for label in training_cohorts if str(label).strip()
+        ]
+    elif training_cohorts is not None and str(training_cohorts).strip():
+        result["training_cohorts"] = [str(training_cohorts).strip()]
+    else:
+        result["training_cohorts"] = []
+    return result
+
+
+def _find_training_config_in_directories(
+    workspace: WorkspaceClient,
+    directory_paths: list[str],
+) -> dict[str, Any] | None:
+    """Find a config TOML in a bounded set of model-run directories."""
+    for directory_path in directory_paths:
+        try:
+            entries = list(workspace.files.list_directory_contents(directory_path))
+        except Exception:
+            LOGGER.debug("Could not list Databricks volume path %s", directory_path)
+            continue
+        toml_entries = sorted(
+            (
+                (entry.name, entry.path)
+                for entry in entries
+                if entry.path is not None
+                and not entry.is_directory
+                and entry.name is not None
+                and entry.name.lower().endswith(".toml")
+            ),
+            key=lambda item: (item[0].lower() != "config.toml", item[0].lower()),
+        )
+        for _entry_name, entry_path in toml_entries:
+            try:
+                response = workspace.files.download(entry_path)
+                if response.contents is None:
+                    continue
+                raw = response.contents.read()
+                raw_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+            except Exception:
+                LOGGER.debug("Could not read Databricks config %s", entry_path)
+                continue
+            config = _parse_training_config(raw_bytes)
+            if config is not None:
+                return config
+    return None
 
 
 L1_RESP_CACHE_TTL = int("600")  # seconds
@@ -761,22 +858,7 @@ class DatabricksControl(BaseModel):
         try:
             run_job: Any = w.jobs.run_now(
                 job_id,
-                job_parameters={
-                    "cohort_file_name": get_filepath_of_filetype(
-                        req.filepath_to_type, SchemaType.STUDENT
-                    ),
-                    "course_file_name": get_filepath_of_filetype(
-                        req.filepath_to_type, SchemaType.COURSE
-                    ),
-                    "databricks_institution_name": db_inst_name,
-                    "DB_workspace": databricks_vars[
-                        "DATABRICKS_WORKSPACE"
-                    ],  # is this value the same PER environ? dev/staging/prod
-                    "gcp_bucket_name": req.gcp_external_bucket_name,
-                    "model_name": req.model_name,
-                    "datakind_notification_email": req.email,
-                    "DK_CC_EMAIL": req.email,
-                },
+                job_parameters=_build_pdp_inference_job_parameters(req, db_inst_name),
             )
             LOGGER.info(
                 f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
@@ -1209,6 +1291,43 @@ class DatabricksControl(BaseModel):
         latest_version = max(model_versions, key=lambda v: int(v.version))
 
         return latest_version
+
+    def read_volume_training_config(
+        self, inst_name: str, model_run_id: str
+    ) -> dict[str, Any] | None:
+        """Read selection criteria and training cohorts from a model run."""
+        if not inst_name.strip() or not model_run_id.strip():
+            return None
+        env_schema = ENV_TO_VOLUME_SCHEMA.get(str(env_vars["ENV"]).strip().upper())
+        if env_schema is None:
+            LOGGER.warning(
+                "Training config volumes are not configured for ENV=%r",
+                env_vars["ENV"],
+            )
+            return None
+        try:
+            inst_slug = databricksify_inst_name(inst_name)
+            workspace = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception:
+            LOGGER.exception(
+                "Could not initialize training config lookup for %s", inst_name
+            )
+            return None
+
+        run_directory = (
+            f"/Volumes/{env_schema}/{inst_slug}_silver/silver_volume/{model_run_id}/"
+        )
+        return _find_training_config_in_directories(
+            workspace,
+            [
+                f"{run_directory}training/",
+                run_directory,
+                f"{run_directory}inference/",
+            ],
+        )
 
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:
         schema = databricksify_inst_name(inst_name)

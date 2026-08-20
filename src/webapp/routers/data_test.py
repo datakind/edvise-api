@@ -7,6 +7,7 @@ from collections import Counter
 from fastapi.testclient import TestClient
 from typing import Any
 import pytest
+import pandas as pd
 import sqlalchemy
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.future import select
@@ -23,6 +24,7 @@ from ..database import (
     FileTable,
     BatchTable,
     InstTable,
+    ModelTable,
     SchemaRegistryTable,
     DocType,
     Base,
@@ -40,6 +42,7 @@ from .data import (
     DataOverview,
     DataInfo,
     _infer_allowed_schemas_from_filename,
+    resolve_eligible_inference_terms,
 )
 from fastapi import HTTPException
 from ..gcsutil import StorageControl
@@ -55,6 +58,98 @@ FILE_UUID_2 = uuid.UUID("cb02d06c-2a59-486a-9bdd-d394a4fcb833")
 FILE_UUID_3 = uuid.UUID("fbe67a2e-50e0-40c7-b7b8-07043cb813a5")
 BATCH_UUID = uuid.UUID("5b2420f3-1035-46ab-90eb-74d5df97de43")
 CREATOR_UUID = uuid.UUID("0ad8b77c-49fb-459a-84b1-8d2c05722c4a")
+
+
+def test_resolve_eligible_inference_terms_uses_academic_terms_and_excludes_training_cohorts():
+    students = pd.DataFrame(
+        {
+            "student_id": [1, 2, 3],
+            "enrollment_type": [" first-time ", "FIRST-TIME", "TRANSFER"],
+            "cohort_term": ["FALL", "SPRING", "FALL"],
+            "cohort": ["2022-23", "2023-24", "2023-24"],
+        }
+    )
+    courses = pd.DataFrame(
+        {
+            "student_id": ["1", "2", "2", "3"],
+            "academic_term": ["FALL", "FALL", "SPRING", "SPRING"],
+            "academic_year": ["2024-25", "2024-25", "2024-25", "2024-25"],
+        }
+    )
+    config = {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+        "training_cohorts": ["fall 2022-23"],
+    }
+
+    result = resolve_eligible_inference_terms(
+        students, courses, config, "inference batch"
+    )
+
+    assert result.status == "valid"
+    assert result.batch_name == "inference batch"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "spring 2024-25", "valid_student_count": 1},
+        {"term_label": "fall 2024-25", "valid_student_count": 1},
+    ]
+
+
+def test_resolve_eligible_inference_terms_returns_invalid_without_term_columns():
+    result = resolve_eligible_inference_terms(
+        pd.DataFrame({"student_id": [1]}),
+        pd.DataFrame({"student_id": [1]}),
+        {},
+        "batch",
+    )
+
+    assert result.status == "invalid"
+    assert result.terms == []
+    assert "academic term columns" in (result.reason or "")
+
+
+def test_resolve_eligible_inference_terms_requires_entry_columns_for_exclusion():
+    result = resolve_eligible_inference_terms(
+        pd.DataFrame({"student_id": [1]}),
+        pd.DataFrame(
+            {
+                "student_id": [1],
+                "academic_term": ["FALL"],
+                "academic_year": ["2024-25"],
+            }
+        ),
+        {"training_cohorts": ["fall 2022-23"]},
+        "batch",
+    )
+
+    assert result.status == "invalid"
+    assert "entry cohort columns" in (result.reason or "")
+
+
+def test_resolve_eligible_inference_terms_supports_entry_columns_and_multi_year_order():
+    students = pd.DataFrame(
+        {
+            "study_id": ["1", "2"],
+            "entry_year": ["2022-23", "2023-24"],
+            "entry_term": ["FALL", "SPRING"],
+        }
+    )
+    courses = pd.DataFrame(
+        {
+            "study_id": [1, 2, 2],
+            "academic_term": ["FALL", "FALL", "SPRING"],
+            "academic_year": ["2023-24", "2024-25", "2024-25"],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(
+        students,
+        courses,
+        {"training_cohorts": ["fall 2022-23"]},
+    )
+
+    assert [term.term_label for term in result.terms] == [
+        "spring 2024-25",
+        "fall 2024-25",
+    ]
 
 
 def counter_repr(x):
@@ -213,6 +308,8 @@ def session_fixture():
 def client_fixture(session: sqlalchemy.orm.Session, monkeypatch: Any) -> Any:
     """Unit test mocks setup."""
     monkeypatch.setenv("SST_SKIP_EXT_GEN", "1")
+    MOCK_STORAGE.reset_mock()
+    MOCK_DATABRICKS.reset_mock()
 
     def get_session_override():
         return session
@@ -235,6 +332,202 @@ def client_fixture(session: sqlalchemy.orm.Session, monkeypatch: Any) -> Any:
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
+    MOCK_STORAGE.reset_mock()
+    MOCK_DATABRICKS.reset_mock()
+
+
+def _add_registered_model(
+    session: sqlalchemy.orm.Session,
+    name: str = "retention_model",
+) -> None:
+    session.add(
+        ModelTable(
+            inst_id=USER_VALID_INST_UUID,
+            name=name,
+            created_by=CREATOR_UUID,
+            valid=True,
+            deleted=False,
+            archived=0,
+            created_at=DATETIME_TESTING,
+            updated_at=DATETIME_TESTING,
+        )
+    )
+    session.commit()
+
+
+def _prepare_inference_batch(session: sqlalchemy.orm.Session) -> None:
+    batch = session.get(BatchTable, BATCH_UUID)
+    student_file = session.get(FileTable, FILE_UUID_1)
+    course_file = session.get(FileTable, FILE_UUID_2)
+    assert batch is not None and student_file is not None and course_file is not None
+    batch.completed = True
+    student_file.schemas = [SchemaType.STUDENT]
+    course_file.valid = True
+    batch.files.add(course_file)
+    session.commit()
+
+
+def test_get_eligible_inference_terms_for_selected_batch(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _prepare_inference_batch(session)
+    _add_registered_model(session)
+
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+        "training_cohorts": [],
+    }
+
+    def read_csv(_bucket_name: str, blob_path: str) -> pd.DataFrame:
+        if "file_input_one" in blob_path:
+            return pd.DataFrame(
+                {"student_id": [1, 2], "enrollment_type": ["FIRST-TIME", "TRANSFER"]}
+            )
+        return pd.DataFrame(
+            {
+                "student_id": [1, 2],
+                "academic_term": ["FALL", "SPRING"],
+                "academic_year": ["2024-25", "2024-25"],
+            }
+        )
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = read_csv
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
+    )
+    default_batch_response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "valid",
+        "batch_name": "batch_foo",
+        "terms": [{"term_label": "fall 2024-25", "valid_student_count": 1}],
+        "reason": None,
+    }
+    assert default_batch_response.json() == response.json()
+
+
+def test_get_eligible_inference_terms_rejects_unauthorized_institution(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        f"/institutions/{uuid_to_str(UUID_INVALID)}/eligible-inference-terms"
+    )
+
+    assert response.status_code == 401
+
+
+def test_get_eligible_inference_terms_requires_one_registered_model(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+) -> None:
+    no_model_response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms"
+    )
+    _add_registered_model(session, "model_one")
+    _add_registered_model(session, "model_two")
+    multiple_models_response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms"
+    )
+
+    assert no_model_response.json()["reason"] == (
+        "No registered model found for institution."
+    )
+    assert multiple_models_response.json()["reason"] == (
+        "Multiple registered models found; model_name is required."
+    )
+
+
+def test_get_eligible_inference_terms_reports_missing_batch_and_config(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _add_registered_model(session)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {},
+        "training_cohorts": [],
+    }
+
+    missing_batch_response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "missing"},
+    )
+    MOCK_DATABRICKS.read_volume_training_config.return_value = None
+    missing_config_response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model"},
+    )
+
+    assert "Batch not found" in missing_batch_response.json()["reason"]
+    assert missing_config_response.json()["reason"] == (
+        "Training config could not be loaded."
+    )
+
+
+def test_get_eligible_inference_terms_reports_unsupported_environment(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "LOCAL")
+    _add_registered_model(session)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model"},
+    )
+
+    assert response.json()["reason"] == (
+        "Training config volumes are not configured for ENV=LOCAL."
+    )
+
+
+def test_get_eligible_inference_terms_reports_no_eligible_students(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _prepare_inference_batch(session)
+    _add_registered_model(session)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+        "training_cohorts": [],
+    }
+
+    def read_csv(_bucket_name: str, blob_path: str) -> pd.DataFrame:
+        if "file_input_one" in blob_path:
+            return pd.DataFrame({"student_id": [1], "enrollment_type": ["TRANSFER"]})
+        return pd.DataFrame(
+            {
+                "student_id": [1],
+                "academic_term": ["FALL"],
+                "academic_year": ["2024-25"],
+            }
+        )
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = read_csv
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
+    )
+
+    assert response.json()["reason"] == (
+        "No academic term has eligible students with course data."
+    )
 
 
 def test_read_inst_all_input_files(client: TestClient) -> Any:

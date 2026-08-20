@@ -16,8 +16,10 @@ from .databricks import (
     DatabricksControl,
     DatabricksPDPInferenceRunRequest,
     DatabricksSharedInferenceRunRequest,
+    _build_pdp_inference_job_parameters,
     _build_shared_inference_job_parameters,
     _build_validated_bronze_sync_job_parameters,
+    _parse_training_config,
     _resolve_pipeline_job,
     _resolve_validated_bronze_sync_job_id,
 )
@@ -27,6 +29,75 @@ from .utilities import SchemaType
 @pytest.fixture
 def ctrl():
     return DatabricksControl()
+
+
+def test_parse_training_config_returns_selection_and_training_cohorts():
+    raw = b"""
+[preprocessing.selection]
+student_criteria = { enrollment_type = "FIRST-TIME" }
+
+[modeling.training]
+cohort = ["fall 2022-23", "spring 2022-23"]
+"""
+
+    assert _parse_training_config(raw) == {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+        "training_cohorts": ["fall 2022-23", "spring 2022-23"],
+    }
+
+
+def test_parse_training_config_rejects_invalid_or_missing_selection():
+    assert _parse_training_config(b"not valid {{{") is None
+    assert _parse_training_config(b"[modeling.training]\ncohort = []") is None
+
+
+def test_read_volume_training_config_reads_model_run_toml(
+    monkeypatch: pytest.MonkeyPatch,
+    ctrl: DatabricksControl,
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(db_mod.env_vars, "ENV", "DEV")
+    response = mock.Mock()
+    response.contents.read.return_value = b"""
+[preprocessing.selection]
+student_criteria = { enrollment_type = "FIRST-TIME" }
+[modeling.training]
+cohort = ["fall 2022-23"]
+"""
+    workspace = mock.Mock()
+    workspace.files.list_directory_contents.return_value = [
+        SimpleNamespace(
+            path="/Volumes/dev_sst_02/test_school_silver/silver_volume/run-1/training/config.toml",
+            name="config.toml",
+            is_directory=False,
+        )
+    ]
+    workspace.files.download.return_value = response
+
+    with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
+        config = ctrl.read_volume_training_config("Test School", "run-1")
+
+    assert config == {
+        "student_criteria": {"enrollment_type": "FIRST-TIME"},
+        "training_cohorts": ["fall 2022-23"],
+    }
+    workspace.files.list_directory_contents.assert_called_once_with(
+        "/Volumes/dev_sst_02/test_school_silver/silver_volume/run-1/training/"
+    )
+
+
+@pytest.mark.parametrize("environment", ["LOCAL", "PROD"])
+def test_read_volume_training_config_returns_none_without_volume_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    ctrl: DatabricksControl,
+    environment: str,
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(db_mod.env_vars, "ENV", environment)
+
+    assert ctrl.read_volume_training_config("Test School", "run-1") is None
 
 
 def test_exact_literal_case_insensitive(ctrl):
@@ -308,6 +379,39 @@ def test_build_shared_inference_job_parameters_shape() -> None:
         params["validated_blob_paths_json"]
         == '["validated/course.csv","validated/student.csv"]'
     )
+    assert "term_filter" not in params
+
+
+def test_inference_job_parameters_include_term_filter_for_all_pipelines() -> None:
+    term_filter = ["fall 2024-25", "spring 2024-25"]
+    pdp_request = DatabricksPDPInferenceRunRequest(
+        inst_name="Test School",
+        filepath_to_type={
+            "student.csv": [SchemaType.STUDENT],
+            "course.csv": [SchemaType.COURSE],
+        },
+        model_name="retention_model",
+        email="user@example.com",
+        gcp_external_bucket_name="bucket-a",
+        term_filter=term_filter,
+    )
+    shared_request = DatabricksSharedInferenceRunRequest(
+        inst_name="Test School",
+        model_name="retention_model",
+        gcp_external_bucket_name="bucket-a",
+        term_filter=term_filter,
+    )
+
+    assert (
+        _build_pdp_inference_job_parameters(pdp_request, "test_school")["term_filter"]
+        == '["fall 2024-25", "spring 2024-25"]'
+    )
+    assert (
+        _build_shared_inference_job_parameters(shared_request, "test_school")[
+            "term_filter"
+        ]
+        == '["fall 2024-25", "spring 2024-25"]'
+    )
 
 
 def test_download_bronze_training_inputs_rejects_path_traversal(
@@ -447,3 +551,4 @@ def test_run_pdp_inference_sends_datakind_notification_email_params(
     assert params["datakind_notification_email"] == "user@example.com"
     assert params["DK_CC_EMAIL"] == "user@example.com"
     assert "notification_email" not in params
+    assert "term_filter" not in params
