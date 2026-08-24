@@ -15,6 +15,8 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
+from edvise.configs.schema_type import project_config_class
+
 from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType
 from typing import List, Any, Dict, Optional
@@ -485,71 +487,83 @@ def _sha256_json(obj: Any) -> str:
     ).hexdigest()
 
 
-def _parse_training_config(raw: bytes) -> dict[str, Any] | None:
-    """Extract inference eligibility settings from a training TOML file."""
+def _parse_training_config(raw: bytes, schema_type: str) -> dict[str, Any] | None:
+    """Validate a training TOML with the schema-specific Pydantic config."""
     try:
         data = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
-        return None
-
-    preprocessing = data.get("preprocessing")
-    selection = (
-        preprocessing.get("selection") if isinstance(preprocessing, dict) else None
-    )
-    if not isinstance(selection, dict):
-        return None
-
-    result = dict(selection)
-    modeling = data.get("modeling")
-    training = modeling.get("training") if isinstance(modeling, dict) else None
-    training_cohorts = training.get("cohort") if isinstance(training, dict) else None
-    if isinstance(training_cohorts, list):
-        result["training_cohorts"] = [
-            str(label).strip() for label in training_cohorts if str(label).strip()
-        ]
-    elif training_cohorts is not None and str(training_cohorts).strip():
-        result["training_cohorts"] = [str(training_cohorts).strip()]
-    else:
-        result["training_cohorts"] = []
-    return result
-
-
-def _find_training_config_in_directories(
-    workspace: WorkspaceClient,
-    directory_paths: list[str],
-) -> dict[str, Any] | None:
-    """Find a config TOML in a bounded set of model-run directories."""
-    for directory_path in directory_paths:
-        try:
-            entries = list(workspace.files.list_directory_contents(directory_path))
-        except Exception:
-            LOGGER.debug("Could not list Databricks volume path %s", directory_path)
-            continue
-        toml_entries = sorted(
-            (
-                (entry.name, entry.path)
-                for entry in entries
-                if entry.path is not None
-                and not entry.is_directory
-                and entry.name is not None
-                and entry.name.lower().endswith(".toml")
-            ),
-            key=lambda item: (item[0].lower() != "config.toml", item[0].lower()),
+        cfg = project_config_class(schema_type).model_validate(data)
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError):
+        LOGGER.debug(
+            "Training config failed validation for schema_type=%s",
+            schema_type,
+            exc_info=True,
         )
-        for _entry_name, entry_path in toml_entries:
-            try:
-                response = workspace.files.download(entry_path)
-                if response.contents is None:
-                    continue
-                raw = response.contents.read()
-                raw_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
-            except Exception:
-                LOGGER.debug("Could not read Databricks config %s", entry_path)
-                continue
-            config = _parse_training_config(raw_bytes)
-            if config is not None:
-                return config
-    return None
+        return None
+
+    if cfg.preprocessing is None or cfg.modeling is None:
+        LOGGER.debug(
+            "Training config lacks preprocessing or modeling for schema_type=%s",
+            schema_type,
+        )
+        return None
+
+    student_criteria = dict(cfg.preprocessing.selection.student_criteria)
+    cohorts = cfg.modeling.training.cohort or []
+    training_cohorts = [str(label).strip() for label in cohorts if str(label).strip()]
+    return {
+        "student_criteria": student_criteria,
+        "training_cohorts": training_cohorts,
+    }
+
+
+def _find_training_config_in_training_dir(
+    workspace: WorkspaceClient,
+    training_directory: str,
+    schema_type: str,
+) -> dict[str, Any] | None:
+    """Load the training config TOML from the model run's training directory."""
+    try:
+        entries = list(workspace.files.list_directory_contents(training_directory))
+    except Exception:
+        LOGGER.debug(
+            "Could not list Databricks training config path %s",
+            training_directory,
+            exc_info=True,
+        )
+        return None
+    toml_entries = [
+        (entry.name, entry.path)
+        for entry in entries
+        if entry.path is not None
+        and not entry.is_directory
+        and entry.name is not None
+        and entry.name.lower().endswith(".toml")
+    ]
+    config_entries = [
+        entry for entry in toml_entries if entry[0].lower() == "config.toml"
+    ]
+    if len(config_entries) == 1:
+        _entry_name, entry_path = config_entries[0]
+    elif not config_entries and len(toml_entries) == 1:
+        _entry_name, entry_path = toml_entries[0]
+    else:
+        LOGGER.warning(
+            "Expected one training config TOML in %s; found %d",
+            training_directory,
+            len(toml_entries),
+        )
+        return None
+
+    try:
+        response = workspace.files.download(entry_path)
+        if response.contents is None:
+            return None
+        raw = response.contents.read()
+        raw_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+    except Exception:
+        LOGGER.debug("Could not read Databricks config %s", entry_path, exc_info=True)
+        return None
+    return _parse_training_config(raw_bytes, schema_type)
 
 
 L1_RESP_CACHE_TTL = int("600")  # seconds
@@ -1293,10 +1307,10 @@ class DatabricksControl(BaseModel):
         return latest_version
 
     def read_volume_training_config(
-        self, inst_name: str, model_run_id: str
+        self, inst_name: str, model_run_id: str, schema_type: str
     ) -> dict[str, Any] | None:
         """Read selection criteria and training cohorts from a model run."""
-        if not inst_name.strip() or not model_run_id.strip():
+        if not inst_name.strip() or not model_run_id.strip() or not schema_type.strip():
             return None
         env_schema = ENV_TO_VOLUME_SCHEMA.get(str(env_vars["ENV"]).strip().upper())
         if env_schema is None:
@@ -1317,16 +1331,12 @@ class DatabricksControl(BaseModel):
             )
             return None
 
-        run_directory = (
-            f"/Volumes/{env_schema}/{inst_slug}_silver/silver_volume/{model_run_id}/"
+        training_directory = (
+            f"/Volumes/{env_schema}/{inst_slug}_silver/silver_volume/"
+            f"{model_run_id}/training/"
         )
-        return _find_training_config_in_directories(
-            workspace,
-            [
-                f"{run_directory}training/",
-                run_directory,
-                f"{run_directory}inference/",
-            ],
+        return _find_training_config_in_training_dir(
+            workspace, training_directory, schema_type
         )
 
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:

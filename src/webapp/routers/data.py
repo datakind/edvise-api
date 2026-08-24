@@ -56,6 +56,8 @@ from ..gcsdbutils import update_db_from_bucket
 from ..gcsutil import StorageControl
 from ..config import ENV_TO_VOLUME_SCHEMA, env_vars
 from edvise.data_audit.eda import EdaSummary
+from edvise.shared.utils import cohort_pair_columns
+from edvise.student_selection.filter_inference import exclude_training_cohort_students
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
@@ -501,6 +503,23 @@ def _shared_student_id_column(
     return None
 
 
+def _project_schema_type_for_institution(institution: Any) -> str | None:
+    """Map an institution's school type to an edvise project config schema."""
+    pdp_id = getattr(institution, "pdp_id", None)
+    edvise_id = getattr(institution, "edvise_id", None)
+    legacy_id = getattr(institution, "legacy_id", None)
+    genai_id = getattr(institution, "genai_id", None)
+    if not has_at_most_one_school_type(pdp_id, edvise_id, legacy_id, genai_id):
+        return None
+    if pdp_id:
+        return "pdp"
+    if edvise_id or genai_id:
+        return "edvise"
+    if legacy_id:
+        return "legacy"
+    return None
+
+
 def _exclude_training_cohorts(
     students: pd.DataFrame,
     training_cohorts: list[str],
@@ -508,23 +527,29 @@ def _exclude_training_cohorts(
     """Exclude students whose entry cohort was used for model training."""
     if not training_cohorts:
         return students, None
-    if {"cohort", "cohort_term"}.issubset(students.columns):
-        year_column, term_column = "cohort", "cohort_term"
-    elif {"entry_year", "entry_term"}.issubset(students.columns):
-        year_column, term_column = "entry_year", "entry_term"
-    else:
+    cohort_pair = cohort_pair_columns(students)
+    if cohort_pair is None:
         return (
             students.iloc[0:0],
-            "Student file is missing entry cohort columns needed to exclude training cohorts.",
+            "Student file is missing entry cohort columns needed to exclude "
+            "training cohorts.",
         )
-
-    labels = (
-        students[term_column].astype(str).str.strip().str.lower()
-        + " "
-        + students[year_column].astype(str).str.strip().str.lower()
-    )
-    excluded = {str(label).strip().lower() for label in training_cohorts}
-    return students.loc[~labels.isin(excluded)].copy(), None
+    year_column, term_column = cohort_pair
+    normalized_students = students.copy()
+    for column in (year_column, term_column):
+        normalized_students[column] = normalized_students[column].map(
+            lambda value: value.strip() if isinstance(value, str) else value
+        )
+    try:
+        filtered_students = exclude_training_cohort_students(
+            normalized_students,
+            training_cohorts=training_cohorts,
+            cohort_term_column=term_column,
+            cohort_column=year_column,
+        )
+        return students.loc[filtered_students.index].copy(), None
+    except ValueError as exc:
+        return students.iloc[0:0], str(exc)
 
 
 def _apply_student_criteria(
@@ -768,8 +793,11 @@ def get_eligible_inference_terms(
         return _invalid_eligible_terms(
             f"Training config volumes are not configured for ENV={current_env}."
         )
+    schema_type = _project_schema_type_for_institution(institution)
+    if schema_type is None:
+        return _invalid_eligible_terms("Institution schema type could not be resolved.")
     config = databricks_control.read_volume_training_config(
-        institution.name, str(model_run_id)
+        institution.name, str(model_run_id), schema_type
     )
     if config is None:
         return _invalid_eligible_terms("Training config could not be loaded.")

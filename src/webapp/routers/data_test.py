@@ -2,6 +2,7 @@
 
 import io
 import uuid
+from types import SimpleNamespace
 from unittest import mock
 from collections import Counter
 from fastapi.testclient import TestClient
@@ -122,6 +123,83 @@ def test_resolve_eligible_inference_terms_requires_entry_columns_for_exclusion()
 
     assert result.status == "invalid"
     assert "entry cohort columns" in (result.reason or "")
+
+
+def test_resolve_eligible_inference_terms_invalid_when_exclusion_empties_students():
+    result = resolve_eligible_inference_terms(
+        pd.DataFrame(
+            {
+                "student_id": [1],
+                "cohort_term": ["FALL"],
+                "cohort": ["2022-23"],
+            }
+        ),
+        pd.DataFrame(
+            {
+                "student_id": [1],
+                "academic_term": ["FALL"],
+                "academic_year": ["2024-25"],
+            }
+        ),
+        {"training_cohorts": ["fall 2022-23"]},
+        "batch",
+    )
+
+    assert result.status == "invalid"
+    assert "empty DataFrame" in (result.reason or "")
+
+
+def test_resolve_eligible_inference_terms_strips_cohort_values_before_exclusion():
+    result = resolve_eligible_inference_terms(
+        pd.DataFrame(
+            {
+                "student_id": [1, 2],
+                "cohort_term": [" FALL ", "SPRING"],
+                "cohort": [" 2022-23 ", "2023-24"],
+            }
+        ),
+        pd.DataFrame(
+            {
+                "student_id": [1, 2],
+                "academic_term": ["FALL", "SPRING"],
+                "academic_year": ["2024-25", "2024-25"],
+            }
+        ),
+        {"training_cohorts": ["fall 2022-23"]},
+        "batch",
+    )
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "spring 2024-25", "valid_student_count": 1}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("institution_ids", "expected"),
+    [
+        ({"pdp_id": "pdp"}, "pdp"),
+        ({"edvise_id": "edvise"}, "edvise"),
+        ({"genai_id": "genai"}, "edvise"),
+        ({"legacy_id": "legacy"}, "legacy"),
+        ({}, None),
+        ({"pdp_id": "pdp", "legacy_id": "legacy"}, None),
+    ],
+)
+def test_project_schema_type_for_institution(
+    institution_ids: dict[str, str],
+    expected: str | None,
+) -> None:
+    values: dict[str, str | None] = {
+        "pdp_id": None,
+        "edvise_id": None,
+        "legacy_id": None,
+        "genai_id": None,
+    }
+    values.update(institution_ids)
+    institution = SimpleNamespace(**values)
+
+    assert data_router._project_schema_type_for_institution(institution) == expected
 
 
 def test_resolve_eligible_inference_terms_supports_entry_columns_and_multi_year_order():
@@ -413,6 +491,9 @@ def test_get_eligible_inference_terms_for_selected_batch(
         "reason": None,
     }
     assert default_batch_response.json() == response.json()
+    MOCK_DATABRICKS.read_volume_training_config.assert_called_with(
+        "school_1", "run-123", "legacy"
+    )
 
 
 def test_get_eligible_inference_terms_rejects_unauthorized_institution(
