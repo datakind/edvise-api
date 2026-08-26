@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Any, cast
 import jsonpickle
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy import and_, update, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -23,9 +23,8 @@ from ..utilities import (
     get_current_active_user,
     get_external_bucket_name,
     SchemaType,
-    decode_model_name,
+    decode_url_piece,
     display_model_name,
-    uc_safe_model_name,
     LEGACY_TO_NEW_SCHEMA,
     batch_input_validated_blob_paths,
 )
@@ -222,6 +221,10 @@ class ModelInfo(BaseModel):
     deleted: bool | None = None
     archived: bool = False
 
+    @field_serializer("name")
+    def _display_name(self, name: str) -> str:
+        return display_model_name(name)
+
 
 def _model_version_as_str(version: Any) -> str | None:
     """Databricks model versions are ints; RunInfo and job rows store them as str."""
@@ -249,6 +252,10 @@ class RunInfo(BaseModel):
     err_msg: str | None = None
     model_run_id: str | None = None
     model_version: str | None = None
+
+    @field_serializer("m_name")
+    def _display_m_name(self, m_name: str) -> str:
+        return display_model_name(m_name)
 
 
 class InferenceRunRequest(BaseModel):
@@ -296,7 +303,7 @@ def read_inst_models(
             {
                 "m_id": uuid_to_str(elem[0].id),
                 "inst_id": uuid_to_str(elem[0].inst_id),
-                "name": display_model_name(elem[0].name),
+                "name": elem[0].name,
                 "created_by": uuid_to_str(elem[0].created_by),
                 "deleted": elem[0].deleted,
                 "valid": elem[0].valid,
@@ -322,7 +329,7 @@ def create_model(
     has_access_to_inst_or_err(inst_id, current_user)
     model_owner_and_higher_or_err(current_user, "model training")
     local_session.set(sql_session)
-    req_name = uc_safe_model_name(req.name.strip())
+    req_name = decode_url_piece(req.name.strip())
     query_result = (
         local_session.get()
         .execute(
@@ -374,7 +381,7 @@ def create_model(
     return {
         "m_id": uuid_to_str(query_result[0][0].id),
         "inst_id": uuid_to_str(query_result[0][0].inst_id),
-        "name": display_model_name(query_result[0][0].name),
+        "name": query_result[0][0].name,
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
@@ -393,7 +400,7 @@ def read_inst_model(
 
     Only visible to data owners of that institution or higher.
     """
-    model_name = decode_model_name(model_name)
+    model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     has_full_data_access_or_err(current_user, "this model")
     local_session.set(sql_session)
@@ -422,7 +429,7 @@ def read_inst_model(
     return {
         "m_id": uuid_to_str(query_result[0][0].id),
         "inst_id": uuid_to_str(query_result[0][0].inst_id),
-        "name": display_model_name(query_result[0][0].name),
+        "name": query_result[0][0].name,
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
@@ -437,7 +444,7 @@ def delete_model(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
 ) -> Any:
-    transformed_model_name = decode_model_name(model_name)
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
     local_session.set(sql_session)
@@ -468,7 +475,7 @@ def delete_model(
 
     return {
         "inst_id": inst_id,
-        "model_name": display_model_name(transformed_model_name),
+        "model_name": transformed_model_name,
         "status": "Model deleted",
     }
 
@@ -481,7 +488,7 @@ def archive_model(
     sql_session: Annotated[Session, Depends(get_session)],
 ) -> Any:
     """Archive a model by setting ``archived`` from 0 to 1."""
-    transformed_model_name = decode_model_name(model_name)
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
     local_session.set(sql_session)
@@ -508,7 +515,7 @@ def archive_model(
 
     return {
         "inst_id": inst_id,
-        "model_name": display_model_name(transformed_model_name),
+        "model_name": transformed_model_name,
         "archived": 1,
         "status": "Model archived",
     }
@@ -527,7 +534,7 @@ def read_inst_model_outputs(
     Only visible to users of that institution or Datakinder access types.
     Returns a list of runs in order of most recent to least recent based on triggering time.
     """
-    model_name = decode_model_name(model_name)
+    model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     query_result = (
@@ -566,7 +573,7 @@ def read_inst_model_outputs(
             {
                 # JobTable doesn't have inst_id, so we retrieve that from the model query.
                 "inst_id": uuid_to_str(query_result[0][0].inst_id),
-                "m_name": display_model_name(query_result[0][0].name),
+                "m_name": query_result[0][0].name,
                 "run_id": elem.id,
                 "model_run_id": elem.model_run_id,
                 "model_version": elem.model_version,
@@ -598,7 +605,7 @@ def read_inst_model_output(
     Only visible to users of that institution or Datakinder access types.
     If a viewer has record allowlist restrictions applied, only those records are returned.
     """
-    model_name = decode_model_name(model_name)
+    model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     query_result = (
@@ -630,7 +637,7 @@ def read_inst_model_output(
             # TODO: if the output_filename is empty make a query to Databricks
             return {
                 "inst_id": uuid_to_str(query_result[0][0].inst_id),
-                "m_name": display_model_name(query_result[0][0].name),
+                "m_name": query_result[0][0].name,
                 "run_id": elem.id,
                 "created_by": uuid_to_str(elem.created_by),
                 "triggered_at": elem.triggered_at,
@@ -663,7 +670,7 @@ def delete_model_run(
 
     Only visible to users of that institution or Datakinder access types.
     """
-    model_name = decode_model_name(model_name)
+    model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     sess = local_session.get()
@@ -735,7 +742,7 @@ def delete_model_run(
 
     return {
         "inst_id": inst_id,
-        "model_name": display_model_name(model_name),
+        "model_name": model_name,
         "run_id": job_run_id,
         "status": "Run deleted",
     }
@@ -766,7 +773,7 @@ def trigger_inference_run(
 
     Only visible to users of that institution or Datakinder access types.
     """
-    model_name = decode_model_name(model_name)
+    model_name = decode_url_piece(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     inst_result = (
@@ -905,7 +912,7 @@ def trigger_inference_run(
         local_session.get().add(job)
         return {
             "inst_id": inst_id,
-            "m_name": display_model_name(model_name),
+            "m_name": model_name,
             "run_id": res.job_run_id,
             "created_by": current_user.user_id,
             "triggered_at": triggered_timestamp,
@@ -1013,7 +1020,7 @@ def trigger_inference_run(
     local_session.get().add(job)
     return {
         "inst_id": inst_id,
-        "m_name": display_model_name(model_name),
+        "m_name": model_name,
         "run_id": res.job_run_id,
         "created_by": current_user.user_id,
         "triggered_at": triggered_timestamp,
@@ -1032,7 +1039,7 @@ def get_model_versions(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
-    transformed_model_name = decode_model_name(model_name)
+    transformed_model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
     local_session.set(sql_session)
@@ -1077,7 +1084,7 @@ def backfill_model_runs(
     Temporary endpoint to populate model_run_id and model_version on existing jobs for this model.
     Use only when backfilling historical job runs, not for regular operation.
     """
-    model_name = decode_model_name(model_name)
+    model_name = str(decode_url_piece(model_name)).strip()
     has_access_to_inst_or_err(inst_id, current_user)
 
     # Load institution
@@ -1142,7 +1149,7 @@ def backfill_model_runs(
     return {
         "inst_id": str(inst_id),
         "model_id": str(model_id[0][0].id),
-        "model_name": display_model_name(model_name),
+        "model_name": model_name,
         "latest_model_version": {"version": mv_version, "run_id": mv_run_id},
         "updated_count": updated_count,
     }

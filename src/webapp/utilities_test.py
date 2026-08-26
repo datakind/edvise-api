@@ -5,14 +5,12 @@ import pytest
 from fastapi import HTTPException
 from .utilities import (
     decode_url_piece,
-    decode_model_name,
     display_model_name,
     expand_batch_file_name_lookups,
     file_name_variants_for_lookup,
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
     has_at_most_one_school_type,
-    uc_safe_model_name,
     uuid_to_str,
     databricksify_inst_name,
 )
@@ -106,20 +104,22 @@ def test_decode_url_piece_treats_plus_as_space() -> None:
     assert decode_url_piece("a+b.csv") == "a b.csv"
     assert decode_url_piece("foo%20bar.csv") == "foo bar.csv"
     assert decode_url_piece("x%2By.csv") == "x+y.csv"
+    assert (
+        decode_url_piece("graduation_in_3y_ft_4.5y_pt_checkpoint_30_credits")
+        == "graduation_in_3y_ft_4d5y_pt_checkpoint_30_credits"
+    )
+    assert decode_url_piece("1.2.csv") == "1.2.csv"
 
 
-def test_uc_decimal_model_name_round_trip() -> None:
-    """UC stores 4d5; the frontend should see 4.5."""
-    uc_name = "graduation_in_3y_ft_4d5y_pt_checkpoint_30_credits"
-    display_name = "graduation_in_3y_ft_4.5y_pt_checkpoint_30_credits"
-    unchanged = "sample_model_for_school_1"
-
-    assert display_model_name(uc_name) == display_name
-    assert uc_safe_model_name(display_name) == uc_name
-    assert decode_model_name(display_name) == uc_name
-    assert decode_model_name(uc_name) == uc_name
-    assert display_model_name(unchanged) == unchanged
-    assert uc_safe_model_name(unchanged) == unchanged
+def test_display_model_name_decodes_uc_decimals() -> None:
+    """UC stores 4d5y; the frontend should see 4.5y."""
+    assert (
+        display_model_name("graduation_in_3y_ft_4d5y_pt_checkpoint_30_credits")
+        == "graduation_in_3y_ft_4.5y_pt_checkpoint_30_credits"
+    )
+    assert (
+        display_model_name("sample_model_for_school_1") == "sample_model_for_school_1"
+    )
 
 
 def test_file_name_variants_for_lookup() -> None:
