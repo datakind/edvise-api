@@ -500,6 +500,46 @@ def test_trigger_inference_run(client: TestClient) -> None:
     assert pdp_request.term_filter == ["fall 2024-25"]
 
 
+def test_trigger_inference_run_rejects_empty_term_filter(client: TestClient) -> None:
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/models/sample_model_for_school_1/run-inference",
+        json={
+            "batch_name": "batch_foo",
+            "is_pdp": True,
+            "term_filter": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "At least one term is required when term_filter is provided."
+    )
+
+
+@pytest.mark.parametrize("payload", [{}, {"term_filter": None}])
+def test_trigger_inference_run_passes_omitted_or_null_term_filter(
+    client: TestClient, payload: dict[str, object]
+) -> None:
+    MOCK_DATABRICKS.run_pdp_inference.return_value = DatabricksInferenceRunResponse(
+        job_run_id=123
+    )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
+        version=1, run_id="run-inference"
+    )
+    response = client.post(
+        "/institutions/"
+        + uuid_to_str(USER_VALID_INST_UUID)
+        + "/models/sample_model_for_school_1/run-inference",
+        json={"batch_name": "batch_foo", "is_pdp": True, **payload},
+    )
+
+    assert response.status_code == 200
+    pdp_request = MOCK_DATABRICKS.run_pdp_inference.call_args[0][0]
+    assert pdp_request.term_filter is None
+
+
 def test_check_file_types_valid_schema_configs():
     """Test batch schema validation logic."""
     file_types1 = [

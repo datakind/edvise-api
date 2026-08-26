@@ -511,6 +511,7 @@ def _parse_training_config(raw: bytes, schema_type: str) -> dict[str, Any] | Non
     cohorts = cfg.modeling.training.cohort or []
     training_cohorts = [str(label).strip() for label in cohorts if str(label).strip()]
     return {
+        "student_id_col": cfg.student_id_col,
         "student_criteria": student_criteria,
         "training_cohorts": training_cohorts,
     }

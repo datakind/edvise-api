@@ -94,11 +94,16 @@ def ctrl():
     return DatabricksControl()
 
 
-@pytest.mark.parametrize("schema_type", ["pdp", "edvise"])
+@pytest.mark.parametrize(
+    ("schema_type", "student_id_col"),
+    [("pdp", "student_id"), ("edvise", "learner_id")],
+)
 def test_parse_training_config_returns_selection_and_training_cohorts(
     schema_type: str,
+    student_id_col: str,
 ) -> None:
     assert _parse_training_config(VALID_PDP_TRAINING_TOML, schema_type) == {
+        "student_id_col": student_id_col,
         "student_criteria": {"enrollment_type": "FIRST-TIME"},
         "training_cohorts": ["fall 2022-23", "spring 2022-23"],
     }
@@ -106,6 +111,7 @@ def test_parse_training_config_returns_selection_and_training_cohorts(
 
 def test_parse_training_config_supports_legacy_schema() -> None:
     assert _parse_training_config(VALID_LEGACY_TRAINING_TOML, "legacy") == {
+        "student_id_col": "student_id",
         "student_criteria": {"enrollment_type": "FIRST-TIME"},
         "training_cohorts": ["fall 2022-23"],
     }
@@ -156,6 +162,7 @@ def test_read_volume_training_config_reads_model_run_toml(
         config = ctrl.read_volume_training_config("Test School", "run-1", "pdp")
 
     assert config == {
+        "student_id_col": "student_id",
         "student_criteria": {"enrollment_type": "FIRST-TIME"},
         "training_cohorts": ["fall 2022-23", "spring 2022-23"],
     }

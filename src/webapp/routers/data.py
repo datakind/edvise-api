@@ -59,6 +59,9 @@ from ..config import ENV_TO_VOLUME_SCHEMA, env_vars
 from edvise.data_audit.eda import EdaSummary
 from edvise.shared.utils import cohort_pair_columns
 from edvise.student_selection.filter_inference import exclude_training_cohort_students
+from edvise.student_selection.select_students_attributes import (
+    select_students_by_attributes,
+)
 
 # Set the logging
 logging.basicConfig(format="%(asctime)s [%(levelname)s]: %(message)s")
@@ -459,6 +462,14 @@ class EligibleInferenceTermsResponse(BaseModel):
 
 
 _ACADEMIC_TERM_ORDER = {"FALL": 1, "WINTER": 2, "SPRING": 3, "SUMMER": 4}
+_STUDENT_ID_COLUMNS = ("student_id", "study_id", "learner_id")
+_EDA_BATCH_READ_SUFFIX = (
+    "Files must be uploaded and validated before they can be used for EDA."
+)
+_ELIGIBLE_TERMS_BATCH_READ_SUFFIX = (
+    "Files must be uploaded and validated before they can be used "
+    "for inference eligibility."
+)
 
 
 def _invalid_eligible_terms(
@@ -482,15 +493,37 @@ def _academic_year_sort_value(value: object) -> int:
     return year if year >= 100 else 2000 + year
 
 
+def _normalize_identifier_series(values: pd.Series) -> pd.Series:
+    """Canonicalize identifiers so int, float, and string forms join."""
+    stripped = values.astype("string").str.strip()
+    numeric = pd.to_numeric(stripped, errors="coerce")
+    is_whole_number = numeric.notna() & (numeric == numeric.round())
+    result = stripped.fillna("")
+    if bool(is_whole_number.any()):
+        whole_as_int = numeric.loc[is_whole_number].astype("int64").astype(str)
+        result = result.mask(is_whole_number, whole_as_int)
+    return result.replace({"<NA>": "", "nan": "", "None": "", "NaN": ""})
+
+
 def _shared_student_id_column(
     students: pd.DataFrame,
     courses: pd.DataFrame,
+    preferred: str | None = None,
 ) -> str | None:
-    """Return a supported student identifier present in both DataFrames."""
-    for column in ("student_id", "study_id", "learner_id"):
+    """Return the config student id column, else a supported identifier in both files."""
+    if preferred and preferred in students.columns and preferred in courses.columns:
+        return preferred
+    for column in _STUDENT_ID_COLUMNS:
         if column in students.columns and column in courses.columns:
             return column
     return None
+
+
+def _eligible_terms_reason_from_batch_read(detail: object) -> str:
+    """Map batch-read errors to eligible-terms wording."""
+    return str(detail).replace(
+        _EDA_BATCH_READ_SUFFIX, _ELIGIBLE_TERMS_BATCH_READ_SUFFIX
+    )
 
 
 def _project_schema_type_for_institution(institution: Any) -> str | None:
@@ -545,40 +578,48 @@ def _exclude_training_cohorts(
 def _apply_student_criteria(
     students: pd.DataFrame,
     config: dict[str, Any],
-) -> tuple[pd.DataFrame, str | None]:
-    """Apply the training selection criteria to inference students."""
+    student_id_column: str,
+) -> pd.DataFrame:
+    """Apply upload-available training selection criteria via edvise."""
     criteria = config.get("student_criteria")
-    if not isinstance(criteria, dict):
-        return students, None
-    missing = sorted(str(column) for column in criteria if column not in students)
-    if missing:
-        return (
-            students.iloc[0:0],
-            f"Missing columns for selection criteria: {', '.join(missing)}.",
+    if not isinstance(criteria, dict) or not criteria:
+        return students
+    applicable = {
+        column: value for column, value in criteria.items() if column in students
+    }
+    skipped = sorted(str(column) for column in criteria if column not in students)
+    if skipped:
+        logger.warning(
+            "Skipping student_criteria columns missing from the student file: %s",
+            ", ".join(skipped),
         )
-    filtered = students.copy()
-    for column, value in criteria.items():
-        if isinstance(value, list):
-            if all(isinstance(item, str) for item in value):
-                expected = {item.strip().casefold() for item in value}
-                normalized = (
-                    filtered[column]
-                    .astype("string")
-                    .str.strip()
-                    .str.casefold()
-                    .fillna("")
-                )
-                filtered = filtered[normalized.isin(expected)]
-            else:
-                filtered = filtered[filtered[column].isin(value)]
-        elif isinstance(value, str):
-            normalized = (
-                filtered[column].astype("string").str.strip().str.casefold().fillna("")
+    if not applicable:
+        return students
+    work = students.copy()
+    prepared: dict[str, Any] = {}
+    for column, value in applicable.items():
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            work[column] = (
+                work[column].astype("string").str.strip().str.casefold().fillna("")
             )
-            filtered = filtered[normalized == value.strip().casefold()]
+            prepared[column] = [item.strip().casefold() for item in value]
+        elif isinstance(value, str):
+            work[column] = (
+                work[column].astype("string").str.strip().str.casefold().fillna("")
+            )
+            prepared[column] = value.strip().casefold()
         else:
-            filtered = filtered[filtered[column] == value]
-    return filtered, None
+            prepared[column] = value
+    selected = select_students_by_attributes(
+        work, student_id_cols=student_id_column, **prepared
+    )
+    selected_ids = set(
+        _normalize_identifier_series(pd.Series(selected.index))
+        .replace("", pd.NA)
+        .dropna()
+    )
+    student_ids = _normalize_identifier_series(students[student_id_column])
+    return students[student_ids.isin(selected_ids)].copy()
 
 
 def resolve_eligible_inference_terms(
@@ -598,16 +639,16 @@ def resolve_eligible_inference_terms(
             batch_name,
         )
 
-    student_id_column = _shared_student_id_column(students, courses)
+    student_id_column = _shared_student_id_column(
+        students, courses, config.get("student_id_col")
+    )
     if student_id_column is None:
         return _invalid_eligible_terms(
             "Student and course files must share student_id, study_id, or learner_id.",
             batch_name,
         )
 
-    selected_students, criteria_error = _apply_student_criteria(students, config)
-    if criteria_error is not None:
-        return _invalid_eligible_terms(criteria_error, batch_name)
+    selected_students = _apply_student_criteria(students, config, student_id_column)
     selected_students, cohort_error = _exclude_training_cohorts(
         selected_students,
         config.get("training_cohorts", []),
@@ -616,11 +657,12 @@ def resolve_eligible_inference_terms(
         return _invalid_eligible_terms(cohort_error, batch_name)
 
     eligible_student_ids = set(
-        selected_students[student_id_column].dropna().astype(str).str.strip().unique()
+        _normalize_identifier_series(selected_students[student_id_column])
+        .replace("", pd.NA)
+        .dropna()
+        .unique()
     )
-    normalized_course_ids = (
-        courses[student_id_column].astype("string").str.strip().fillna("")
-    )
+    normalized_course_ids = _normalize_identifier_series(courses[student_id_column])
     eligible_courses = courses[normalized_course_ids.isin(eligible_student_ids)].copy()
     eligible_courses = eligible_courses[
         eligible_courses["academic_term"].notna()
@@ -642,7 +684,9 @@ def resolve_eligible_inference_terms(
         ["_academic_year_label", "_academic_term_label"]
     ):
         valid_student_count = int(
-            rows[student_id_column].dropna().astype(str).str.strip().nunique()
+            _normalize_identifier_series(rows[student_id_column])
+            .replace("", pd.NA)
+            .nunique(dropna=True)
         )
         if valid_student_count:
             terms.append(
@@ -693,8 +737,6 @@ def get_eligible_inference_terms(
     if institution is None:
         return _invalid_eligible_terms("Institution not found.")
 
-    model_name = decode_url_piece(model_name)
-    batch_name = decode_url_piece(batch_name)
     model = require_named_inference_model(session, inst_id, model_name)
     batch = require_named_inference_batch(session, inst_id, batch_name)
     try:
@@ -705,31 +747,43 @@ def get_eligible_inference_terms(
         )
     except Exception:
         logger.exception("Could not resolve latest model version for %s", model.name)
-        return _invalid_eligible_terms("Latest model version could not be resolved.")
+        return _invalid_eligible_terms(
+            "Latest model version could not be resolved.", batch.name
+        )
     model_run_id = getattr(model_version, "run_id", None)
     if not model_run_id:
-        return _invalid_eligible_terms("Latest model version has no training run id.")
+        return _invalid_eligible_terms(
+            "Latest model version has no training run id.", batch.name
+        )
 
     current_env = str(env_vars["ENV"]).strip().upper()
     if current_env not in ENV_TO_VOLUME_SCHEMA:
         return _invalid_eligible_terms(
-            f"Training config volumes are not configured for ENV={current_env}."
+            f"Training config volumes are not configured for ENV={current_env}.",
+            batch.name,
         )
     schema_type = _project_schema_type_for_institution(institution)
     if schema_type is None:
-        return _invalid_eligible_terms("Institution schema type could not be resolved.")
+        return _invalid_eligible_terms(
+            "Institution schema type could not be resolved.", batch.name
+        )
     config = databricks_control.read_volume_training_config(
         institution.name, str(model_run_id), schema_type
     )
     if config is None:
-        return _invalid_eligible_terms("Training config could not be loaded.")
+        return _invalid_eligible_terms(
+            "Training config could not be loaded.", batch.name
+        )
 
     try:
         dataframes = read_batch_files_as_dataframes(
             inst_id, batch.files, storage_control
         )
     except HTTPException as exc:
-        return _invalid_eligible_terms(str(exc.detail), batch.name)
+        return _invalid_eligible_terms(
+            _eligible_terms_reason_from_batch_read(exc.detail),
+            batch.name,
+        )
     students = dataframes.get(SchemaType.STUDENT.value)
     courses = dataframes.get(SchemaType.COURSE.value)
     if students is None or courses is None:

@@ -1,6 +1,7 @@
 """Test file for the data.py file and constituent API functions."""
 
 import io
+import logging
 import uuid
 from types import SimpleNamespace
 from unittest import mock
@@ -89,6 +90,93 @@ def test_resolve_eligible_inference_terms_uses_academic_terms_and_excludes_train
     assert result.status == "valid"
     assert result.batch_name == "inference batch"
     assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "spring 2024-25", "valid_student_count": 1},
+        {"term_label": "fall 2024-25", "valid_student_count": 1},
+    ]
+
+
+def test_resolve_eligible_inference_terms_skips_missing_student_criteria_columns(
+    caplog: pytest.LogCaptureFixture,
+):
+    students = pd.DataFrame(
+        {
+            "student_id": [1, 2],
+            "enrollment_type": ["FIRST-TIME", "TRANSFER"],
+        }
+    )
+    courses = pd.DataFrame(
+        {
+            "student_id": [1, 2],
+            "academic_term": ["FALL", "SPRING"],
+            "academic_year": ["2024-25", "2024-25"],
+        }
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = resolve_eligible_inference_terms(
+            students,
+            courses,
+            {
+                "student_criteria": {
+                    "enrollment_type": "FIRST-TIME",
+                    "cummean_course_grade_numeric_mean": 3.0,
+                }
+            },
+            "batch",
+        )
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "fall 2024-25", "valid_student_count": 1}
+    ]
+    assert "Skipping student_criteria columns missing from the student file" in (
+        caplog.text
+    )
+    assert "cummean_course_grade_numeric_mean" in caplog.text
+
+
+def test_resolve_eligible_inference_terms_joins_numeric_identifier_forms():
+    students = pd.DataFrame({"student_id": [1]})
+    courses = pd.DataFrame(
+        {
+            "student_id": [1.0, float("nan")],
+            "academic_term": ["FALL", "SPRING"],
+            "academic_year": ["2024-25", "2024-25"],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(students, courses, {}, "batch")
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "fall 2024-25", "valid_student_count": 1}
+    ]
+
+
+def test_resolve_eligible_inference_terms_prefers_config_student_id_col():
+    students = pd.DataFrame(
+        {
+            "student_id": ["mismatch-a", "mismatch-b"],
+            "learner_id": ["1", "2"],
+        }
+    )
+    courses = pd.DataFrame(
+        {
+            "student_id": ["other-a", "other-b"],
+            "learner_id": ["1", "2"],
+            "academic_term": ["FALL", "SPRING"],
+            "academic_year": ["2024-25", "2024-25"],
+        }
+    )
+
+    default_join = resolve_eligible_inference_terms(students, courses, {}, "batch")
+    config_join = resolve_eligible_inference_terms(
+        students, courses, {"student_id_col": "learner_id"}, "batch"
+    )
+
+    assert default_join.status == "invalid"
+    assert config_join.status == "valid"
+    assert [term.model_dump() for term in config_join.terms] == [
         {"term_label": "spring 2024-25", "valid_student_count": 1},
         {"term_label": "fall 2024-25", "valid_student_count": 1},
     ]
@@ -595,6 +683,8 @@ def test_get_eligible_inference_terms_reports_missing_config(
     )
 
     assert response.status_code == 200
+    assert response.json()["status"] == "invalid"
+    assert response.json()["batch_name"] == "batch_foo"
     assert response.json()["reason"] == "Training config could not be loaded."
 
 
@@ -612,6 +702,9 @@ def test_get_eligible_inference_terms_reports_unsupported_environment(
         params={"model_name": "retention_model", "batch_name": "batch_foo"},
     )
 
+    assert response.status_code == 200
+    assert response.json()["status"] == "invalid"
+    assert response.json()["batch_name"] == "batch_foo"
     assert response.json()["reason"] == (
         "Training config volumes are not configured for ENV=LOCAL."
     )
@@ -648,9 +741,70 @@ def test_get_eligible_inference_terms_reports_no_eligible_students(
         params={"model_name": "retention_model", "batch_name": "batch_foo"},
     )
 
+    assert response.status_code == 200
+    assert response.json()["status"] == "invalid"
+    assert response.json()["batch_name"] == "batch_foo"
     assert response.json()["reason"] == (
         "No academic term has eligible students with course data."
     )
+
+
+def test_get_eligible_inference_terms_looks_up_percent_encoded_model_name(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _prepare_inference_batch(session)
+    _add_registered_model(session, name="risk%20model")
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = None
+
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "risk%20model", "batch_name": "batch_foo"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "invalid"
+    assert response.json()["batch_name"] == "batch_foo"
+    assert response.json()["reason"] == "Training config could not be loaded."
+
+
+def test_get_eligible_inference_terms_rewrites_eda_batch_read_reason(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _prepare_inference_batch(session)
+    _add_registered_model(session)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {},
+        "training_cohorts": [],
+    }
+
+    def raise_eda_error(*_args: object, **_kwargs: object) -> None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No valid input files found in batch (checked GCS: bucket/validated/). "
+                "Files must be uploaded and validated before they can be used for EDA."
+            ),
+        )
+
+    monkeypatch.setattr(data_router, "read_batch_files_as_dataframes", raise_eda_error)
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "invalid"
+    assert response.json()["batch_name"] == "batch_foo"
+    assert "inference eligibility" in response.json()["reason"]
+    assert "EDA" not in response.json()["reason"]
 
 
 def test_read_inst_all_input_files(client: TestClient) -> Any:
