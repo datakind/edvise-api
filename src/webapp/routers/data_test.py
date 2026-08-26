@@ -97,7 +97,7 @@ def test_resolve_eligible_inference_terms_uses_academic_terms_and_excludes_train
 
 def test_resolve_eligible_inference_terms_skips_missing_student_criteria_columns(
     caplog: pytest.LogCaptureFixture,
-):
+) -> None:
     students = pd.DataFrame(
         {
             "student_id": [1, 2],

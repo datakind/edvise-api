@@ -201,6 +201,13 @@ def check_file_types_valid_schema_configs(
     return False
 
 
+def _unique_batch_schema_types(batch: BatchTable) -> list[list[SchemaType]]:
+    """Return unique batch file schemas as SchemaType values."""
+    return [
+        [SchemaType(schema) for schema in {s for f in batch.files for s in f.schemas}]
+    ]
+
+
 class ModelCreationRequest(BaseModel):
     """Model creation request object."""
 
@@ -871,7 +878,7 @@ def trigger_inference_run(
         batch = require_named_inference_batch(
             local_session.get(), inst_id, req.batch_name
         )
-        inst_file_schemas = [list({s for f in batch.files for s in f.schemas})]
+        inst_file_schemas = _unique_batch_schema_types(batch)
         schema_configs = resolve_model_schema_configs(
             model.schema_configs,
             inst.schemas,
@@ -956,7 +963,7 @@ def trigger_inference_run(
     model = require_named_inference_model(local_session.get(), inst_id, model_name)
     batch = require_named_inference_batch(local_session.get(), inst_id, req.batch_name)
     # Get all the files in the batch and check that it matches the model specifications.
-    inst_file_schemas = [list({s for f in batch.files for s in f.schemas})]
+    inst_file_schemas = _unique_batch_schema_types(batch)
     schema_configs = resolve_model_schema_configs(
         model.schema_configs,
         inst.schemas,
