@@ -223,6 +223,7 @@ class ModelInfo(BaseModel):
 
     @field_serializer("name")
     def _display_name(self, name: str) -> str:
+        # UC always has 4d5; 4.5 is frontend display only.
         return display_model_name(name)
 
 
@@ -255,6 +256,7 @@ class RunInfo(BaseModel):
 
     @field_serializer("m_name")
     def _display_m_name(self, m_name: str) -> str:
+        # UC always has 4d5; 4.5 is frontend display only.
         return display_model_name(m_name)
 
 
