@@ -51,6 +51,7 @@ from ..databricks import (
     DatabricksBronzeSyncRequest,
     DatabricksControl,
 )
+from .models import require_named_inference_batch, require_named_inference_model
 from ..gcsdbutils import update_db_from_bucket
 
 from ..gcsutil import StorageControl
@@ -472,17 +473,6 @@ def _invalid_eligible_terms(
     )
 
 
-def _batch_has_student_and_course(batch: BatchTable) -> bool:
-    """Return whether a batch contains student and course input files."""
-    schemas = {
-        str(schema)
-        for file_record in batch.files
-        if not file_record.sst_generated and not file_record.deleted
-        for schema in file_record.schemas
-    }
-    return SchemaType.STUDENT.value in schemas and SchemaType.COURSE.value in schemas
-
-
 def _academic_year_sort_value(value: object) -> int:
     """Return the ending year from an academic-year label."""
     years = re.findall(r"\d{2,4}", str(value))
@@ -680,75 +670,6 @@ def resolve_eligible_inference_terms(
     )
 
 
-def _registered_model_for_inference(
-    session: Session,
-    inst_id: str,
-    model_name: str | None,
-) -> tuple[ModelTable | None, str | None]:
-    """Resolve a requested model or the institution's sole registered model."""
-    query = select(ModelTable).where(
-        and_(
-            ModelTable.inst_id == str_to_uuid(inst_id),
-            ModelTable.valid == True,
-            or_(ModelTable.deleted == False, ModelTable.deleted.is_(None)),
-            or_(ModelTable.archived == 0, ModelTable.archived.is_(None)),
-        )
-    )
-    models = list(session.scalars(query).all())
-    if model_name is not None:
-        decoded_name = decode_url_piece(model_name)
-        model = next((item for item in models if item.name == decoded_name), None)
-        return (
-            (model, None)
-            if model is not None
-            else (None, "Registered model not found for institution.")
-        )
-    if len(models) == 1:
-        return models[0], None
-    if not models:
-        return None, "No registered model found for institution."
-    return None, "Multiple registered models found; model_name is required."
-
-
-def _batch_for_inference(
-    session: Session,
-    inst_id: str,
-    batch_name: str | None,
-) -> BatchTable | None:
-    """Resolve a named batch or the newest completed inference-ready batch."""
-    query = (
-        select(BatchTable)
-        .where(
-            and_(
-                BatchTable.inst_id == str_to_uuid(inst_id),
-                or_(BatchTable.deleted == False, BatchTable.deleted.is_(None)),
-            )
-        )
-        .order_by(BatchTable.created_at.desc())
-    )
-    batches = list(session.scalars(query).all())
-    if batch_name is not None:
-        decoded_name = decode_url_piece(batch_name)
-        return next(
-            (
-                batch
-                for batch in batches
-                if batch.name == decoded_name
-                and batch.completed
-                and _batch_has_student_and_course(batch)
-            ),
-            None,
-        )
-    return next(
-        (
-            batch
-            for batch in batches
-            if batch.completed and _batch_has_student_and_course(batch)
-        ),
-        None,
-    )
-
-
 @router.get(
     "/{inst_id}/eligible-inference-terms",
     response_model=EligibleInferenceTermsResponse,
@@ -759,8 +680,8 @@ def get_eligible_inference_terms(
     sql_session: Annotated[Session, Depends(get_session)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
-    model_name: str | None = None,
-    batch_name: str | None = None,
+    model_name: str = Query(...),
+    batch_name: str = Query(...),
 ) -> EligibleInferenceTermsResponse:
     """Return academic terms eligible for inference for a selected batch."""
     has_access_to_inst_or_err(inst_id, current_user)
@@ -772,9 +693,10 @@ def get_eligible_inference_terms(
     if institution is None:
         return _invalid_eligible_terms("Institution not found.")
 
-    model, model_error = _registered_model_for_inference(session, inst_id, model_name)
-    if model_error is not None or model is None:
-        return _invalid_eligible_terms(model_error or "Model not found.")
+    model_name = decode_url_piece(model_name)
+    batch_name = decode_url_piece(batch_name)
+    model = require_named_inference_model(session, inst_id, model_name)
+    batch = require_named_inference_batch(session, inst_id, batch_name)
     try:
         model_version = databricks_control.fetch_model_version(
             catalog_name=str(env_vars["CATALOG_NAME"]),
@@ -802,12 +724,6 @@ def get_eligible_inference_terms(
     if config is None:
         return _invalid_eligible_terms("Training config could not be loaded.")
 
-    batch = _batch_for_inference(session, inst_id, batch_name)
-    if batch is None:
-        return _invalid_eligible_terms(
-            "Batch not found or missing student and course files.",
-            decode_url_piece(batch_name) if batch_name else None,
-        )
     try:
         dataframes = read_batch_files_as_dataframes(
             inst_id, batch.files, storage_control

@@ -478,10 +478,6 @@ def test_get_eligible_inference_terms_for_selected_batch(
         f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
         params={"model_name": "retention_model", "batch_name": "batch_foo"},
     )
-    default_batch_response = client.get(
-        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
-        params={"model_name": "retention_model"},
-    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -490,7 +486,6 @@ def test_get_eligible_inference_terms_for_selected_batch(
         "terms": [{"term_label": "fall 2024-25", "valid_student_count": 1}],
         "reason": None,
     }
-    assert default_batch_response.json() == response.json()
     MOCK_DATABRICKS.read_volume_training_config.assert_called_with(
         "school_1", "run-123", "legacy"
     )
@@ -500,60 +495,73 @@ def test_get_eligible_inference_terms_rejects_unauthorized_institution(
     client: TestClient,
 ) -> None:
     response = client.get(
-        f"/institutions/{uuid_to_str(UUID_INVALID)}/eligible-inference-terms"
+        f"/institutions/{uuid_to_str(UUID_INVALID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
     )
 
     assert response.status_code == 401
 
 
-def test_get_eligible_inference_terms_requires_one_registered_model(
+def test_get_eligible_inference_terms_requires_model_and_batch_name(
     client: TestClient,
-    session: sqlalchemy.orm.Session,
 ) -> None:
-    no_model_response = client.get(
+    missing_params = client.get(
         f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms"
     )
-    _add_registered_model(session, "model_one")
-    _add_registered_model(session, "model_two")
-    multiple_models_response = client.get(
-        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms"
+    missing_batch = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model"},
     )
 
-    assert no_model_response.json()["reason"] == (
-        "No registered model found for institution."
-    )
-    assert multiple_models_response.json()["reason"] == (
-        "Multiple registered models found; model_name is required."
-    )
+    assert missing_params.status_code == 422
+    assert missing_batch.status_code == 422
 
 
-def test_get_eligible_inference_terms_reports_missing_batch_and_config(
+def test_get_eligible_inference_terms_reports_missing_model_or_batch(
     client: TestClient,
     session: sqlalchemy.orm.Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
     _add_registered_model(session)
-    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
-    MOCK_DATABRICKS.read_volume_training_config.return_value = {
-        "student_criteria": {},
-        "training_cohorts": [],
-    }
 
-    missing_batch_response = client.get(
+    missing_model = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "missing_model", "batch_name": "batch_foo"},
+    )
+    missing_batch = client.get(
         f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
         params={"model_name": "retention_model", "batch_name": "missing"},
     )
-    MOCK_DATABRICKS.read_volume_training_config.return_value = None
-    missing_config_response = client.get(
-        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
-        params={"model_name": "retention_model"},
+
+    assert missing_model.status_code == 400
+    assert missing_model.json()["detail"] == (
+        "Unexpected number of models found: Expected 1, got 0"
+    )
+    assert missing_batch.status_code == 400
+    assert missing_batch.json()["detail"] == (
+        "Unexpected number of batches found: Expected 1, got 0"
     )
 
-    assert "Batch not found" in missing_batch_response.json()["reason"]
-    assert missing_config_response.json()["reason"] == (
-        "Training config could not be loaded."
+
+def test_get_eligible_inference_terms_reports_missing_config(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _prepare_inference_batch(session)
+    _add_registered_model(session)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = None
+
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
     )
+
+    assert response.status_code == 200
+    assert response.json()["reason"] == "Training config could not be loaded."
 
 
 def test_get_eligible_inference_terms_reports_unsupported_environment(
@@ -567,7 +575,7 @@ def test_get_eligible_inference_terms_reports_unsupported_environment(
 
     response = client.get(
         f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
-        params={"model_name": "retention_model"},
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
     )
 
     assert response.json()["reason"] == (
