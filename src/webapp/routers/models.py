@@ -24,6 +24,9 @@ from ..utilities import (
     get_external_bucket_name,
     SchemaType,
     decode_url_piece,
+    display_model_name,
+    model_name_lookup_values,
+    uc_safe_model_name,
     LEGACY_TO_NEW_SCHEMA,
     batch_input_validated_blob_paths,
 )
@@ -47,6 +50,14 @@ router = APIRouter(
     prefix="/institutions",
     tags=["models"],
 )
+
+
+def _model_name_filter(inst_id: str, model_name: str) -> Any:
+    """Match stored UC names (4d5) or frontend names (4.5)."""
+    return and_(
+        ModelTable.name.in_(model_name_lookup_values(model_name)),
+        ModelTable.inst_id == str_to_uuid(inst_id),
+    )
 
 
 class SchemaConfigObj(BaseModel):
@@ -294,7 +305,7 @@ def read_inst_models(
             {
                 "m_id": uuid_to_str(elem[0].id),
                 "inst_id": uuid_to_str(elem[0].inst_id),
-                "name": elem[0].name,
+                "name": display_model_name(elem[0].name),
                 "created_by": uuid_to_str(elem[0].created_by),
                 "deleted": elem[0].deleted,
                 "valid": elem[0].valid,
@@ -320,21 +331,15 @@ def create_model(
     has_access_to_inst_or_err(inst_id, current_user)
     model_owner_and_higher_or_err(current_user, "model training")
     local_session.set(sql_session)
+    stored_name = uc_safe_model_name(req.name.strip())
     query_result = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == req.name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
+        .execute(select(ModelTable).where(_model_name_filter(inst_id, req.name)))
         .all()
     )
     if len(query_result) == 0:
         model = ModelTable(
-            name=req.name,
+            name=stored_name,
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),
             valid=True,
@@ -343,14 +348,7 @@ def create_model(
         local_session.get().commit()
         query_result = (
             local_session.get()
-            .execute(
-                select(ModelTable).where(
-                    and_(
-                        ModelTable.name == req.name,
-                        ModelTable.inst_id == str_to_uuid(inst_id),
-                    )
-                )
-            )
+            .execute(select(ModelTable).where(_model_name_filter(inst_id, stored_name)))
             .all()
         )
         if not query_result:
@@ -371,7 +369,7 @@ def create_model(
     return {
         "m_id": uuid_to_str(query_result[0][0].id),
         "inst_id": uuid_to_str(query_result[0][0].inst_id),
-        "name": query_result[0][0].name,
+        "name": display_model_name(query_result[0][0].name),
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
@@ -396,14 +394,7 @@ def read_inst_model(
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == model_name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
+        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
         .all()
     )
     if len(query_result) == 0:
@@ -419,7 +410,7 @@ def read_inst_model(
     return {
         "m_id": uuid_to_str(query_result[0][0].id),
         "inst_id": uuid_to_str(query_result[0][0].inst_id),
-        "name": query_result[0][0].name,
+        "name": display_model_name(query_result[0][0].name),
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
@@ -441,10 +432,7 @@ def delete_model(
     sess = local_session.get()
 
     model_list = sess.execute(
-        select(ModelTable).where(
-            ModelTable.name == transformed_model_name,
-            ModelTable.inst_id == str_to_uuid(inst_id),
-        )
+        select(ModelTable).where(_model_name_filter(inst_id, transformed_model_name))
     ).scalar_one_or_none()
     if model_list is None:
         raise HTTPException(
@@ -465,7 +453,7 @@ def delete_model(
 
     return {
         "inst_id": inst_id,
-        "model_name": transformed_model_name,
+        "model_name": display_model_name(transformed_model_name),
         "status": "Model deleted",
     }
 
@@ -485,10 +473,7 @@ def archive_model(
     sess = local_session.get()
 
     model = sess.execute(
-        select(ModelTable).where(
-            ModelTable.name == transformed_model_name,
-            ModelTable.inst_id == str_to_uuid(inst_id),
-        )
+        select(ModelTable).where(_model_name_filter(inst_id, transformed_model_name))
     ).scalar_one_or_none()
     if model is None:
         raise HTTPException(
@@ -505,7 +490,7 @@ def archive_model(
 
     return {
         "inst_id": inst_id,
-        "model_name": transformed_model_name,
+        "model_name": display_model_name(transformed_model_name),
         "archived": 1,
         "status": "Model archived",
     }
@@ -529,14 +514,7 @@ def read_inst_model_outputs(
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == model_name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
+        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
         .all()
     )
     if len(query_result) == 0:
@@ -563,7 +541,7 @@ def read_inst_model_outputs(
             {
                 # JobTable doesn't have inst_id, so we retrieve that from the model query.
                 "inst_id": uuid_to_str(query_result[0][0].inst_id),
-                "m_name": query_result[0][0].name,
+                "m_name": display_model_name(query_result[0][0].name),
                 "run_id": elem.id,
                 "model_run_id": elem.model_run_id,
                 "model_version": elem.model_version,
@@ -600,14 +578,7 @@ def read_inst_model_output(
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == model_name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
+        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
         .all()
     )
     if len(query_result) == 0:
@@ -627,7 +598,7 @@ def read_inst_model_output(
             # TODO: if the output_filename is empty make a query to Databricks
             return {
                 "inst_id": uuid_to_str(query_result[0][0].inst_id),
-                "m_name": query_result[0][0].name,
+                "m_name": display_model_name(query_result[0][0].name),
                 "run_id": elem.id,
                 "created_by": uuid_to_str(elem.created_by),
                 "triggered_at": elem.triggered_at,
@@ -665,12 +636,7 @@ def delete_model_run(
     local_session.set(sql_session)
     sess = local_session.get()
     query_result = sess.execute(
-        select(ModelTable).where(
-            and_(
-                ModelTable.name == model_name,
-                ModelTable.inst_id == str_to_uuid(inst_id),
-            )
-        )
+        select(ModelTable).where(_model_name_filter(inst_id, model_name))
     ).all()
     if len(query_result) == 0:
         raise HTTPException(
@@ -732,7 +698,7 @@ def delete_model_run(
 
     return {
         "inst_id": inst_id,
-        "model_name": model_name,
+        "model_name": display_model_name(model_name),
         "run_id": job_run_id,
         "status": "Run deleted",
     }
@@ -807,14 +773,7 @@ def trigger_inference_run(
         # or: legacy_or_edvise_model_result ?
         shared_model_result = (
             local_session.get()
-            .execute(
-                select(ModelTable).where(
-                    and_(
-                        ModelTable.name == model_name,
-                        ModelTable.inst_id == str_to_uuid(inst_id),
-                    )
-                )
-            )
+            .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
             .all()
         )
         if len(shared_model_result) != 1:
@@ -859,7 +818,7 @@ def trigger_inference_run(
 
         db_req = DatabricksSharedInferenceRunRequest(
             inst_name=inst_result[0][0].name,
-            model_name=model_name,
+            model_name=uc_safe_model_name(model_name),
             config_file_name=req.config_file_name or "",
             features_table_name=req.features_table_name or "",
             gcp_external_bucket_name=get_external_bucket_name(inst_id),
@@ -885,7 +844,7 @@ def trigger_inference_run(
         latest_model_version = databricks_control.fetch_model_version(
             catalog_name=str(env_vars["CATALOG_NAME"]),
             inst_name=inst_result[0][0].name,
-            model_name=model_name,
+            model_name=uc_safe_model_name(model_name),
         )
         model_version = _model_version_as_str(latest_model_version.version)
         model_run_id = latest_model_version.run_id
@@ -902,7 +861,7 @@ def trigger_inference_run(
         local_session.get().add(job)
         return {
             "inst_id": inst_id,
-            "m_name": model_name,
+            "m_name": display_model_name(model_name),
             "run_id": res.job_run_id,
             "created_by": current_user.user_id,
             "triggered_at": triggered_timestamp,
@@ -920,14 +879,7 @@ def trigger_inference_run(
         )
     query_result = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.name == model_name,
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                )
-            )
-        )
+        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
         .all()
     )
     if len(query_result) != 1:
@@ -975,7 +927,7 @@ def trigger_inference_run(
     pdp_db_req = DatabricksPDPInferenceRunRequest(
         inst_name=inst_result[0][0].name,
         filepath_to_type=convert_files_to_dict(batch_result[0][0].files),
-        model_name=model_name,
+        model_name=uc_safe_model_name(model_name),
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
@@ -993,7 +945,7 @@ def trigger_inference_run(
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=inst_result[0][0].name,
-        model_name=model_name,
+        model_name=uc_safe_model_name(model_name),
     )
     model_version = _model_version_as_str(latest_model_version.version)
     model_run_id = latest_model_version.run_id
@@ -1010,7 +962,7 @@ def trigger_inference_run(
     local_session.get().add(job)
     return {
         "inst_id": inst_id,
-        "m_name": model_name,
+        "m_name": display_model_name(model_name),
         "run_id": res.job_run_id,
         "created_by": current_user.user_id,
         "triggered_at": triggered_timestamp,
@@ -1055,7 +1007,7 @@ def get_model_versions(
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{query_result[0][0].name}",
-        model_name=transformed_model_name,
+        model_name=uc_safe_model_name(transformed_model_name),
     )
 
     return latest_model_version
@@ -1087,14 +1039,7 @@ def backfill_model_runs(
 
     model_id = (
         local_session.get()
-        .execute(
-            select(ModelTable).where(
-                and_(
-                    ModelTable.inst_id == str_to_uuid(inst_id),
-                    ModelTable.name == model_name,
-                )
-            )
-        )
+        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
         .all()
     )
 
@@ -1112,7 +1057,7 @@ def backfill_model_runs(
     latest_mv = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{inst_row[0][0].name}",
-        model_name=model_name,
+        model_name=uc_safe_model_name(model_name),
     )
 
     mv_version = str(latest_mv.version)
@@ -1139,7 +1084,7 @@ def backfill_model_runs(
     return {
         "inst_id": str(inst_id),
         "model_id": str(model_id[0][0].id),
-        "model_name": model_name,
+        "model_name": display_model_name(model_name),
         "latest_model_version": {"version": mv_version, "run_id": mv_run_id},
         "updated_count": updated_count,
     }

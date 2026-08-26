@@ -32,6 +32,28 @@ def decode_url_piece(src: str) -> str:
     return unquote_plus(src)
 
 
+# Unity Catalog three-level names split on `.`, so decimal time limits are stored
+# as `4d5` (see edvise get_model_name). The frontend should still show `4.5`.
+_UC_DECIMAL_DOT = re.compile(r"(\d+)\.(\d+)")
+_UC_DECIMAL_PLACEHOLDER = re.compile(r"(\d+)d(\d+)")
+
+
+def uc_safe_model_name(name: str) -> str:
+    """Encode decimal time limits for Unity Catalog / DB storage (4.5 -> 4d5)."""
+    return _UC_DECIMAL_DOT.sub(r"\1d\2", name)
+
+
+def display_model_name(name: str) -> str:
+    """Decode Unity Catalog decimal placeholders for the frontend (4d5 -> 4.5)."""
+    return _UC_DECIMAL_PLACEHOLDER.sub(r"\1.\2", name)
+
+
+def model_name_lookup_values(name: str) -> list[str]:
+    """Accept both frontend (4.5) and Unity Catalog (4d5) model-name spellings."""
+    n = name.strip()
+    return list({n, uc_safe_model_name(n), display_model_name(n)})
+
+
 def file_name_variants_for_lookup(name: str) -> set[str]:
     """Return spellings to try when matching a stored ``file.name``.
 
