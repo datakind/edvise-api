@@ -5,13 +5,13 @@ import pytest
 from fastapi import HTTPException
 from .utilities import (
     decode_url_piece,
+    decode_model_name,
     display_model_name,
     expand_batch_file_name_lookups,
     file_name_variants_for_lookup,
     has_access_to_inst_or_err,
     has_full_data_access_or_err,
     has_at_most_one_school_type,
-    model_name_lookup_values,
     uc_safe_model_name,
     uuid_to_str,
     databricksify_inst_name,
@@ -116,10 +116,10 @@ def test_uc_decimal_model_name_round_trip() -> None:
 
     assert display_model_name(uc_name) == display_name
     assert uc_safe_model_name(display_name) == uc_name
+    assert decode_model_name(display_name) == uc_name
+    assert decode_model_name(uc_name) == uc_name
     assert display_model_name(unchanged) == unchanged
     assert uc_safe_model_name(unchanged) == unchanged
-    assert set(model_name_lookup_values(uc_name)) == {uc_name, display_name}
-    assert set(model_name_lookup_values(display_name)) == {uc_name, display_name}
 
 
 def test_file_name_variants_for_lookup() -> None:

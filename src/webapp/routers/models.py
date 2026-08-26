@@ -23,9 +23,8 @@ from ..utilities import (
     get_current_active_user,
     get_external_bucket_name,
     SchemaType,
-    decode_url_piece,
+    decode_model_name,
     display_model_name,
-    model_name_lookup_values,
     uc_safe_model_name,
     LEGACY_TO_NEW_SCHEMA,
     batch_input_validated_blob_paths,
@@ -50,14 +49,6 @@ router = APIRouter(
     prefix="/institutions",
     tags=["models"],
 )
-
-
-def _model_name_filter(inst_id: str, model_name: str) -> Any:
-    """Match stored UC names (4d5) or frontend names (4.5)."""
-    return and_(
-        ModelTable.name.in_(model_name_lookup_values(model_name)),
-        ModelTable.inst_id == str_to_uuid(inst_id),
-    )
 
 
 class SchemaConfigObj(BaseModel):
@@ -331,15 +322,22 @@ def create_model(
     has_access_to_inst_or_err(inst_id, current_user)
     model_owner_and_higher_or_err(current_user, "model training")
     local_session.set(sql_session)
-    stored_name = uc_safe_model_name(req.name.strip())
+    req_name = uc_safe_model_name(req.name.strip())
     query_result = (
         local_session.get()
-        .execute(select(ModelTable).where(_model_name_filter(inst_id, req.name)))
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == req_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
         .all()
     )
     if len(query_result) == 0:
         model = ModelTable(
-            name=stored_name,
+            name=req_name,
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),
             valid=True,
@@ -348,7 +346,14 @@ def create_model(
         local_session.get().commit()
         query_result = (
             local_session.get()
-            .execute(select(ModelTable).where(_model_name_filter(inst_id, stored_name)))
+            .execute(
+                select(ModelTable).where(
+                    and_(
+                        ModelTable.name == req_name,
+                        ModelTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
             .all()
         )
         if not query_result:
@@ -388,13 +393,20 @@ def read_inst_model(
 
     Only visible to data owners of that institution or higher.
     """
-    model_name = decode_url_piece(model_name)
+    model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     has_full_data_access_or_err(current_user, "this model")
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
         .all()
     )
     if len(query_result) == 0:
@@ -425,14 +437,17 @@ def delete_model(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
 ) -> Any:
-    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    transformed_model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
 
     local_session.set(sql_session)
     sess = local_session.get()
 
     model_list = sess.execute(
-        select(ModelTable).where(_model_name_filter(inst_id, transformed_model_name))
+        select(ModelTable).where(
+            ModelTable.name == transformed_model_name,
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
     ).scalar_one_or_none()
     if model_list is None:
         raise HTTPException(
@@ -466,14 +481,17 @@ def archive_model(
     sql_session: Annotated[Session, Depends(get_session)],
 ) -> Any:
     """Archive a model by setting ``archived`` from 0 to 1."""
-    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    transformed_model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
 
     local_session.set(sql_session)
     sess = local_session.get()
 
     model = sess.execute(
-        select(ModelTable).where(_model_name_filter(inst_id, transformed_model_name))
+        select(ModelTable).where(
+            ModelTable.name == transformed_model_name,
+            ModelTable.inst_id == str_to_uuid(inst_id),
+        )
     ).scalar_one_or_none()
     if model is None:
         raise HTTPException(
@@ -509,12 +527,19 @@ def read_inst_model_outputs(
     Only visible to users of that institution or Datakinder access types.
     Returns a list of runs in order of most recent to least recent based on triggering time.
     """
-    model_name = decode_url_piece(model_name)
+    model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
         .all()
     )
     if len(query_result) == 0:
@@ -573,12 +598,19 @@ def read_inst_model_output(
     Only visible to users of that institution or Datakinder access types.
     If a viewer has record allowlist restrictions applied, only those records are returned.
     """
-    model_name = decode_url_piece(model_name)
+    model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     query_result = (
         local_session.get()
-        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
         .all()
     )
     if len(query_result) == 0:
@@ -631,12 +663,17 @@ def delete_model_run(
 
     Only visible to users of that institution or Datakinder access types.
     """
-    model_name = decode_url_piece(model_name)
+    model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     sess = local_session.get()
     query_result = sess.execute(
-        select(ModelTable).where(_model_name_filter(inst_id, model_name))
+        select(ModelTable).where(
+            and_(
+                ModelTable.name == model_name,
+                ModelTable.inst_id == str_to_uuid(inst_id),
+            )
+        )
     ).all()
     if len(query_result) == 0:
         raise HTTPException(
@@ -729,7 +766,7 @@ def trigger_inference_run(
 
     Only visible to users of that institution or Datakinder access types.
     """
-    model_name = decode_url_piece(model_name)
+    model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
     local_session.set(sql_session)
     inst_result = (
@@ -773,7 +810,14 @@ def trigger_inference_run(
         # or: legacy_or_edvise_model_result ?
         shared_model_result = (
             local_session.get()
-            .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
+            .execute(
+                select(ModelTable).where(
+                    and_(
+                        ModelTable.name == model_name,
+                        ModelTable.inst_id == str_to_uuid(inst_id),
+                    )
+                )
+            )
             .all()
         )
         if len(shared_model_result) != 1:
@@ -818,7 +862,7 @@ def trigger_inference_run(
 
         db_req = DatabricksSharedInferenceRunRequest(
             inst_name=inst_result[0][0].name,
-            model_name=uc_safe_model_name(model_name),
+            model_name=model_name,
             config_file_name=req.config_file_name or "",
             features_table_name=req.features_table_name or "",
             gcp_external_bucket_name=get_external_bucket_name(inst_id),
@@ -844,7 +888,7 @@ def trigger_inference_run(
         latest_model_version = databricks_control.fetch_model_version(
             catalog_name=str(env_vars["CATALOG_NAME"]),
             inst_name=inst_result[0][0].name,
-            model_name=uc_safe_model_name(model_name),
+            model_name=model_name,
         )
         model_version = _model_version_as_str(latest_model_version.version)
         model_run_id = latest_model_version.run_id
@@ -879,7 +923,14 @@ def trigger_inference_run(
         )
     query_result = (
         local_session.get()
-        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.name == model_name,
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                )
+            )
+        )
         .all()
     )
     if len(query_result) != 1:
@@ -927,7 +978,7 @@ def trigger_inference_run(
     pdp_db_req = DatabricksPDPInferenceRunRequest(
         inst_name=inst_result[0][0].name,
         filepath_to_type=convert_files_to_dict(batch_result[0][0].files),
-        model_name=uc_safe_model_name(model_name),
+        model_name=model_name,
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
@@ -945,7 +996,7 @@ def trigger_inference_run(
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=inst_result[0][0].name,
-        model_name=uc_safe_model_name(model_name),
+        model_name=model_name,
     )
     model_version = _model_version_as_str(latest_model_version.version)
     model_run_id = latest_model_version.run_id
@@ -981,7 +1032,7 @@ def get_model_versions(
     sql_session: Annotated[Session, Depends(get_session)],
     databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
 ) -> Any:
-    transformed_model_name = str(decode_url_piece(model_name)).strip()
+    transformed_model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
 
     local_session.set(sql_session)
@@ -1007,7 +1058,7 @@ def get_model_versions(
     latest_model_version = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{query_result[0][0].name}",
-        model_name=uc_safe_model_name(transformed_model_name),
+        model_name=transformed_model_name,
     )
 
     return latest_model_version
@@ -1026,7 +1077,7 @@ def backfill_model_runs(
     Temporary endpoint to populate model_run_id and model_version on existing jobs for this model.
     Use only when backfilling historical job runs, not for regular operation.
     """
-    model_name = str(decode_url_piece(model_name)).strip()
+    model_name = decode_model_name(model_name)
     has_access_to_inst_or_err(inst_id, current_user)
 
     # Load institution
@@ -1039,7 +1090,14 @@ def backfill_model_runs(
 
     model_id = (
         local_session.get()
-        .execute(select(ModelTable).where(_model_name_filter(inst_id, model_name)))
+        .execute(
+            select(ModelTable).where(
+                and_(
+                    ModelTable.inst_id == str_to_uuid(inst_id),
+                    ModelTable.name == model_name,
+                )
+            )
+        )
         .all()
     )
 
@@ -1057,7 +1115,7 @@ def backfill_model_runs(
     latest_mv = databricks_control.fetch_model_version(
         catalog_name=str(env_vars["CATALOG_NAME"]),
         inst_name=f"{inst_row[0][0].name}",
-        model_name=uc_safe_model_name(model_name),
+        model_name=model_name,
     )
 
     mv_version = str(latest_mv.version)

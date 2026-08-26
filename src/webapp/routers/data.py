@@ -31,11 +31,10 @@ from ..utilities import (
     DataSource,
     get_external_bucket_name,
     decode_url_piece,
+    decode_model_name,
     display_model_name,
     expand_batch_file_name_lookups,
     file_name_variants_for_lookup,
-    model_name_lookup_values,
-    uc_safe_model_name,
 )
 
 from ..database import (
@@ -2023,7 +2022,7 @@ def add_custom_school_job(
     has_full_data_access_or_err(current_user, "this model")
     local_session.set(sql_session)
 
-    model_name = decode_url_piece(model_name)
+    model_name = decode_model_name(model_name)
     inst_result = (
         local_session.get()
         .execute(
@@ -2041,7 +2040,7 @@ def add_custom_school_job(
         .execute(
             select(ModelTable).where(
                 and_(
-                    ModelTable.name.in_(model_name_lookup_values(model_name)),
+                    ModelTable.name == model_name,
                     ModelTable.inst_id == str_to_uuid(inst_id),
                 )
             )
@@ -2061,7 +2060,7 @@ def add_custom_school_job(
         latest_model_version = databricks_control.fetch_model_version(
             catalog_name=str(env_vars["CATALOG_NAME"]),
             inst_name=inst_result[0][0].name,
-            model_name=uc_safe_model_name(model_name),
+            model_name=model_name,
         )
         model_version = (
             str(latest_model_version.version)

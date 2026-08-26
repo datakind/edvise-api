@@ -48,10 +48,9 @@ def display_model_name(name: str) -> str:
     return _UC_DECIMAL_PLACEHOLDER.sub(r"\1.\2", name)
 
 
-def model_name_lookup_values(name: str) -> list[str]:
-    """Accept both frontend (4.5) and Unity Catalog (4d5) model-name spellings."""
-    n = name.strip()
-    return list({n, uc_safe_model_name(n), display_model_name(n)})
+def decode_model_name(src: str) -> str:
+    """URL-decode a model path segment and encode decimals for UC (4.5 -> 4d5)."""
+    return uc_safe_model_name(decode_url_piece(src).strip())
 
 
 def file_name_variants_for_lookup(name: str) -> set[str]:

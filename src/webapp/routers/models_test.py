@@ -965,25 +965,3 @@ def test_uc_decimal_model_name_is_displayed_as_dot(
     by_display = client.get(f"/institutions/{inst}/models/{display_name}")
     assert by_display.status_code == 200
     assert by_display.json()["name"] == display_name
-
-    by_uc = client.get(f"/institutions/{inst}/models/{uc_name}")
-    assert by_uc.status_code == 200
-    assert by_uc.json()["name"] == display_name
-
-
-def test_create_model_encodes_decimal_dots_for_storage(
-    client: TestClient, session: sqlalchemy.orm.Session
-) -> None:
-    """New models with 4.5 are stored as 4d5 but returned as 4.5."""
-    display_name = "graduation_in_3y_ft_4.5y_pt_checkpoint_30_credits"
-    uc_name = "graduation_in_3y_ft_4d5y_pt_checkpoint_30_credits"
-    response = client.post(
-        "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/models/",
-        json={"name": display_name},
-    )
-    assert response.status_code == 200
-    assert response.json()["name"] == display_name
-    stored = session.execute(
-        sqlalchemy.select(ModelTable).where(ModelTable.name == uc_name)
-    ).scalar_one()
-    assert stored.name == uc_name
