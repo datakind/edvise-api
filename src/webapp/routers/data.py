@@ -487,7 +487,7 @@ def _shared_student_id_column(
     courses: pd.DataFrame,
 ) -> str | None:
     """Return a supported student identifier present in both DataFrames."""
-    for column in ("student_id", "study_id"):
+    for column in ("student_id", "study_id", "learner_id"):
         if column in students.columns and column in courses.columns:
             return column
     return None
@@ -601,7 +601,7 @@ def resolve_eligible_inference_terms(
     student_id_column = _shared_student_id_column(students, courses)
     if student_id_column is None:
         return _invalid_eligible_terms(
-            "Student and course files must share student_id or study_id.",
+            "Student and course files must share student_id, study_id, or learner_id.",
             batch_name,
         )
 

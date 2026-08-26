@@ -230,6 +230,40 @@ def test_resolve_eligible_inference_terms_supports_entry_columns_and_multi_year_
     ]
 
 
+def test_resolve_eligible_inference_terms_supports_edvise_learner_id():
+    students = pd.DataFrame(
+        {
+            "learner_id": ["1", "2", "3"],
+            "enrollment_type": ["FIRST-TIME", "FIRST-TIME", "TRANSFER"],
+            "entry_year": ["2022-23", "2023-24", "2023-24"],
+            "entry_term": ["FALL", "SPRING", "FALL"],
+        }
+    )
+    courses = pd.DataFrame(
+        {
+            "learner_id": ["1", "2", "2", "3"],
+            "academic_term": ["FALL", "FALL", "SPRING", "SPRING"],
+            "academic_year": ["2024-25", "2024-25", "2024-25", "2024-25"],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(
+        students,
+        courses,
+        {
+            "student_criteria": {"enrollment_type": "FIRST-TIME"},
+            "training_cohorts": ["fall 2022-23"],
+        },
+        "es batch",
+    )
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "spring 2024-25", "valid_student_count": 1},
+        {"term_label": "fall 2024-25", "valid_student_count": 1},
+    ]
+
+
 def counter_repr(x):
     """Orderless comparison of two iterables."""
     return {frozenset(Counter(item).items()) for item in x}
