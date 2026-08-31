@@ -15,7 +15,7 @@ from databricks.sdk.service.sql import (
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
 from .config import databricks_vars, gcs_vars
-from .utilities import databricksify_inst_name, SchemaType
+from .utilities import databricksify_inst_name, SchemaType, uc_model_name
 from typing import List, Any, Dict, Optional
 import requests
 import hashlib
@@ -396,7 +396,7 @@ def _build_shared_inference_job_parameters(
     return {
         "databricks_institution_name": databricks_institution_name,
         "DB_workspace": databricks_vars["DATABRICKS_WORKSPACE"],
-        "model_name": req.model_name,
+        "model_name": uc_model_name(req.model_name),
         "config_file_name": req.config_file_name,
         "gcp_bucket_name": req.gcp_external_bucket_name,
         "datakind_notification_email": req.email,
@@ -773,7 +773,7 @@ class DatabricksControl(BaseModel):
                         "DATABRICKS_WORKSPACE"
                     ],  # is this value the same PER environ? dev/staging/prod
                     "gcp_bucket_name": req.gcp_external_bucket_name,
-                    "model_name": req.model_name,
+                    "model_name": uc_model_name(req.model_name),
                     "datakind_notification_email": req.email,
                     "DK_CC_EMAIL": req.email,
                 },
@@ -1182,7 +1182,7 @@ class DatabricksControl(BaseModel):
         self, catalog_name: str, inst_name: str, model_name: str
     ) -> Any:
         schema = databricksify_inst_name(inst_name)
-        model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
+        model_name_path = f"{catalog_name}.{schema}_gold.{uc_model_name(model_name)}"
 
         try:
             w = WorkspaceClient(
@@ -1212,7 +1212,7 @@ class DatabricksControl(BaseModel):
 
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:
         schema = databricksify_inst_name(inst_name)
-        model_name_path = f"{catalog_name}.{schema}_gold.{model_name}"
+        model_name_path = f"{catalog_name}.{schema}_gold.{uc_model_name(model_name)}"
 
         try:
             w = WorkspaceClient(

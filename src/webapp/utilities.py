@@ -22,28 +22,23 @@ from .database import get_session, AccountTable, ApiKeyTable, FileTable
 from .config import env_vars
 
 
-# Unity Catalog always stores decimal time limits as `4d5` (never `4.5`).
-# API responses show `4.5` to the frontend only.
-_UC_DECIMAL_DOT = re.compile(r"(\d+)\.(\d+)(?=[yYmM])")
-_UC_DECIMAL_PLACEHOLDER = re.compile(r"(\d+)d(\d+)(?=[yYmM])")
-
-
 def decode_url_piece(src: str) -> str:
     """Decode a URL path segment the way most clients encode names.
 
     Uses :func:`urllib.parse.unquote_plus` so ``+`` is treated as a space (common
     when clients apply form-style encoding to paths). A literal ``+`` in a name
     must be sent as ``%2B``.
-
-    Decimal time limits (``4.5y``) are encoded to ``4d5y`` so DB and Databricks
-    lookups use the Unity Catalog name. UC always has ``4d5``, never ``4.5``.
     """
-    return _UC_DECIMAL_DOT.sub(r"\1d\2", unquote_plus(src))
+    return unquote_plus(src)
 
 
-def display_model_name(name: str) -> str:
-    """Frontend-only: show ``4.5y`` for a UC name that is always stored as ``4d5y``."""
-    return _UC_DECIMAL_PLACEHOLDER.sub(r"\1.\2", name)
+# Unity Catalog does not allow `.` in model names, so 4.5y is stored as 4d5y.
+_UC_DECIMAL_DOT = re.compile(r"(\d+)\.(\d+)(?=[yYmM])")
+
+
+def uc_model_name(name: str) -> str:
+    """Encode 4.5y -> 4d5y for Unity Catalog / Databricks model ids."""
+    return _UC_DECIMAL_DOT.sub(r"\1d\2", name)
 
 
 def file_name_variants_for_lookup(name: str) -> set[str]:
