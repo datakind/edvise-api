@@ -647,6 +647,10 @@ class ModelTable(Base):
     # If true, the model has been approved and is ready for use.
     valid: Mapped[bool] = mapped_column(nullable=True)
     archived: Mapped[int] = mapped_column(Integer, default=0)
+    # The time the model was archived. Null while the model is not archived.
+    archived_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # The time the deletion request was set.
     deleted_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=True

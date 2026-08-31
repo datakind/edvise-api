@@ -5,7 +5,7 @@ from typing import Annotated, Any, cast
 import jsonpickle
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import and_, update, or_
+from sqlalchemy import and_, func, update, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 from ..databricks import (
@@ -226,6 +226,7 @@ class ModelInfo(BaseModel):
     valid: bool = True
     deleted: bool | None = None
     archived: bool = False
+    archived_at: datetime | None = None
 
 
 def _model_version_as_str(version: Any) -> str | None:
@@ -368,6 +369,7 @@ def read_inst_models(
                 "deleted": elem[0].deleted,
                 "valid": elem[0].valid,
                 "archived": bool(elem[0].archived),
+                "archived_at": elem[0].archived_at,
             }
         )
     return res
@@ -445,6 +447,7 @@ def create_model(
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
         "archived": bool(query_result[0][0].archived),
+        "archived_at": query_result[0][0].archived_at,
     }
 
 
@@ -493,6 +496,7 @@ def read_inst_model(
         "deleted": query_result[0][0].deleted,
         "valid": query_result[0][0].valid,
         "archived": bool(query_result[0][0].archived),
+        "archived_at": query_result[0][0].archived_at,
     }
 
 
@@ -570,12 +574,14 @@ def archive_model(
         )
 
     model.archived = 1
+    model.archived_at = func.now()
     sess.commit()
 
     return {
         "inst_id": inst_id,
         "model_name": transformed_model_name,
         "archived": 1,
+        "archived_at": model.archived_at,
         "status": "Model archived",
     }
 

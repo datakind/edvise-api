@@ -311,7 +311,9 @@ def test_archive_model(client: TestClient, session: sqlalchemy.orm.Session) -> N
 
     response = client.patch(base + "sample_model_for_school_1/archive")
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    assert payload.pop("archived_at") is not None
+    assert payload == {
         "inst_id": uuid_to_str(USER_VALID_INST_UUID),
         "model_name": "sample_model_for_school_1",
         "archived": 1,
@@ -320,6 +322,7 @@ def test_archive_model(client: TestClient, session: sqlalchemy.orm.Session) -> N
     model_row = session.get(ModelTable, SAMPLE_UUID)
     assert model_row is not None
     assert model_row.archived == 1
+    assert model_row.archived_at is not None
     assert client.patch(base + "sample_model_for_school_1/archive").status_code == 409
 
     # Confirm the archived state is reflected on the model read endpoints.
@@ -331,11 +334,11 @@ def test_archive_model(client: TestClient, session: sqlalchemy.orm.Session) -> N
         "/institutions/" + uuid_to_str(USER_VALID_INST_UUID) + "/models"
     )
     assert list_response.status_code == 200
-    assert next(
-        m["archived"]
-        for m in list_response.json()
-        if m["name"] == "sample_model_for_school_1"
+    listed_model = next(
+        m for m in list_response.json() if m["name"] == "sample_model_for_school_1"
     )
+    assert listed_model["archived"]
+    assert listed_model["archived_at"] is not None
 
 
 def test_read_inst_model_outputs(client: TestClient) -> None:
