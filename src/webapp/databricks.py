@@ -1211,13 +1211,29 @@ class DatabricksControl(BaseModel):
 
         records: Any = []
 
-        # Helper: consume one chunk-like object (first result or subsequent chunk)
+        def _link_attr(link_obj: Any, name: str) -> Any:
+            if isinstance(link_obj, dict):
+                return link_obj.get(name)
+            return getattr(link_obj, name, None)
+
+        def _next_chunk_index(chunk_obj: Any) -> int | None:
+            """Return next chunk index for EXTERNAL_LINKS (on links) or INLINE."""
+            links = getattr(chunk_obj, "external_links", None) or []
+            next_idx: int | None = None
+            for link_obj in links:
+                idx = _link_attr(link_obj, "next_chunk_index")
+                if idx is not None:
+                    next_idx = int(idx)
+            if next_idx is not None:
+                return next_idx
+            idx = getattr(chunk_obj, "next_chunk_index", None)
+            return int(idx) if idx is not None else None
+
         def _consume_chunk(chunk_obj: Any) -> int | None:
+            """Download EXTERNAL_LINKS payloads; return next_chunk_index if any."""
             links = getattr(chunk_obj, "external_links", None) or []
             for link_obj in links:
-                url = getattr(link_obj, "external_link", None)
-                if url is None and isinstance(link_obj, dict):
-                    url = link_obj.get("external_link")
+                url = _link_attr(link_obj, "external_link")
                 if not url:
                     continue
                 # IMPORTANT: do not send Databricks auth header to presigned URLs.
@@ -1232,20 +1248,37 @@ class DatabricksControl(BaseModel):
                     if not isinstance(row, list):
                         raise ValueError("Unexpected row shape (expected list).")
                     records.append(dict(zip(cols, row)))
-            return getattr(chunk_obj, "next_chunk_index", None)
+            return _next_chunk_index(chunk_obj)
 
-        # First batch is in resp.result
-        if not resp.result:
-            return records
-        next_idx = _consume_chunk(resp.result)
+        total_chunks = getattr(resp.manifest, "total_chunk_count", None)
+        expected_rows = getattr(resp.manifest, "total_row_count", None)
 
-        # Remaining batches by chunk index
-        while next_idx is not None:
-            chunk = w.statement_execution.get_statement_result_chunk_n(
-                statement_id=stmt_id,
-                chunk_index=next_idx,
+        # Prefer manifest chunk count: EXTERNAL_LINKS next_chunk_index is on each
+        # link, and relying only on result.next_chunk_index truncates large tables.
+        if total_chunks is not None and int(total_chunks) > 0:
+            if resp.result:
+                _consume_chunk(resp.result)
+            for chunk_index in range(1, int(total_chunks)):
+                chunk = w.statement_execution.get_statement_result_chunk_n(
+                    statement_id=stmt_id,
+                    chunk_index=chunk_index,
+                )
+                _consume_chunk(chunk)
+        elif resp.result:
+            next_idx = _consume_chunk(resp.result)
+            while next_idx is not None:
+                chunk = w.statement_execution.get_statement_result_chunk_n(
+                    statement_id=stmt_id,
+                    chunk_index=next_idx,
+                )
+                next_idx = _consume_chunk(chunk)
+
+        if expected_rows is not None and len(records) != int(expected_rows):
+            raise ValueError(
+                f"Incomplete Databricks EXTERNAL_LINKS fetch for {table_fqn}: "
+                f"got {len(records)} rows, expected {expected_rows} "
+                f"(chunks={total_chunks})"
             )
-            next_idx = _consume_chunk(chunk)
 
         with _L1_LOCK:
             if records:
