@@ -112,7 +112,9 @@ def startup_env_vars():
 def db_connection() -> str:
     value = (os.environ.get("DB_CONNECTION") or "").strip().lower()
     if not value:
-        return "sqlite" if os.environ.get("ENV", "LOCAL").upper() == "LOCAL" else "mysql"
+        return (
+            "sqlite" if os.environ.get("ENV", "LOCAL").upper() == "LOCAL" else "mysql"
+        )
     if value not in ("sqlite", "mysql"):
         raise ValueError("DB_CONNECTION must be sqlite or mysql.")
     return value
