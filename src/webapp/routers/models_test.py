@@ -79,7 +79,6 @@ def same_model_orderless(a_elem: ModelInfo, b_elem: ModelInfo) -> bool:
         a_elem.inst_id != b_elem.inst_id
         or a_elem.name != b_elem.name
         or a_elem.m_id != b_elem.m_id
-        or a_elem.valid != b_elem.valid
         or a_elem.deleted != b_elem.deleted
         or a_elem.archived != b_elem.archived
     ):
@@ -175,7 +174,6 @@ def session_fixture():
                 ]
             ]
         ),
-        valid=True,
     )
     run_1 = JobTable(
         id=RUN_ID,
@@ -265,7 +263,6 @@ def test_read_inst_models(client: TestClient) -> None:
             name="sample_model_for_school_1",
             inst_id="1d7c75c33eda42949c6675ea8af97b55",
             deleted=None,
-            valid=True,
             archived=False,
         ),
     )
@@ -298,7 +295,6 @@ def test_read_inst_model(client: TestClient) -> None:
         inst_id="1d7c75c33eda42949c6675ea8af97b55",
         m_id="e4862c62829440d8ab4c9c298f02f619",
         name="sample_model_for_school_1",
-        valid=True,
         archived=False,
     )
     assert same_model_orderless(response_model, expected_model)
@@ -662,7 +658,6 @@ def test_trigger_inference_run_derives_schema_configs_when_null(
         inst_id=USER_VALID_INST_UUID,
         name="pdp_model_without_schema_configs",
         schema_configs=None,
-        valid=True,
     )
     session.add(null_config_model)
     session.commit()
@@ -758,7 +753,6 @@ def test_trigger_es_inference_run_edvise_institution(
                 ]
             ]
         ),
-        valid=True,
     )
     edvise_batch = BatchTable(
         id=uuid.uuid4(),
@@ -862,7 +856,6 @@ def test_trigger_legacy_inference_passes_normalized_term_filter(
                 ]
             ]
         ),
-        valid=True,
     )
     legacy_batch = BatchTable(
         id=uuid.uuid4(),
@@ -948,7 +941,6 @@ def test_trigger_es_inference_run_genai_institution(
         inst_id=genai_inst.id,
         name="genai_es_model",
         schema_configs=None,
-        valid=True,
     )
     genai_batch = BatchTable(
         id=uuid.uuid4(),
@@ -1034,7 +1026,6 @@ def test_trigger_es_inference_run_genai_unknown_only_schemas(
         inst_id=genai_inst.id,
         name="genai_model_no_schema_configs",
         schema_configs=None,
-        valid=True,
     )
     genai_batch = BatchTable(
         id=uuid.uuid4(),
@@ -1113,7 +1104,6 @@ def test_uc_decimal_model_name_is_displayed_as_dot(
             id=uuid.uuid4(),
             inst_id=USER_VALID_INST_UUID,
             name=uc_name,
-            valid=True,
         )
     )
     session.commit()

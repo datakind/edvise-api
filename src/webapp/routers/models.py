@@ -224,7 +224,6 @@ class ModelInfo(BaseModel):
     inst_id: str
     # User id of created_by.
     created_by: str | None = None
-    valid: bool = True
     deleted: bool | None = None
     archived: bool = False
     archived_at: datetime | None = None
@@ -378,7 +377,6 @@ def read_inst_models(
                 "name": elem[0].name,
                 "created_by": uuid_to_str(elem[0].created_by),
                 "deleted": elem[0].deleted,
-                "valid": elem[0].valid,
                 "archived": bool(elem[0].archived),
                 "archived_at": elem[0].archived_at,
             }
@@ -420,7 +418,6 @@ def create_model(
             name=req_name,
             inst_id=str_to_uuid(inst_id),
             created_by=str_to_uuid(current_user.user_id),
-            valid=True,
         )
         local_session.get().add(model)
         local_session.get().commit()
@@ -457,7 +454,6 @@ def create_model(
         "name": query_result[0][0].name,
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
-        "valid": query_result[0][0].valid,
         "archived": bool(query_result[0][0].archived),
         "archived_at": query_result[0][0].archived_at,
     }
@@ -506,7 +502,6 @@ def read_inst_model(
         "name": query_result[0][0].name,
         "created_by": uuid_to_str(query_result[0][0].created_by),
         "deleted": query_result[0][0].deleted,
-        "valid": query_result[0][0].valid,
         "archived": bool(query_result[0][0].archived),
         "archived_at": query_result[0][0].archived_at,
     }

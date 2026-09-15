@@ -100,7 +100,6 @@ MODEL_OBJ = {
     "inst_id": "1d7c75c33eda42949c6675ea8af97b55",
     "m_id": "e4862c62829440d8ab4c9c298f02f619",
     "name": "sample_model_for_school_1",
-    "valid": True,
 }
 
 DATA_OBJ = {
