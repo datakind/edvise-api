@@ -114,7 +114,6 @@ def _setup_test_institutions(session: Session) -> None:
                             inst_id=uuid.UUID(inst["inst_id"]),
                             name=model["name"],
                             created_by=LOCAL_USER_UUID,
-                            valid=model.get("valid", True),
                             created_at=DATETIME_TESTING,
                             updated_at=DATETIME_TESTING,
                         )
@@ -644,8 +643,6 @@ class ModelTable(Base):
     created_by: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=True)
     # If null, the following is non-deleted.
     deleted: Mapped[bool] = mapped_column(nullable=True)
-    # If true, the model has been approved and is ready for use.
-    valid: Mapped[bool] = mapped_column(nullable=True)
     archived: Mapped[int] = mapped_column(Integer, default=0)
     # The time the model was archived. Null while the model is not archived.
     archived_at: Mapped[datetime.datetime | None] = mapped_column(

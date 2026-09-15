@@ -545,7 +545,6 @@ def _add_registered_model(
             inst_id=USER_VALID_INST_UUID,
             name=name,
             created_by=CREATOR_UUID,
-            valid=True,
             deleted=False,
             archived=0,
             created_at=DATETIME_TESTING,
