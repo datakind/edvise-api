@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 import logging
-from ..config import databricks_vars, env_vars, gcs_vars
+from ..config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 import tempfile
 import pathlib
 
@@ -17,6 +17,7 @@ from ..utilities import (
     str_to_uuid,
     get_current_active_user,
     databricksify_inst_name,
+    uc_model_name,
 )
 
 from ..database import (
@@ -455,7 +456,7 @@ def get_model_cards(
         )
 
     run_id = job_result.model_run_id
-    model_name = job_result.model.name
+    model_name = uc_model_name(job_result.model.name)
 
     try:
         w = WorkspaceClient(
@@ -476,12 +477,11 @@ def get_model_cards(
 
     try:
         env = str(env_vars["ENV"]).strip().upper()
-        SCHEMAS = {"DEV": "dev_sst_02", "STAGING": "staging_sst_01"}
-        if env not in SCHEMAS:
+        if env not in ENV_TO_VOLUME_SCHEMA:
             raise ValueError(
                 f"Unsupported ENV {env_vars.get('ENV')!r}; expected DEV or STAGING"
             )
-        env_schema = SCHEMAS[env]
+        env_schema = ENV_TO_VOLUME_SCHEMA[env]
 
         volume_path = f"/Volumes/{env_schema}/{databricksify_inst_name(query_result[0][0].name)}_gold/gold_volume/model_cards/{run_id}/model-card-{model_name}.pdf"
         LOGGER.info(f"Attempting to download from {volume_path}")
