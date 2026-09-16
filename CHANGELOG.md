@@ -1,3 +1,11 @@
+## 1.6.0 (2026-09-16)
+- chore: bump `edvise` to 1.9.2
+- ci: update edvise auto-bump for the PEP 508 git pin
+
+## 1.5.1 (2026-08-24)
+- chore: pin `edvise` to 1.9.1
+- ci: update edvise version check for the git pin
+
 ## 1.5.0 (2026-08-10)
 - feat: cut over DB schema management to Alembic with `api-migrate` and skip flag (#286)
 - feat: enable Alembic `api-migrate` on webapp Cloud Build (#289)
