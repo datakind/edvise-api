@@ -1,3 +1,14 @@
+## 1.6.0 (2026-09-16)
+- feat: return eligible academic terms via `/{inst_id}/eligible-inference-terms` and pass `term_filter` to inference (#201)
+- feat: add `archived_at` timestamp to models (#300)
+- feat: drop the stale `valid` field from models via Alembic migration (#303)
+- fix: fetch all Databricks `EXTERNAL_LINKS` chunks in `fetch_table_data` (#299)
+- fix: encode/decode Unity Catalog decimal model names via shared edvise helpers (#298)
+- fix: display decimal time limits as `4.5Y` to match `3Y` (#301)
+- refactor: unify local and cloud database connection setup (#300)
+- chore: bump `edvise` to 1.14.4
+- ci: update edvise auto-bump for the PEP 508 git pin
+
 ## 1.5.1 (2026-08-24)
 - chore: pin `edvise` to 1.9.1
 - ci: update edvise version check for the git pin
