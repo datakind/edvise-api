@@ -65,6 +65,44 @@ def test_validate_file_reader_pdp_student_calls_edvise_read_path(
         assert call_args[3] == "pdp"
 
 
+def test_validate_file_reader_pdp_passes_bronze_cohort_converter(
+    tmp_path: Path,
+) -> None:
+    """PDP STUDENT uploads pass bronze dataio cohort converter into the read path."""
+    csv_path = tmp_path / "cohort.csv"
+    pd.DataFrame({"x": [1]}).to_csv(csv_path, index=False)
+
+    def cohort_converter(df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+    with (
+        patch(
+            "src.webapp.validation.load_es_converters_from_bronze",
+            return_value=(cohort_converter, None),
+        ) as mock_load,
+        patch(
+            "src.webapp.validation._validate_pdp_with_edvise_read",
+            return_value={
+                "validation_status": "passed",
+                "schemas": ["STUDENT"],
+                "missing_optional": [],
+                "unknown_extra_columns": [],
+                "normalized_df": pd.DataFrame({"student_id": ["s1"]}),
+            },
+        ) as mock_pdp,
+    ):
+        result = validate_file_reader(
+            str(csv_path),
+            ["STUDENT"],
+            institution_id="pdp",
+            institution_identifier="pdp_school",
+        )
+
+    assert result["validation_status"] == "passed"
+    mock_load.assert_called_once_with("pdp_school")
+    assert mock_pdp.call_args.kwargs["pdp_cohort_converter_func"] is cohort_converter
+
+
 def test_validate_file_reader_pdp_course_calls_edvise_read_path(tmp_path: Path) -> None:
     """When institution_id is pdp and allowed_schema is [COURSE], PDP edvise-read path is used."""
     csv_path = tmp_path / "course.csv"
@@ -351,7 +389,7 @@ def test_validate_pdp_with_edvise_read_accepts_file_like() -> None:
     # Edvise read was given a path (temp file when file-like); keyword is file_path
     assert "file_path" in mock_read.call_args[1]
     assert isinstance(mock_read.call_args[1]["file_path"], str)
-    # Cohort validation uses no converter unless pdp_cohort_converter_func is passed
+    # Cohort validation uses no converter unless pdp_cohort_converter_func or bronze dataio is used
     assert mock_read.call_args[1]["converter_func"] is None
 
 

@@ -1,11 +1,10 @@
 """File validation functions for upload workflows.
 
-PDP uploads validate through Pandera schemas imported from the ``edvise``
-package (optional school converters may be passed in). Edvise Schema (ES)
-uploads fetch school ``training_inputs/dataio.py`` converters and
-``training_inputs/config.toml`` grade maps from the institution bronze volume
-(when present), then validate via ``read_raw_es_*`` + ES Pandera schemas —
-parity with ES Databricks data-audit jobs. Legacy uploads use any-format CSV
+PDP and Edvise Schema (ES) uploads fetch school ``training_inputs/dataio.py``
+converters from the institution bronze volume when present (soft-fallback to
+defaults). ES also loads ``training_inputs/config.toml`` grade maps, then
+validates via ``read_raw_es_*`` + ES Pandera schemas. PDP validates via
+``read_raw_pdp_*`` + PDP Pandera schemas. Legacy uploads use any-format CSV
 read plus a PII column-name guard.
 The old API-local JSON schema validation path has been removed.
 """
@@ -90,10 +89,11 @@ def validate_file_reader(
         filename: Path or file-like object for the CSV.
         allowed_schema: List of model names to validate against.
         institution_id: Validation namespace: "edvise", "pdp", or "legacy".
-        institution_identifier: For ES, institution name for bronze ``dataio`` lookup.
-        pdp_cohort_converter_func: Optional cohort row transform before Pandera; default
-            None. Batch PDP jobs may still apply school-specific cohort converters via ``dataio``.
-        pdp_course_converter_func: Optional course converter; default duplicate handling only.
+        institution_identifier: Institution name for bronze ``dataio`` lookup (PDP and ES).
+        pdp_cohort_converter_func: Optional cohort row transform before Pandera. When
+            omitted, PDP loads ``converter_func_cohort`` from bronze ``dataio.py``.
+        pdp_course_converter_func: Optional course converter. When omitted, PDP loads
+            ``converter_func_course`` from bronze, else default duplicate handling.
 
     Returns:
         Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
@@ -228,9 +228,9 @@ def _model_list_from_models(models: Union[str, List[str], None]) -> List[str]:
 
 
 # --------------------------------------------------------------------------- #
-# PDP single-model path: edvise read + Pandera validate. Cohort converter defaults
-# to None so PDP validated row sets can differ from batch jobs that use dataio
-# converters.
+# PDP single-model path: bronze dataio converters (when present) + edvise read
+# + Pandera validate. Soft-falls back to no cohort converter / default course
+# duplicate handling when bronze dataio is missing — same as data-audit jobs.
 # --------------------------------------------------------------------------- #
 
 # Datetime formats for ES cohort/course (same order as es_data_audit)
@@ -278,7 +278,7 @@ def _import_dataio_module_isolated(inst_name: str, file_path: str) -> Any:
     converters from different institutions never collide in ``sys.modules``.
     """
     safe = re.sub(r"[^a-zA-Z0-9_]", "_", inst_name) or "unknown"
-    module_name = f"es_bronze_dataio_{safe}_{uuid.uuid4().hex}"
+    module_name = f"bronze_dataio_{safe}_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, file_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not create import spec for {file_path}")
@@ -301,7 +301,7 @@ def load_es_converters_from_bronze(
     load ``converter_func_cohort`` / ``converter_func_course`` when present.
 
     Soft-falls back to ``(None, None)`` on missing file, download failure, import
-    failure, or missing attributes — parity with ES Databricks data-audit jobs.
+    failure, or missing attributes — parity with PDP/ES Databricks data-audit jobs.
     Fresh fetch per call; no process-wide shared ``dataio`` module.
 
     Converter *runtime* errors during validation are not soft-fallbacked; they
@@ -322,7 +322,7 @@ def load_es_converters_from_bronze(
             inst_name, relative_path="dataio.py"
         )
         raw = _read_stream_to_bytes(stream)
-        fd, tmp_path = tempfile.mkstemp(suffix="_dataio.py", prefix="es_bronze_")
+        fd, tmp_path = tempfile.mkstemp(suffix="_dataio.py", prefix="bronze_")
         try:
             os.write(fd, raw)
         finally:
@@ -331,7 +331,7 @@ def load_es_converters_from_bronze(
         module = _import_dataio_module_isolated(inst_name, tmp_path)
     except Exception as e:
         logger.warning(
-            "ES bronze dataio unavailable for institution=%s; validating without "
+            "Bronze dataio unavailable for institution=%s; validating without "
             "converters: %s",
             inst_name,
             e,
@@ -348,22 +348,22 @@ def load_es_converters_from_bronze(
     course_converter: PDPConverterFunc = None
     try:
         cohort_converter = module.converter_func_cohort
-        logger.info("Loaded custom ES cohort converter for institution=%s", inst_name)
+        logger.info("Loaded custom cohort converter for institution=%s", inst_name)
     except Exception as e:
         logger.info(
-            "Running ES validation with default cohort converter for institution=%s",
+            "Running validation with default cohort converter for institution=%s",
             inst_name,
         )
-        logger.warning("Failed to load custom ES cohort converter: %s", e)
+        logger.warning("Failed to load custom cohort converter: %s", e)
     try:
         course_converter = module.converter_func_course
-        logger.info("Loaded custom ES course converter for institution=%s", inst_name)
+        logger.info("Loaded custom course converter for institution=%s", inst_name)
     except Exception as e:
         logger.info(
-            "Running ES validation with default course converter for institution=%s",
+            "Running validation with default course converter for institution=%s",
             inst_name,
         )
-        logger.warning("Failed to load custom ES course converter: %s", e)
+        logger.warning("Failed to load custom course converter: %s", e)
 
     if cohort_converter is not None and not callable(cohort_converter):
         logger.warning(
@@ -777,10 +777,8 @@ def _validate_pdp_with_edvise_read(
     Validate a single-model PDP cohort or course file via edvise read and Pandera.
 
     Writes file-like inputs to a temp path, then calls ``read_raw_pdp_cohort_data``
-    (STUDENT) or ``_read_pdp_course_edvise`` (COURSE). Cohort rows are only
-    transformed when ``pdp_cohort_converter_func`` is set; batch jobs may still
-    filter cohort rows via ``dataio``, so API output rows are not guaranteed to
-    match pipeline output for the same file.
+    (STUDENT) or ``_read_pdp_course_edvise`` (COURSE). School bronze ``dataio``
+    converters are applied when passed in by ``validate_dataset``.
 
     Args:
         filename: Path or file-like CSV source.
@@ -925,8 +923,9 @@ def validate_dataset(
     Validate a dataset using the active institution upload workflow.
 
     Detects encoding, then routes to Legacy any-format handling, ES
-    ``read_raw_es_*`` + Pandera (with optional bronze ``dataio`` converters), or
-    PDP repo Pandera validation for supported single-model STUDENT/COURSE uploads.
+    ``read_raw_es_*`` + Pandera, or PDP ``read_raw_pdp_*`` + Pandera. PDP and ES
+    load optional bronze ``dataio`` converters when ``institution_identifier``
+    is set.
     Other model sets are rejected explicitly; the API-local JSON schema
     validation fallback has been removed.
 
@@ -935,11 +934,12 @@ def validate_dataset(
         models: Model name(s) to validate.
         institution_id: Validation namespace (``"pdp"``, ``"edvise"``, or ``"legacy"``).
             ``"legacy"`` skips Pandera; ``"edvise"`` and ``"pdp"`` use repo schemas.
-        institution_identifier: For ES, the institution name used to resolve the
-            bronze volume ``training_inputs/dataio.py`` path. Unused for PDP/Legacy.
-        pdp_cohort_converter_func: Optional cohort transform before Pandera; default ``None``.
-            Batch PDP jobs may still apply school-specific cohort converters via ``dataio``.
-        pdp_course_converter_func: Optional course converter before default duplicate handling.
+        institution_identifier: Institution name used to resolve bronze
+            ``training_inputs/dataio.py`` for PDP and ES. Unused for Legacy.
+        pdp_cohort_converter_func: Optional cohort transform before Pandera. When
+            omitted, loaded from bronze ``dataio`` for PDP uploads.
+        pdp_course_converter_func: Optional course converter. When omitted, loaded
+            from bronze ``dataio`` for PDP uploads (else default duplicate handling).
 
     Returns:
         Dict with validation_status, schemas, missing_optional, unknown_extra_columns,
@@ -1003,6 +1003,23 @@ def validate_dataset(
 
     schema_class = pdp_edvise.get_edvise_schema_for_upload(institution_id, model_list)
     if schema_class is not None:
+        # PDP: same bronze dataio fetch as ES (soft-fallback). Explicit converter
+        # kwargs still win so tests and callers can override.
+        if institution_identifier and (
+            pdp_cohort_converter_func is None or pdp_course_converter_func is None
+        ):
+            bronze_cohort, bronze_course = load_es_converters_from_bronze(
+                institution_identifier
+            )
+            if pdp_cohort_converter_func is None:
+                pdp_cohort_converter_func = bronze_cohort
+            if pdp_course_converter_func is None:
+                pdp_course_converter_func = bronze_course
+        elif not institution_identifier:
+            logger.warning(
+                "PDP validation without institution_identifier; validating without "
+                "bronze dataio converters"
+            )
         return _validate_pdp_with_edvise_read(
             filename,
             enc,

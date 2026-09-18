@@ -1,7 +1,7 @@
 """Pandera schemas re-exported from edvise for upload validation.
 
 Imports raw PDP and Edvise schema classes. PDP and ES uploads use these at
-upload time (ES after optional bronze ``dataio`` converters). Legacy uploads
+upload time after optional bronze ``dataio`` converters. Legacy uploads
 skip Pandera (any-format CSV + PII guard). This module supplies schema classes
 and helpers for the PDP/ES validation paths.
 
