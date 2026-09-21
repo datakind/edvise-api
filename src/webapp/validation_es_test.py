@@ -102,9 +102,7 @@ def test_es_converter_import_isolation_across_institutions() -> None:
     assert cohort_a(df).attrs["school_marker"] == "inst_alpha"
     assert cohort_b(df).attrs["school_marker"] == "inst_beta"
 
-    bronze_modules = [
-        name for name in sys.modules if name.startswith("bronze_dataio_")
-    ]
+    bronze_modules = [name for name in sys.modules if name.startswith("bronze_dataio_")]
     assert len(bronze_modules) >= 2
 
 
