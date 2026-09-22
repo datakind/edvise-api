@@ -1979,7 +1979,7 @@ def _run_validation_and_upsert_file_record(
             allowed_schemas,
             institution_id=schema_namespace,
             institution_identifier=(
-                institution_name if schema_namespace == "edvise" else None
+                institution_name if schema_namespace in ("edvise", "pdp") else None
             ),
         )
     except HardValidationError as e:

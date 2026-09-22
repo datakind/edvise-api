@@ -2143,6 +2143,9 @@ def test_validate_upload_pdp_only_institution_skips_bronze_sync(
     )
 
     assert response.status_code == 200
+    call_kwargs = MOCK_STORAGE.validate_file.call_args.kwargs
+    assert call_kwargs.get("institution_id") == "pdp"
+    assert call_kwargs.get("institution_identifier") == "pdp_only_school"
     MOCK_DATABRICKS.run_validated_gcs_to_bronze_sync.assert_not_called()
 
 

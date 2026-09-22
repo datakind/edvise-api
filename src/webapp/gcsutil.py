@@ -396,8 +396,9 @@ class StorageControl(BaseModel):
             file_name: Blob name under unvalidated/.
             allowed_schemas: List of schema/model names allowed.
             institution_id: Validation namespace: "edvise", "pdp", or "legacy".
-            institution_identifier: For ES, institution name used to fetch bronze
-                ``training_inputs/dataio.py`` converters. Unused for PDP/Legacy.
+            institution_identifier: Institution name used to fetch bronze
+                ``training_inputs/dataio.py`` converters for PDP and ES. Unused
+                for Legacy.
 
         Returns:
             List of inferred schema names (e.g. ["STUDENT"]).

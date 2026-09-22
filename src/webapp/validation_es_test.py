@@ -102,9 +102,7 @@ def test_es_converter_import_isolation_across_institutions() -> None:
     assert cohort_a(df).attrs["school_marker"] == "inst_alpha"
     assert cohort_b(df).attrs["school_marker"] == "inst_beta"
 
-    bronze_modules = [
-        name for name in sys.modules if name.startswith("es_bronze_dataio_")
-    ]
+    bronze_modules = [name for name in sys.modules if name.startswith("bronze_dataio_")]
     assert len(bronze_modules) >= 2
 
 
@@ -116,8 +114,8 @@ def test_import_dataio_module_isolated_unique_names(tmp_path: Path) -> None:
     mod2 = _import_dataio_module_isolated("school_two", str(path))
     assert mod1 is not mod2
     assert mod1.__name__ != mod2.__name__
-    assert mod1.__name__.startswith("es_bronze_dataio_school_one_")
-    assert mod2.__name__.startswith("es_bronze_dataio_school_two_")
+    assert mod1.__name__.startswith("bronze_dataio_school_one_")
+    assert mod2.__name__.startswith("bronze_dataio_school_two_")
     assert "dataio" not in sys.modules
 
 
@@ -263,8 +261,10 @@ def test_es_converter_runtime_error_fails_closed(tmp_path: Path) -> None:
     assert "converter blew up" in str(exc_info.value)
 
 
-def test_pdp_routing_unchanged_does_not_load_es_converters(tmp_path: Path) -> None:
-    """PDP uploads do not fetch bronze ES dataio converters."""
+def test_pdp_without_institution_identifier_does_not_load_bronze_converters(
+    tmp_path: Path,
+) -> None:
+    """PDP uploads skip bronze dataio when institution_identifier is omitted."""
     csv_path = tmp_path / "cohort.csv"
     pd.DataFrame({"x": [1]}).to_csv(csv_path, index=False)
 
@@ -295,6 +295,52 @@ def test_pdp_routing_unchanged_does_not_load_es_converters(tmp_path: Path) -> No
     assert result["validation_status"] == "passed"
     mock_load.assert_not_called()
     mock_grade.assert_not_called()
+
+
+def test_pdp_loads_bronze_converters_when_institution_identifier_set(
+    tmp_path: Path,
+) -> None:
+    """PDP uploads fetch bronze dataio converters the same way ES does."""
+    csv_path = tmp_path / "cohort.csv"
+    pd.DataFrame({"x": [1]}).to_csv(csv_path, index=False)
+
+    def cohort_converter(df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+    def course_converter(df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+    with (
+        patch(
+            "src.webapp.validation.load_es_converters_from_bronze",
+            return_value=(cohort_converter, course_converter),
+        ) as mock_load,
+        patch(
+            "src.webapp.validation.load_es_institution_grade_map_from_bronze",
+        ) as mock_grade,
+        patch(
+            "src.webapp.validation._validate_pdp_with_edvise_read",
+            return_value={
+                "validation_status": "passed",
+                "schemas": ["STUDENT"],
+                "missing_optional": [],
+                "unknown_extra_columns": [],
+                "normalized_df": pd.DataFrame({"student_id": ["s1"]}),
+            },
+        ) as mock_pdp,
+    ):
+        result = validate_file_reader(
+            str(csv_path),
+            ["STUDENT"],
+            institution_id="pdp",
+            institution_identifier="pdp_school",
+        )
+
+    assert result["validation_status"] == "passed"
+    mock_load.assert_called_once_with("pdp_school")
+    mock_grade.assert_not_called()
+    assert mock_pdp.call_args.kwargs["pdp_cohort_converter_func"] is cohort_converter
+    assert mock_pdp.call_args.kwargs["pdp_course_converter_func"] is course_converter
 
 
 def test_chain_es_course_converters_applies_grade_map_before_dataio() -> None:
