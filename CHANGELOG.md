@@ -1,3 +1,6 @@
+## 1.7.0 (2026-09-22)
+- feat: validate PDP uploads with bronze `dataio` converters (#306)
+
 ## 1.6.0 (2026-09-16)
 - feat: return eligible academic terms via `/{inst_id}/eligible-inference-terms` and pass `term_filter` to inference (#201)
 - feat: add `archived_at` timestamp to models (#300)
