@@ -748,6 +748,50 @@ def test_get_eligible_inference_terms_reports_no_eligible_students(
     )
 
 
+def test_get_eligible_inference_terms_accepts_display_decimal_model_name(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    _prepare_inference_batch(session)
+    _add_registered_model(
+        session, name="graduation_in_3y_ft_4d5y_pt_checkpoint_30_credits"
+    )
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {},
+        "training_cohorts": [],
+    }
+
+    def read_csv(_bucket_name: str, blob_path: str) -> pd.DataFrame:
+        if "file_input_one" in blob_path:
+            return pd.DataFrame({"student_id": [1]})
+        return pd.DataFrame(
+            {
+                "student_id": [1],
+                "academic_term": ["FALL"],
+                "academic_year": ["2024-25"],
+            }
+        )
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = read_csv
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={
+            "model_name": "graduation_in_3y_ft_4.5Y_pt_checkpoint_30_credits",
+            "batch_name": "batch_foo",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "valid"
+    MOCK_DATABRICKS.fetch_model_version.assert_called_once()
+    assert MOCK_DATABRICKS.fetch_model_version.call_args.kwargs["model_name"] == (
+        "graduation_in_3y_ft_4d5y_pt_checkpoint_30_credits"
+    )
+
+
 def test_get_eligible_inference_terms_looks_up_percent_encoded_model_name(
     client: TestClient,
     session: sqlalchemy.orm.Session,
