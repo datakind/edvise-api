@@ -1,4 +1,5 @@
 ## 1.8.0 (2026-10-09)
+- fix: import `project_config_class` from `edvise.shared.schema_type` after edvise 1.17.2
 - fix: encode 4.5Y model names for eligible inference terms (#310)
 - feat: point ES inference at versioned launcher (#309)
 
