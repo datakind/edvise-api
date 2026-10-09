@@ -25,6 +25,7 @@ from ..utilities import (
     SchemaType,
     decode_url_piece,
     display_model_name,
+    uc_model_name,
     LEGACY_TO_NEW_SCHEMA,
     batch_input_validated_blob_paths,
 )
@@ -303,6 +304,7 @@ def require_named_inference_model(
     session: Session, inst_id: str, model_name: str
 ) -> ModelTable:
     """Return the unique model for this institution and name, matching run-inference."""
+    model_name = uc_model_name(model_name)
     result = session.execute(
         select(ModelTable).where(
             and_(

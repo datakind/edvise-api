@@ -34,6 +34,7 @@ from ..utilities import (
     expand_batch_file_name_lookups,
     file_name_variants_for_lookup,
     SchemaType,
+    uc_model_name,
 )
 
 from ..database import (
@@ -737,6 +738,7 @@ def get_eligible_inference_terms(
     if institution is None:
         return _invalid_eligible_terms("Institution not found.")
 
+    model_name = uc_model_name(model_name)
     model = require_named_inference_model(session, inst_id, model_name)
     batch = require_named_inference_batch(session, inst_id, batch_name)
     try:

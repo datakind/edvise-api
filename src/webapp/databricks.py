@@ -15,7 +15,7 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
-from edvise.configs.schema_type import project_config_class
+from edvise.shared.schema_type import project_config_class
 
 from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType, uc_model_name
@@ -40,7 +40,7 @@ MEDALLION_LEVELS = ["silver", "gold", "bronze"]
 # when dev/staging deploy uses a different bundle target or a stub job that matches the same parameters.
 PDP_INFERENCE_JOB_NAME = "edvise_versioned_inference_launcher"
 LEGACY_INFERENCE_JOB_NAME = "edvise_github_sourced_legacy_inference_pipeline"
-ES_INFERENCE_JOB_NAME = "github_sourced_genai_es_inference_pipeline"
+ES_INFERENCE_JOB_NAME = "edvise_es_versioned_inference_launcher"
 # Dev bundle prefix for the Cloud Run service principal job target.
 CLOUDRUN_BUNDLE_JOB_PREFIX = "[dev dev_cloudrun_sa]"
 # GCS validated/ → institution bronze_volume/gcs_uploads (edvise bundle job name).
