@@ -1,3 +1,7 @@
+## 1.8.0 (2026-10-09)
+- fix: encode 4.5Y model names for eligible inference terms (#310)
+- feat: point ES inference at versioned launcher (#309)
+
 ## 1.7.0 (2026-09-22)
 - feat: validate PDP uploads with bronze `dataio` converters (#306)
 
