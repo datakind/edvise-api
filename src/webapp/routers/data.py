@@ -60,6 +60,10 @@ from ..config import ENV_TO_VOLUME_SCHEMA, env_vars
 from edvise.data_audit.eda import EdaSummary
 from edvise.shared.utils import cohort_pair_columns
 from edvise.student_selection.filter_inference import exclude_training_cohort_students
+from edvise.utils.data_cleaning import (
+    COURSE_IDENTIFIER_COLUMNS,
+    course_rows_have_identifiers,
+)
 from edvise.student_selection.select_students_attributes import (
     select_students_by_attributes,
 )
@@ -679,6 +683,22 @@ def resolve_eligible_inference_terms(
         (eligible_courses["_academic_term_label"] != "")
         & (eligible_courses["_academic_year_label"] != "")
     ]
+    missing_identifier_columns = [
+        column
+        for column in COURSE_IDENTIFIER_COLUMNS
+        if column not in eligible_courses.columns
+    ]
+    if missing_identifier_columns:
+        return _invalid_eligible_terms(
+            "Course file is missing course identifier columns: "
+            + ", ".join(missing_identifier_columns)
+            + ".",
+            batch_name,
+        )
+    # Same non-null prefix/number rule PDP data audit applies before a term can run.
+    eligible_courses = eligible_courses.loc[
+        course_rows_have_identifiers(eligible_courses)
+    ].copy()
 
     terms: list[EligibleInferenceTerm] = []
     for (academic_year, academic_term), rows in eligible_courses.groupby(

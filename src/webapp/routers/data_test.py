@@ -76,6 +76,8 @@ def test_resolve_eligible_inference_terms_uses_academic_terms_and_excludes_train
             "student_id": ["1", "2", "2", "3"],
             "academic_term": ["FALL", "FALL", "SPRING", "SPRING"],
             "academic_year": ["2024-25", "2024-25", "2024-25", "2024-25"],
+            "course_prefix": ["MATH", "MATH", "ENGL", "ENGL"],
+            "course_number": ["101", "101", "201", "201"],
         }
     )
     config = {
@@ -109,6 +111,8 @@ def test_resolve_eligible_inference_terms_skips_missing_student_criteria_columns
             "student_id": [1, 2],
             "academic_term": ["FALL", "SPRING"],
             "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["MATH", "ENGL"],
+            "course_number": ["101", "201"],
         }
     )
 
@@ -142,6 +146,8 @@ def test_resolve_eligible_inference_terms_joins_numeric_identifier_forms():
             "student_id": [1.0, float("nan")],
             "academic_term": ["FALL", "SPRING"],
             "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["MATH", "ENGL"],
+            "course_number": ["101", "201"],
         }
     )
 
@@ -166,6 +172,8 @@ def test_resolve_eligible_inference_terms_prefers_config_student_id_col():
             "learner_id": ["1", "2"],
             "academic_term": ["FALL", "SPRING"],
             "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["MATH", "ENGL"],
+            "course_number": ["101", "201"],
         }
     )
 
@@ -203,6 +211,8 @@ def test_resolve_eligible_inference_terms_requires_entry_columns_for_exclusion()
                 "student_id": [1],
                 "academic_term": ["FALL"],
                 "academic_year": ["2024-25"],
+                "course_prefix": ["MATH"],
+                "course_number": ["101"],
             }
         ),
         {"training_cohorts": ["fall 2022-23"]},
@@ -227,6 +237,8 @@ def test_resolve_eligible_inference_terms_invalid_when_exclusion_empties_student
                 "student_id": [1],
                 "academic_term": ["FALL"],
                 "academic_year": ["2024-25"],
+                "course_prefix": ["MATH"],
+                "course_number": ["101"],
             }
         ),
         {"training_cohorts": ["fall 2022-23"]},
@@ -251,6 +263,8 @@ def test_resolve_eligible_inference_terms_strips_cohort_values_before_exclusion(
                 "student_id": [1, 2],
                 "academic_term": ["FALL", "SPRING"],
                 "academic_year": ["2024-25", "2024-25"],
+                "course_prefix": ["MATH", "ENGL"],
+                "course_number": ["101", "201"],
             }
         ),
         {"training_cohorts": ["fall 2022-23"]},
@@ -303,6 +317,8 @@ def test_resolve_eligible_inference_terms_supports_entry_columns_and_multi_year_
             "study_id": [1, 2, 2],
             "academic_term": ["FALL", "FALL", "SPRING"],
             "academic_year": ["2023-24", "2024-25", "2024-25"],
+            "course_prefix": ["MATH", "MATH", "ENGL"],
+            "course_number": ["101", "101", "201"],
         }
     )
 
@@ -332,6 +348,8 @@ def test_resolve_eligible_inference_terms_supports_edvise_learner_id():
             "learner_id": ["1", "2", "2", "3"],
             "academic_term": ["FALL", "FALL", "SPRING", "SPRING"],
             "academic_year": ["2024-25", "2024-25", "2024-25", "2024-25"],
+            "course_prefix": ["MATH", "MATH", "ENGL", "ENGL"],
+            "course_number": ["101", "101", "201", "201"],
         }
     )
 
@@ -350,6 +368,100 @@ def test_resolve_eligible_inference_terms_supports_edvise_learner_id():
         {"term_label": "spring 2024-25", "valid_student_count": 1},
         {"term_label": "fall 2024-25", "valid_student_count": 1},
     ]
+
+
+def test_resolve_eligible_inference_terms_omits_terms_without_course_identifiers():
+    students = pd.DataFrame({"student_id": ["1", "2"]})
+    courses = pd.DataFrame(
+        {
+            "student_id": ["1", "2"],
+            "academic_term": ["FALL", "SPRING"],
+            "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["MATH", None],
+            "course_number": [None, "201"],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(students, courses, {}, "batch")
+
+    assert result.status == "invalid"
+    assert result.terms == []
+    assert result.reason == ("No academic term has eligible students with course data.")
+
+
+def test_resolve_eligible_inference_terms_counts_only_identified_course_rows():
+    students = pd.DataFrame({"student_id": ["1", "2", "3"]})
+    courses = pd.DataFrame(
+        {
+            "student_id": ["1", "1", "2", "3"],
+            "academic_term": ["FALL", "FALL", "FALL", "SPRING"],
+            "academic_year": ["2024-25", "2024-25", "2024-25", "2024-25"],
+            "course_prefix": ["MATH", None, "ENGL", "HIST"],
+            "course_number": ["101", "102", "201", "110"],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(students, courses, {}, "batch")
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "spring 2024-25", "valid_student_count": 1},
+        {"term_label": "fall 2024-25", "valid_student_count": 2},
+    ]
+
+
+def test_resolve_eligible_inference_terms_requires_course_identifier_columns():
+    result = resolve_eligible_inference_terms(
+        pd.DataFrame({"student_id": [1]}),
+        pd.DataFrame(
+            {
+                "student_id": [1],
+                "academic_term": ["FALL"],
+                "academic_year": ["2024-25"],
+                "course_prefix": ["MATH"],
+            }
+        ),
+        {},
+        "batch",
+    )
+
+    assert result.status == "invalid"
+    assert result.terms == []
+    assert result.reason == (
+        "Course file is missing course identifier columns: course_number."
+    )
+
+
+def test_resolve_eligible_inference_terms_keeps_students_when_all_criteria_columns_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    students = pd.DataFrame({"student_id": [1, 2]})
+    courses = pd.DataFrame(
+        {
+            "student_id": [1, 2],
+            "academic_term": ["FALL", "SPRING"],
+            "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["MATH", "ENGL"],
+            "course_number": ["101", "201"],
+        }
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = resolve_eligible_inference_terms(
+            students,
+            courses,
+            {"student_criteria": {"cummean_course_grade_numeric_mean": 3.0}},
+            "batch",
+        )
+
+    assert result.status == "valid"
+    assert [term.term_label for term in result.terms] == [
+        "spring 2024-25",
+        "fall 2024-25",
+    ]
+    assert "Skipping student_criteria columns missing from the student file" in (
+        caplog.text
+    )
 
 
 def counter_repr(x):
@@ -591,6 +703,8 @@ def test_get_eligible_inference_terms_for_selected_batch(
                 "student_id": [1, 2],
                 "academic_term": ["FALL", "SPRING"],
                 "academic_year": ["2024-25", "2024-25"],
+                "course_prefix": ["MATH", "ENGL"],
+                "course_number": ["101", "201"],
             }
         )
 
@@ -731,6 +845,8 @@ def test_get_eligible_inference_terms_reports_no_eligible_students(
                 "student_id": [1],
                 "academic_term": ["FALL"],
                 "academic_year": ["2024-25"],
+                "course_prefix": ["MATH"],
+                "course_number": ["101"],
             }
         )
 
@@ -772,6 +888,8 @@ def test_get_eligible_inference_terms_accepts_display_decimal_model_name(
                 "student_id": [1],
                 "academic_term": ["FALL"],
                 "academic_year": ["2024-25"],
+                "course_prefix": ["MATH"],
+                "course_number": ["101"],
             }
         )
 
