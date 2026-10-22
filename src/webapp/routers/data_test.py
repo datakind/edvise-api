@@ -393,11 +393,11 @@ def test_resolve_eligible_inference_terms_counts_only_identified_course_rows():
     students = pd.DataFrame({"student_id": ["1", "2", "3"]})
     courses = pd.DataFrame(
         {
-            "student_id": ["1", "1", "2", "3"],
+            "student_id": ["1", "2", "3", "3"],
             "academic_term": ["FALL", "FALL", "FALL", "SPRING"],
             "academic_year": ["2024-25", "2024-25", "2024-25", "2024-25"],
             "course_prefix": ["MATH", None, "ENGL", "HIST"],
-            "course_number": ["101", "102", "201", "110"],
+            "course_number": ["101", "102", "201", None],
         }
     )
 
@@ -405,12 +405,42 @@ def test_resolve_eligible_inference_terms_counts_only_identified_course_rows():
 
     assert result.status == "valid"
     assert [term.model_dump() for term in result.terms] == [
-        {"term_label": "spring 2024-25", "valid_student_count": 1},
-        {"term_label": "fall 2024-25", "valid_student_count": 2},
+        {"term_label": "fall 2024-25", "valid_student_count": 2}
     ]
 
 
-def test_resolve_eligible_inference_terms_requires_course_identifier_columns():
+def test_resolve_eligible_inference_terms_treats_blank_identifiers_as_present():
+    students = pd.DataFrame({"student_id": ["1", "2"]})
+    courses = pd.DataFrame(
+        {
+            "student_id": ["1", "2"],
+            "academic_term": ["FALL", "FALL"],
+            "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["", "HIST"],
+            "course_number": ["101", "   "],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(students, courses, {}, "batch")
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "fall 2024-25", "valid_student_count": 2}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("course_columns", "reason_suffix"),
+    [
+        ({"course_number": ["101"]}, "course_prefix."),
+        ({"course_prefix": ["MATH"]}, "course_number."),
+        ({}, "course_prefix, course_number."),
+    ],
+)
+def test_resolve_eligible_inference_terms_reports_all_missing_identifier_columns(
+    course_columns: dict[str, list[str]],
+    reason_suffix: str,
+) -> None:
     result = resolve_eligible_inference_terms(
         pd.DataFrame({"student_id": [1]}),
         pd.DataFrame(
@@ -418,7 +448,7 @@ def test_resolve_eligible_inference_terms_requires_course_identifier_columns():
                 "student_id": [1],
                 "academic_term": ["FALL"],
                 "academic_year": ["2024-25"],
-                "course_prefix": ["MATH"],
+                **course_columns,
             }
         ),
         {},
@@ -428,7 +458,7 @@ def test_resolve_eligible_inference_terms_requires_course_identifier_columns():
     assert result.status == "invalid"
     assert result.terms == []
     assert result.reason == (
-        "Course file is missing course identifier columns: course_number."
+        "Course file is missing course identifier columns: " + reason_suffix
     )
 
 

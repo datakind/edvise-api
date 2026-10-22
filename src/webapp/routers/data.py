@@ -695,7 +695,8 @@ def resolve_eligible_inference_terms(
             + ".",
             batch_name,
         )
-    # Same non-null prefix/number rule PDP data audit applies before a term can run.
+    # notna() on both identifiers, matching drop_course_rows_missing_identifiers.
+    # PDP standardization also nulls the MISSING sentinel before that drop.
     eligible_courses = eligible_courses.loc[
         course_rows_have_identifiers(eligible_courses)
     ].copy()
