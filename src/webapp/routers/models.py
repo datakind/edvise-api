@@ -1000,6 +1000,7 @@ def trigger_inference_run(
         gcp_external_bucket_name=get_external_bucket_name(inst_id),
         # The institution email to which pipeline success/failure notifications will get sent.
         email=cast(str, current_user.email),
+        batch_id=uuid_to_str(batch.id),
         term_filter=term_filter,
     )
     try:

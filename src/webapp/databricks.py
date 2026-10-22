@@ -342,6 +342,8 @@ class DatabricksPDPInferenceRunRequest(BaseModel):
     # The email where notifications will get sent.
     email: str
     gcp_external_bucket_name: str
+    # Batch UUID hex. Empty keeps the job on inference_inputs/{run_id}.
+    batch_id: str = ""
     term_filter: list[str] | None = None
 
 
@@ -411,6 +413,7 @@ def _build_pdp_inference_job_parameters(
         "model_name": req.model_name,
         "datakind_notification_email": req.email,
         "DK_CC_EMAIL": req.email,
+        "batch_id": req.batch_id,
     }
     if req.term_filter is not None:
         parameters["term_filter"] = json.dumps(req.term_filter)
