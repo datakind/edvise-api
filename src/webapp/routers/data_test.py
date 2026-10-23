@@ -409,6 +409,26 @@ def test_resolve_eligible_inference_terms_counts_only_identified_course_rows():
     ]
 
 
+def test_resolve_eligible_inference_terms_omits_missing_sentinel_identifiers():
+    students = pd.DataFrame({"student_id": ["1", "2"]})
+    courses = pd.DataFrame(
+        {
+            "student_id": ["1", "2"],
+            "academic_term": ["FALL", "FALL"],
+            "academic_year": ["2024-25", "2024-25"],
+            "course_prefix": ["MATH", "ENGL"],
+            "course_number": ["101", "MISSING"],
+        }
+    )
+
+    result = resolve_eligible_inference_terms(students, courses, {}, "batch")
+
+    assert result.status == "valid"
+    assert [term.model_dump() for term in result.terms] == [
+        {"term_label": "fall 2024-25", "valid_student_count": 1}
+    ]
+
+
 def test_resolve_eligible_inference_terms_treats_blank_identifiers_as_present():
     students = pd.DataFrame({"student_id": ["1", "2"]})
     courses = pd.DataFrame(

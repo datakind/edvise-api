@@ -695,8 +695,8 @@ def resolve_eligible_inference_terms(
             + ".",
             batch_name,
         )
-    # notna() on both identifiers, matching drop_course_rows_missing_identifiers.
-    # PDP standardization also nulls the MISSING sentinel before that drop.
+    # Shared with both course audits: MISSING counts as empty, then a row needs
+    # both course_prefix and course_number.
     eligible_courses = eligible_courses.loc[
         course_rows_have_identifiers(eligible_courses)
     ].copy()

@@ -31,7 +31,7 @@ dependencies = [
     "mlflow~=2.22",
     "cachetools",
     "types-cachetools",
-    "edvise @ git+https://github.com/datakind/edvise.git@49f8a426e65891723f4596c01f1e778bbba8554f",
+    "edvise @ git+https://github.com/datakind/edvise.git@609179a446cbecc7d0fadcc0dff20adfb1759c10",
 ]
 
 [project.urls]
