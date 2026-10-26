@@ -497,6 +497,7 @@ def test_trigger_inference_run(client: TestClient) -> None:
     assert response.json()["model_version"] == "1"
     pdp_request = MOCK_DATABRICKS.run_pdp_inference.call_args[0][0]
     assert pdp_request.term_filter == ["fall 2024-25"]
+    assert pdp_request.batch_id == uuid_to_str(BATCH_UUID)
 
 
 def test_trigger_inference_run_rejects_empty_term_filter(client: TestClient) -> None:
