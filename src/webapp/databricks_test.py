@@ -553,6 +553,7 @@ def test_inference_job_parameters_include_term_filter_for_all_pipelines() -> Non
         model_name="retention_model",
         email="user@example.com",
         gcp_external_bucket_name="bucket-a",
+        batch_id="5b2420f3103546ab90eb74d5df97de43",
         term_filter=term_filter,
     )
     shared_request = DatabricksSharedInferenceRunRequest(
@@ -562,10 +563,9 @@ def test_inference_job_parameters_include_term_filter_for_all_pipelines() -> Non
         term_filter=term_filter,
     )
 
-    assert (
-        _build_pdp_inference_job_parameters(pdp_request, "test_school")["term_filter"]
-        == '["fall 2024-25", "spring 2024-25"]'
-    )
+    pdp_params = _build_pdp_inference_job_parameters(pdp_request, "test_school")
+    assert pdp_params["term_filter"] == '["fall 2024-25", "spring 2024-25"]'
+    assert pdp_params["batch_id"] == "5b2420f3103546ab90eb74d5df97de43"
     assert (
         _build_shared_inference_job_parameters(shared_request, "test_school")[
             "term_filter"
