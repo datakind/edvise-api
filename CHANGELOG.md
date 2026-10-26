@@ -1,3 +1,6 @@
+## 1.9.0 (2026-10-26)
+- feat: pass the webapp batch id into PDP inference (#313)
+
 ## 1.8.0 (2026-10-09)
 - fix: import `project_config_class` from `edvise.shared.schema_type` after edvise 1.17.2
 - fix: encode 4.5Y model names for eligible inference terms (#310)
