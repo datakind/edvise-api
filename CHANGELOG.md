@@ -1,6 +1,3 @@
-## Unreleased
-- feat: persist Databricks inference `job_parameters` on `job` and return them from run endpoints
-
 ## 1.9.0 (2026-10-26)
 - feat: pass the webapp batch id into PDP inference (#313)
 
