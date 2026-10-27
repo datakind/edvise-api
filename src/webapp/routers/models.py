@@ -261,6 +261,9 @@ class RunInfo(BaseModel):
     err_msg: str | None = None
     model_run_id: str | None = None
     model_version: str | None = None
+    # Databricks job_parameters sent when this run was triggered. Null for rows
+    # created before the column existed.
+    job_parameters: dict[str, str] | None = None
 
     @field_serializer("m_name")
     def _display_m_name(self, m_name: str) -> str:
@@ -657,6 +660,7 @@ def read_inst_model_outputs(
                 "output_filename": elem.output_filename,
                 "output_valid": False if not elem.output_valid else elem.output_valid,
                 "completed": False if not elem.completed else elem.completed,
+                "job_parameters": elem.job_parameters,
             }
         )
     return ret_val
@@ -721,6 +725,7 @@ def read_inst_model_output(
                 "completed": False if not elem.completed else elem.completed,
                 "model_run_id": elem.model_run_id,
                 "model_version": elem.model_version,
+                "job_parameters": elem.job_parameters,
             }
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -955,6 +960,7 @@ def trigger_inference_run(
             output_valid=False,
             model_version=model_version,
             model_run_id=model_run_id,
+            job_parameters=res.job_parameters,
         )
         local_session.get().add(job)
         return {
@@ -967,6 +973,7 @@ def trigger_inference_run(
             "output_valid": False,
             "model_version": model_version,
             "model_run_id": model_run_id,
+            "job_parameters": res.job_parameters,
         }
 
     # PDP inference (existing logic)
@@ -1035,6 +1042,7 @@ def trigger_inference_run(
         output_valid=False,
         model_version=model_version,
         model_run_id=model_run_id,
+        job_parameters=res.job_parameters,
     )
     local_session.get().add(job)
     return {
@@ -1047,6 +1055,7 @@ def trigger_inference_run(
         "output_valid": False,
         "model_version": model_version,
         "model_run_id": model_run_id,
+        "job_parameters": res.job_parameters,
     }
 
 

@@ -101,6 +101,7 @@ def same_run_info_orderless(a_elem: RunInfo, b_elem: RunInfo) -> bool:
         or a_elem.completed != b_elem.completed
         or a_elem.model_run_id != b_elem.model_run_id
         or a_elem.model_version != b_elem.model_version
+        or a_elem.job_parameters != b_elem.job_parameters
     ):
         return False
     return True
@@ -452,10 +453,18 @@ def test_create_model(client: TestClient) -> None:
     assert response.status_code == 200
 
 
-def test_trigger_inference_run(client: TestClient) -> None:
+def test_trigger_inference_run(
+    client: TestClient, session: sqlalchemy.orm.Session
+) -> None:
     """Depending on timeline, fellows may not get to this."""
+    inference_job_parameters = {
+        "model_name": "sample_model_for_school_1",
+        "term_filter": '["fall 2024-25"]',
+        "batch_id": uuid_to_str(BATCH_UUID),
+    }
     MOCK_DATABRICKS.run_pdp_inference.return_value = DatabricksInferenceRunResponse(
-        job_run_id=123
+        job_run_id=124,
+        job_parameters=inference_job_parameters,
     )
     MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(
         version=1, run_id="run-inference"
@@ -489,12 +498,17 @@ def test_trigger_inference_run(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["inst_id"] == uuid_to_str(USER_VALID_INST_UUID)
     assert response.json()["m_name"] == "sample_model_for_school_1"
-    assert response.json()["run_id"] == 123
+    assert response.json()["run_id"] == 124
     assert response.json()["created_by"] == uuid_to_str(USER_UUID)
     assert response.json()["triggered_at"] is not None
     assert response.json()["batch_name"] == "batch_foo"
     assert response.json()["model_run_id"] == "run-inference"
     assert response.json()["model_version"] == "1"
+    assert response.json()["job_parameters"] == inference_job_parameters
+    session.flush()
+    stored_job = session.get(JobTable, 124)
+    assert stored_job is not None
+    assert stored_job.job_parameters == inference_job_parameters
     pdp_request = MOCK_DATABRICKS.run_pdp_inference.call_args[0][0]
     assert pdp_request.term_filter == ["fall 2024-25"]
     assert pdp_request.batch_id == uuid_to_str(BATCH_UUID)

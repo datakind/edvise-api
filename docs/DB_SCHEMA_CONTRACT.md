@@ -111,6 +111,7 @@ CONSTRAINT `users_ibfk_1` FOREIGN KEY (`inst_id`) REFERENCES `inst` (`id`) ON DE
 | `output_valid` | `TINYINT(1)` | YES | NULL | |
 | `model_run_id` | `VARCHAR(255)` | YES | NULL | |
 | `model_version` | `VARCHAR(255)` | YES | NULL | |
+| `job_parameters` | `JSON` | YES | NULL | Databricks `job_parameters` sent at trigger. Null on rows created before the column. |
 
 ### Constraints and indexes (staging)
 

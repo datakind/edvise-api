@@ -709,6 +709,9 @@ class JobTable(Base):
     model_run_id: Mapped[str | None] = mapped_column(
         String(VAR_CHAR_STANDARD_LENGTH), nullable=True
     )
+    # Databricks job_parameters sent for this run. Null on rows created before
+    # the column existed. Values are strings, matching jobs.run_now.
+    job_parameters: Mapped[dict[str, str] | None] = mapped_column(JSON(), nullable=True)
 
 
 class DocType(enum.Enum):
