@@ -708,6 +708,7 @@ def test_run_pdp_inference_sends_datakind_notification_email_params(
     workspace.jobs.run_now.assert_called_once()
     _run_args, run_kwargs = workspace.jobs.run_now.call_args
     params = run_kwargs["job_parameters"]
+    assert resp.job_parameters == params
     assert params["datakind_notification_email"] == "user@example.com"
     assert params["DK_CC_EMAIL"] == "user@example.com"
     assert "notification_email" not in params

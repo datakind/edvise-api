@@ -376,6 +376,8 @@ class DatabricksInferenceRunResponse(BaseModel):
     """Databricks parameters for an inference run."""
 
     job_run_id: int
+    # Exact job_parameters dict passed to jobs.run_now. Null when unknown.
+    job_parameters: dict[str, str] | None = None
 
 
 class DatabricksBronzeSyncRequest(BaseModel):
@@ -874,9 +876,10 @@ class DatabricksControl(BaseModel):
             raise ValueError(f"run_pdp_inference(): Failed to find job: {e}")
 
         try:
+            job_parameters = _build_pdp_inference_job_parameters(req, db_inst_name)
             run_job: Any = w.jobs.run_now(
                 job_id,
-                job_parameters=_build_pdp_inference_job_parameters(req, db_inst_name),
+                job_parameters=job_parameters,
             )
             LOGGER.info(
                 f"Successfully triggered job run. Run ID: {run_job.response.run_id}"
@@ -891,7 +894,9 @@ class DatabricksControl(BaseModel):
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
 
-        return DatabricksInferenceRunResponse(job_run_id=run_id)
+        return DatabricksInferenceRunResponse(
+            job_run_id=run_id, job_parameters=job_parameters
+        )
 
     def run_legacy_inference(
         self, req: DatabricksSharedInferenceRunRequest
@@ -947,7 +952,9 @@ class DatabricksControl(BaseModel):
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
 
-        return DatabricksInferenceRunResponse(job_run_id=run_id)
+        return DatabricksInferenceRunResponse(
+            job_run_id=run_id, job_parameters=job_parameters
+        )
 
     def run_es_inference(
         self, req: DatabricksSharedInferenceRunRequest
@@ -1004,7 +1011,9 @@ class DatabricksControl(BaseModel):
         run_id = run_job.response.run_id
         LOGGER.info(f"Successfully triggered job run. Run ID: {run_id}")
 
-        return DatabricksInferenceRunResponse(job_run_id=run_id)
+        return DatabricksInferenceRunResponse(
+            job_run_id=run_id, job_parameters=job_parameters
+        )
 
     def run_validated_gcs_to_bronze_sync(
         self, req: DatabricksBronzeSyncRequest
