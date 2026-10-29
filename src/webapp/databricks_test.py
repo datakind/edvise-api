@@ -275,6 +275,7 @@ student = "genai_mapping/onboard/students.csv"
 course = "genai_mapping/onboard/courses.csv"
 
 [datasets.execute_files]
+student = "genai_mapping/execute/students_infer.csv"
 course = "genai_mapping/execute/courses_infer.csv"
 """,
     }
@@ -294,7 +295,7 @@ course = "genai_mapping/execute/courses_infer.csv"
         "term": {"institution_id": "test_school", "datasets": {}},
         "grain": {"institution_id": "test_school", "datasets": {}},
         "dataset_files": {
-            "student": ["students.csv"],
+            "student": ["students_infer.csv"],
             "course": ["courses_infer.csv"],
         },
     }

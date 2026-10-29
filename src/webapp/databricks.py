@@ -3,7 +3,7 @@
 import os
 import logging
 import tomllib
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import DatabricksError
 from databricks.sdk.service import catalog
@@ -15,6 +15,11 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
+from edvise.configs.genai import IdentityAgentInputsConfig
+from edvise.genai.mapping.shared.volume_paths import (
+    resolve_genai_inputs_toml_path,
+    silver_genai_mapping_root,
+)
 from edvise.shared.schema_type import project_config_class
 
 from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
@@ -588,47 +593,24 @@ def _download_volume_bytes(workspace: WorkspaceClient, path: str) -> bytes | Non
     return str(raw).encode("utf-8")
 
 
-def _parse_genai_dataset_files(raw: bytes) -> dict[str, list[str]] | None:
-    """Map dataset names to configured CSV basenames from GenAI ``inputs.toml``."""
+def _dataset_files_from_inputs_toml(
+    raw: bytes, *, catalog: str
+) -> dict[str, list[str]] | None:
+    """Basenames for each dataset, using execute files when ``inputs.toml`` sets them."""
     try:
-        parsed = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        config = IdentityAgentInputsConfig.model_validate(
+            tomllib.loads(raw.decode("utf-8"))
+        )
+        school = config.to_school_mapping_config(
+            uc_catalog=catalog, pipeline_mode="execute"
+        )
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError, ValueError):
         LOGGER.warning("Could not parse GenAI inputs.toml", exc_info=True)
         return None
-    if not isinstance(parsed, dict):
-        return None
-    datasets = parsed.get("datasets")
-    if not isinstance(datasets, dict):
-        return None
-
-    table: dict[str, Any] = {}
-    if "onboard_files" in datasets or "execute_files" in datasets:
-        onboard = datasets.get("onboard_files")
-        execute = datasets.get("execute_files")
-        if isinstance(onboard, dict):
-            table.update(onboard)
-        if isinstance(execute, dict):
-            table.update(execute)
-    else:
-        for name, spec in datasets.items():
-            if isinstance(spec, dict) and "files" in spec:
-                table[str(name)] = spec["files"]
-            elif isinstance(spec, (str, list)):
-                table[str(name)] = spec
-
-    result: dict[str, list[str]] = {}
-    for name, spec in table.items():
-        paths = [spec] if isinstance(spec, str) else spec
-        if not isinstance(paths, list):
-            continue
-        basenames = [
-            os.path.basename(str(path).replace("\\", "/"))
-            for path in paths
-            if str(path).strip()
-        ]
-        if basenames:
-            result[str(name)] = basenames
-    return result or None
+    return {
+        name: [os.path.basename(path.replace("\\", "/")) for path in dataset.files]
+        for name, dataset in school.datasets.items()
+    }
 
 
 def _term_hook_relpaths(term: Mapping[str, Any]) -> list[str]:
@@ -1515,10 +1497,7 @@ class DatabricksControl(BaseModel):
             )
             return None
 
-        active = (
-            f"/Volumes/{env_schema}/{inst_slug}_silver/silver_volume/"
-            "genai_mapping/active"
-        )
+        active = f"{silver_genai_mapping_root(inst_slug, catalog=env_schema)}/active"
         term_bytes = _download_volume_bytes(workspace, f"{active}/term_output.json")
         if term_bytes is None:
             return None
@@ -1543,11 +1522,10 @@ class DatabricksControl(BaseModel):
 
         inputs_bytes = _download_volume_bytes(
             workspace,
-            f"/Volumes/{env_schema}/{inst_slug}_bronze/bronze_volume/"
-            "genai_mapping/inputs.toml",
+            resolve_genai_inputs_toml_path(inst_slug, catalog=env_schema),
         )
         dataset_files = (
-            _parse_genai_dataset_files(inputs_bytes)
+            _dataset_files_from_inputs_toml(inputs_bytes, catalog=env_schema)
             if inputs_bytes is not None
             else None
         )
@@ -1579,10 +1557,7 @@ class DatabricksControl(BaseModel):
             )
             return None
 
-        active = (
-            f"/Volumes/{env_schema}/{inst_slug}_silver/silver_volume/"
-            "genai_mapping/active"
-        )
+        active = f"{silver_genai_mapping_root(inst_slug, catalog=env_schema)}/active"
         root = Path(dest_root)
         wrote = False
         for rel in _term_hook_relpaths(term):
