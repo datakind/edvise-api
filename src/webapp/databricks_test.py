@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -250,6 +251,118 @@ def test_read_volume_training_config_returns_none_without_volume_mapping(
     monkeypatch.setitem(db_mod.env_vars, "ENV", environment)
 
     assert ctrl.read_volume_training_config("Test School", "run-1", "pdp") is None
+
+
+def test_read_genai_identity_contracts_reads_promoted_term_grain_and_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    ctrl: DatabricksControl,
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(db_mod.env_vars, "ENV", "DEV")
+    payloads = {
+        "/Volumes/dev_sst_02/test_school_silver/silver_volume/genai_mapping/active/term_output.json": (
+            b'{"institution_id": "test_school", "datasets": {}}'
+        ),
+        "/Volumes/dev_sst_02/test_school_silver/silver_volume/genai_mapping/active/grain_output.json": (
+            b'{"institution_id": "test_school", "datasets": {}}'
+        ),
+        "/Volumes/dev_sst_02/test_school_bronze/bronze_volume/genai_mapping/inputs.toml": b"""
+institution_id = "test_school"
+
+[datasets.onboard_files]
+student = "genai_mapping/onboard/students.csv"
+course = "genai_mapping/onboard/courses.csv"
+
+[datasets.execute_files]
+student = "genai_mapping/execute/students_infer.csv"
+course = "genai_mapping/execute/courses_infer.csv"
+""",
+    }
+
+    def download(path: str) -> mock.Mock:
+        response = mock.Mock()
+        response.contents.read.return_value = payloads[path]
+        return response
+
+    workspace = mock.Mock()
+    workspace.files.download.side_effect = download
+
+    with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
+        loaded = ctrl.read_genai_identity_contracts("Test School")
+
+    assert loaded == {
+        "term": {"institution_id": "test_school", "datasets": {}},
+        "grain": {"institution_id": "test_school", "datasets": {}},
+        "dataset_files": {
+            "student": ["students_infer.csv"],
+            "course": ["courses_infer.csv"],
+        },
+    }
+
+
+def test_read_genai_identity_contracts_returns_none_without_term_output(
+    monkeypatch: pytest.MonkeyPatch,
+    ctrl: DatabricksControl,
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(db_mod.env_vars, "ENV", "DEV")
+    workspace = mock.Mock()
+    workspace.files.download.side_effect = FileNotFoundError("missing")
+
+    with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
+        assert ctrl.read_genai_identity_contracts("Test School") is None
+
+
+@pytest.mark.parametrize("environment", ["LOCAL", "PROD"])
+def test_read_genai_identity_contracts_returns_none_without_volume_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    ctrl: DatabricksControl,
+    environment: str,
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(db_mod.env_vars, "ENV", environment)
+
+    assert ctrl.read_genai_identity_contracts("Test School") is None
+
+
+def test_materialize_genai_term_hooks_writes_promoted_module(
+    monkeypatch: pytest.MonkeyPatch,
+    ctrl: DatabricksControl,
+    tmp_path: Path,
+) -> None:
+    import src.webapp.databricks as db_mod
+
+    monkeypatch.setitem(db_mod.env_vars, "ENV", "DEV")
+    hook_path = (
+        "/Volumes/dev_sst_02/test_school_silver/silver_volume/genai_mapping/active/"
+        "identity_hooks/test_school/term_hooks.py"
+    )
+    payloads = {hook_path: b"def year_extractor_term(term):\n    return 2024\n"}
+
+    def download(path: str) -> mock.Mock:
+        if path not in payloads:
+            raise FileNotFoundError(path)
+        response = mock.Mock()
+        response.contents.read.return_value = payloads[path]
+        return response
+
+    workspace = mock.Mock()
+    workspace.files.download.side_effect = download
+    dest = tmp_path / "hooks"
+
+    with mock.patch.object(db_mod, "WorkspaceClient", return_value=workspace):
+        root = ctrl.materialize_genai_term_hooks(
+            "Test School",
+            {"institution_id": "test_school", "datasets": {}},
+            dest,
+        )
+
+    assert root == dest
+    written = dest / "identity_hooks" / "test_school" / "term_hooks.py"
+    assert written.read_text(encoding="utf-8").startswith("def year_extractor_term")
 
 
 def test_exact_literal_case_insensitive(ctrl):

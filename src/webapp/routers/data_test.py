@@ -610,6 +610,163 @@ def test_get_eligible_inference_terms_for_selected_batch(
     MOCK_DATABRICKS.read_volume_training_config.assert_called_with(
         "school_1", "run-123", "legacy"
     )
+    MOCK_DATABRICKS.read_genai_identity_contracts.assert_not_called()
+
+
+def test_get_eligible_inference_terms_projects_genai_batch_from_identity_contract(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    institution = session.get(InstTable, USER_VALID_INST_UUID)
+    assert institution is not None
+    institution.legacy_id = None
+    institution.genai_id = "genai123"
+    batch = session.get(BatchTable, BATCH_UUID)
+    student_file = session.get(FileTable, FILE_UUID_1)
+    course_file = session.get(FileTable, FILE_UUID_2)
+    assert batch is not None and student_file is not None and course_file is not None
+    batch.completed = True
+    student_file.schemas = [SchemaType.UNKNOWN]
+    student_file.valid = True
+    course_file.schemas = [SchemaType.UNKNOWN]
+    course_file.valid = True
+    batch.files.add(course_file)
+    _add_registered_model(session)
+
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_id_col": "learner_id",
+        "student_criteria": {"student_type": "FIRST-TIME", "first_generation": ["Y"]},
+        "training_cohorts": ["fall 2022-23"],
+    }
+    MOCK_DATABRICKS.read_genai_identity_contracts.return_value = {
+        "term": {
+            "institution_id": "school",
+            "datasets": {
+                "enroll": {
+                    "institution_id": "school",
+                    "table": "enroll",
+                    "term_config": {
+                        "term_col": "TERM_CODE",
+                        "season_map": [
+                            {"raw": "SP", "canonical": "SPRING"},
+                            {"raw": "FA", "canonical": "FALL"},
+                        ],
+                        "term_extraction": "standard",
+                        "year_semantics": "calendar_literal",
+                    },
+                    "confidence": 0.9,
+                    "hitl_flag": False,
+                    "reasoning": "course term",
+                },
+                "person": {
+                    "institution_id": "school",
+                    "table": "person",
+                    "term_config": {
+                        "term_col": "Entry Term",
+                        "season_map": [
+                            {"raw": "Spring", "canonical": "SPRING"},
+                            {"raw": "Fall", "canonical": "FALL"},
+                        ],
+                        "term_extraction": "standard",
+                        "year_semantics": "calendar_literal",
+                    },
+                    "confidence": 0.9,
+                    "hitl_flag": False,
+                    "reasoning": "entry term",
+                },
+            },
+        },
+        "grain": {
+            "datasets": {
+                "enroll": {
+                    "learner_id_alias": "SID",
+                    "row_selection_required": True,
+                    "post_clean_primary_key": ["SID", "TERM_CODE", "course_id"],
+                },
+                "person": {
+                    "learner_id_alias": "SID",
+                    "row_selection_required": False,
+                    "post_clean_primary_key": ["SID"],
+                },
+            }
+        },
+        "dataset_files": {
+            "enroll": ["file_input_two"],
+            "person": ["file_input_one"],
+        },
+    }
+    MOCK_DATABRICKS.materialize_genai_term_hooks.return_value = None
+
+    def read_csv(_bucket_name: str, blob_path: str) -> pd.DataFrame:
+        if "file_input_one" in blob_path:
+            return pd.DataFrame(
+                {
+                    "SID": [1, 2, 3],
+                    "Entry Term": ["Fall 2022", "Fall 2023", "Fall 2023"],
+                    "student_type": ["FIRST-TIME", "FIRST-TIME", "TRANSFER"],
+                }
+            )
+        return pd.DataFrame(
+            {
+                "SID": [1, 2, 2, 3],
+                "TERM_CODE": ["2024FA", "2024FA", "2025SP", "2024FA"],
+                "course_id": ["C1", "C2", "C3", "C4"],
+            }
+        )
+
+    MOCK_STORAGE.read_csv_as_dataframe.side_effect = read_csv
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "valid",
+        "batch_name": "batch_foo",
+        "terms": [
+            {"term_label": "spring 2024-25", "valid_student_count": 1},
+            {"term_label": "fall 2024-25", "valid_student_count": 1},
+        ],
+        "reason": None,
+    }
+    MOCK_DATABRICKS.read_volume_training_config.assert_called_with(
+        "school_1", "run-123", "edvise"
+    )
+    MOCK_DATABRICKS.read_genai_identity_contracts.assert_called_once_with("school_1")
+
+
+def test_get_eligible_inference_terms_reports_missing_genai_term_contract(
+    client: TestClient,
+    session: sqlalchemy.orm.Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(data_router.env_vars, "ENV", "DEV")
+    institution = session.get(InstTable, USER_VALID_INST_UUID)
+    assert institution is not None
+    institution.legacy_id = None
+    institution.genai_id = "genai123"
+    session.commit()
+    _prepare_inference_batch(session)
+    _add_registered_model(session)
+    MOCK_DATABRICKS.fetch_model_version.return_value = mock.Mock(run_id="run-123")
+    MOCK_DATABRICKS.read_volume_training_config.return_value = {
+        "student_criteria": {},
+        "training_cohorts": [],
+    }
+    MOCK_DATABRICKS.read_genai_identity_contracts.return_value = None
+
+    response = client.get(
+        f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
+        params={"model_name": "retention_model", "batch_name": "batch_foo"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "invalid"
+    assert response.json()["reason"] == "Identity term contract could not be loaded."
 
 
 def test_get_eligible_inference_terms_rejects_unauthorized_institution(
@@ -837,7 +994,7 @@ def test_get_eligible_inference_terms_rewrites_eda_batch_read_reason(
             ),
         )
 
-    monkeypatch.setattr(data_router, "read_batch_files_as_dataframes", raise_eda_error)
+    monkeypatch.setattr(data_router, "_load_validated_batch_frames", raise_eda_error)
     response = client.get(
         f"/institutions/{uuid_to_str(USER_VALID_INST_UUID)}/eligible-inference-terms",
         params={"model_name": "retention_model", "batch_name": "batch_foo"},

@@ -3,7 +3,7 @@
 import os
 import logging
 import tomllib
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import DatabricksError
 from databricks.sdk.service import catalog
@@ -15,11 +15,17 @@ from databricks.sdk.service.sql import (
 )
 from google.cloud import storage
 from google.api_core import exceptions as gcs_errors
+from edvise.configs.genai import IdentityAgentInputsConfig
+from edvise.genai.mapping.shared.volume_paths import (
+    resolve_genai_inputs_toml_path,
+    silver_genai_mapping_root,
+)
 from edvise.shared.schema_type import project_config_class
 
 from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType, uc_model_name
-from typing import List, Any, Dict, Optional
+from pathlib import Path
+from typing import List, Any, Dict, Mapping, Optional
 import requests
 import hashlib
 import json
@@ -570,6 +576,83 @@ def _find_training_config_in_training_dir(
         LOGGER.debug("Could not read Databricks config %s", entry_path, exc_info=True)
         return None
     return _parse_training_config(raw_bytes, schema_type)
+
+
+def _download_volume_bytes(workspace: WorkspaceClient, path: str) -> bytes | None:
+    """Download one UC volume file, or return None when it is missing."""
+    try:
+        response = workspace.files.download(path)
+        if response.contents is None:
+            return None
+        raw = response.contents.read()
+    except Exception:
+        LOGGER.debug("Could not read Databricks volume file %s", path, exc_info=True)
+        return None
+    if isinstance(raw, bytes):
+        return raw
+    return str(raw).encode("utf-8")
+
+
+def _dataset_files_from_inputs_toml(
+    raw: bytes, *, catalog: str
+) -> dict[str, list[str]] | None:
+    """Basenames for each dataset, using execute files when ``inputs.toml`` sets them."""
+    try:
+        config = IdentityAgentInputsConfig.model_validate(
+            tomllib.loads(raw.decode("utf-8"))
+        )
+        school = config.to_school_mapping_config(
+            uc_catalog=catalog, pipeline_mode="execute"
+        )
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError, ValueError):
+        LOGGER.warning("Could not parse GenAI inputs.toml", exc_info=True)
+        return None
+    return {
+        name: [os.path.basename(path.replace("\\", "/")) for path in dataset.files]
+        for name, dataset in school.datasets.items()
+    }
+
+
+def _term_hook_relpaths(term: Mapping[str, Any]) -> list[str]:
+    """Relative hook module paths referenced by a promoted term contract."""
+    from edvise.genai.mapping.shared.hitl.hook_spec.paths import (
+        default_hook_module_relpath,
+    )
+    from edvise.genai.mapping.shared.hitl.hook_spec.schemas import HITLDomain
+
+    paths: list[str] = []
+    institution_id = term.get("institution_id")
+    if isinstance(institution_id, str) and institution_id.strip():
+        paths.append(
+            default_hook_module_relpath(
+                institution_id.strip(), HITLDomain.IDENTITY_TERM
+            )
+        )
+    datasets = term.get("datasets")
+    if isinstance(datasets, dict):
+        for entry in datasets.values():
+            if not isinstance(entry, dict):
+                continue
+            config = entry.get("term_config")
+            if not isinstance(config, dict):
+                continue
+            hook_spec = config.get("hook_spec")
+            if not isinstance(hook_spec, dict):
+                continue
+            rel = hook_spec.get("file")
+            if isinstance(rel, str) and rel.strip():
+                paths.append(rel.strip().replace("\\", "/").lstrip("/"))
+    # Pre-identity_hooks promotion layout.
+    paths.append("term_hooks.py")
+    # Preserve order, drop duplicates.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        ordered.append(path)
+    return ordered
 
 
 L1_RESP_CACHE_TTL = int("600")  # seconds
@@ -1384,6 +1467,113 @@ class DatabricksControl(BaseModel):
         return _find_training_config_in_training_dir(
             workspace, training_directory, schema_type
         )
+
+    def read_genai_identity_contracts(self, inst_name: str) -> dict[str, Any] | None:
+        """Load the promoted IdentityAgent term contract for an institution.
+
+        ``term`` is ``genai_mapping/active/term_output.json``. ``grain`` and
+        ``dataset_files`` are included when those artifacts are present. Returns
+        None when the term contract cannot be read.
+        """
+        if not inst_name.strip():
+            return None
+        env_schema = ENV_TO_VOLUME_SCHEMA.get(str(env_vars["ENV"]).strip().upper())
+        if env_schema is None:
+            LOGGER.warning(
+                "GenAI identity volumes are not configured for ENV=%r",
+                env_vars["ENV"],
+            )
+            return None
+        try:
+            inst_slug = databricksify_inst_name(inst_name)
+            workspace = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception:
+            LOGGER.exception(
+                "Could not initialize GenAI identity contract lookup for %s",
+                inst_name,
+            )
+            return None
+
+        active = f"{silver_genai_mapping_root(inst_slug, catalog=env_schema)}/active"
+        term_bytes = _download_volume_bytes(workspace, f"{active}/term_output.json")
+        if term_bytes is None:
+            return None
+        try:
+            term = json.loads(term_bytes)
+        except json.JSONDecodeError:
+            LOGGER.warning("Invalid JSON in %s/term_output.json", active)
+            return None
+        if not isinstance(term, dict):
+            return None
+
+        grain: dict[str, Any] | None = None
+        grain_bytes = _download_volume_bytes(workspace, f"{active}/grain_output.json")
+        if grain_bytes is not None:
+            try:
+                parsed_grain = json.loads(grain_bytes)
+            except json.JSONDecodeError:
+                LOGGER.warning("Invalid JSON in %s/grain_output.json", active)
+            else:
+                if isinstance(parsed_grain, dict):
+                    grain = parsed_grain
+
+        inputs_bytes = _download_volume_bytes(
+            workspace,
+            resolve_genai_inputs_toml_path(inst_slug, catalog=env_schema),
+        )
+        dataset_files = (
+            _dataset_files_from_inputs_toml(inputs_bytes, catalog=env_schema)
+            if inputs_bytes is not None
+            else None
+        )
+        return {"term": term, "grain": grain, "dataset_files": dataset_files}
+
+    def materialize_genai_term_hooks(
+        self, inst_name: str, term: Mapping[str, Any], dest_root: str | Path
+    ) -> Path | None:
+        """Copy promoted term hook modules under ``dest_root`` for local import.
+
+        Relative paths match ``hook_spec.file`` under ``genai_mapping/active/``.
+        Returns ``dest_root`` when at least one module was written, else None.
+        """
+        if not inst_name.strip():
+            return None
+        env_schema = ENV_TO_VOLUME_SCHEMA.get(str(env_vars["ENV"]).strip().upper())
+        if env_schema is None:
+            return None
+        try:
+            inst_slug = databricksify_inst_name(inst_name)
+            workspace = WorkspaceClient(
+                host=databricks_vars["DATABRICKS_HOST_URL"],
+                google_service_account=gcs_vars["GCP_SERVICE_ACCOUNT_EMAIL"],
+            )
+        except Exception:
+            LOGGER.exception(
+                "Could not initialize GenAI term hook lookup for %s",
+                inst_name,
+            )
+            return None
+
+        active = f"{silver_genai_mapping_root(inst_slug, catalog=env_schema)}/active"
+        root = Path(dest_root)
+        wrote = False
+        for rel in _term_hook_relpaths(term):
+            raw = _download_volume_bytes(workspace, f"{active}/{rel}")
+            if raw is None:
+                continue
+            target = root / rel
+            if ".." in Path(rel).parts:
+                LOGGER.warning(
+                    "Refusing GenAI term hook path that escapes root: %s", rel
+                )
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            wrote = True
+        return root if wrote else None
 
     def delete_model(self, catalog_name: str, inst_name: str, model_name: str) -> None:
         schema = databricksify_inst_name(inst_name)
