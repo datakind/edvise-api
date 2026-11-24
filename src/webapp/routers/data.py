@@ -1147,6 +1147,9 @@ class TermChartData(BaseModel):
 class EdaDataResponse(BaseModel):
     """EDA API response: summary metrics, GPA/time-series data, and category+series blobs."""
 
+    # ready | pending_mapping | unavailable (GenAI mapped-data path)
+    eda_status: Optional[str] = None
+    eda_message: Optional[str] = None
     total_students: Optional[SummaryMetric] = None
     transfer_students: Optional[SummaryMetric] = None
     avg_year1_gpa_all_students: Optional[SummaryMetric] = None
@@ -1164,8 +1167,16 @@ class EdaDataResponse(BaseModel):
     race_by_pell_status: Optional[Dict[str, Any]] = None
 
     @classmethod
-    def from_eda_summary(cls, eda: Any) -> "EdaDataResponse":
+    def from_eda_summary(
+        cls,
+        eda: Any,
+        *,
+        eda_status: Optional[str] = "ready",
+        eda_message: Optional[str] = None,
+    ) -> "EdaDataResponse":
         return cls(
+            eda_status=eda_status,
+            eda_message=eda_message,
             total_students=eda.total_students,
             transfer_students=eda.transfer_students,
             avg_year1_gpa_all_students=eda.avg_year1_gpa_all_students,
@@ -1180,6 +1191,11 @@ class EdaDataResponse(BaseModel):
             student_age_by_gender=eda.student_age_by_gender,
             race_by_pell_status=eda.race_by_pell_status,
         )
+
+    @classmethod
+    def pending_mapping(cls, message: str) -> "EdaDataResponse":
+        """Placeholder when GenAI mapping for this batch is not ready yet."""
+        return cls(eda_status="pending_mapping", eda_message=message)
 
 
 def read_batch_files_as_dataframes(
@@ -1273,6 +1289,7 @@ def get_eda_data(
     current_user: Annotated[BaseUser, Depends(get_current_active_user)],
     sql_session: Annotated[Session, Depends(get_session)],
     storage_control: Annotated[StorageControl, Depends(StorageControl)],
+    databricks_control: Annotated[DatabricksControl, Depends(DatabricksControl)],
     clear_cache: Annotated[Optional[str], Query(alias="clear-cache")] = None,
 ) -> Any:
     """Returns EDA (Exploratory Data Analysis) data for a specific batch.
@@ -1281,6 +1298,11 @@ def get_eda_data(
     including summary statistics, GPA charts, enrollment data, and demographic breakdowns.
     Analyzes all files in the batch together to provide comprehensive insights.
     Pass query ``clear-cache=1`` to drop any cached EDA result for this batch before serving.
+
+    For GenAI institutions (``genai_id`` set), cohort/course come from the latest completed
+    GenAI mapping execute run tied to ``gcs_uploads/{batch_id}`` (silver ``pipeline_input``),
+    not from the raw webapp batch uploads. If mapping is not ready, returns
+    ``eda_status=pending_mapping`` with a placeholder message and null charts.
     """
     has_access_to_inst_or_err(inst_id, current_user)
     has_full_data_access_or_err(current_user, "EDA data")
@@ -1304,6 +1326,17 @@ def get_eda_data(
             detail="Batch not found.",
         )
 
+    inst = (
+        local_session.get()
+        .execute(select(InstTable).where(InstTable.id == str_to_uuid(inst_id)))
+        .scalar_one_or_none()
+    )
+    if inst is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Institution not found.",
+        )
+
     cache_key = f"{inst_id}:{batch_id}"
     if clear_cache == "1":
         EDA_CACHE.pop(cache_key, None)
@@ -1314,21 +1347,64 @@ def get_eda_data(
         return cached_result
     logger.debug(f"EDA cache miss for {cache_key}, computing...")
 
-    file_dataframes = read_batch_files_as_dataframes(
-        inst_id, batch_result.files, storage_control
-    )
-    df_cohort = file_dataframes.get("STUDENT")
+    df_cohort: Optional[pd.DataFrame] = None
+    df_course: Optional[pd.DataFrame] = None
+    is_genai = bool(getattr(inst, "genai_id", None))
+
+    if is_genai:
+        try:
+            mapped = databricks_control.load_genai_mapped_eda_data(
+                inst_name=inst.name,
+                batch_id=batch_id,
+            )
+        except Exception as exc:
+            logger.exception(
+                "GenAI mapped EDA load failed for inst_id=%s batch_id=%s",
+                inst_id,
+                batch_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to load GenAI mapped data for EDA: {exc}",
+            ) from exc
+
+        if mapped.status != "ready":
+            # Do not cache pending/unavailable so a later mapping run is visible.
+            return EdaDataResponse(
+                eda_status=mapped.status,
+                eda_message=mapped.message
+                or "EDA will be available when GenAI mapping finishes for this batch.",
+            )
+
+        df_cohort = mapped.df_cohort
+        df_course = mapped.df_course
+        logger.info(
+            "GenAI EDA using mapped pipeline_input (execute_run_id=%s batch_id=%s)",
+            mapped.execute_run_id,
+            batch_id,
+        )
+    else:
+        file_dataframes = read_batch_files_as_dataframes(
+            inst_id, batch_result.files, storage_control
+        )
+        df_cohort = file_dataframes.get("STUDENT")
+        df_course = file_dataframes.get("COURSE")
+
     if df_cohort is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No STUDENT schema files found in batch for EDA.",
+            detail=(
+                "No mapped STUDENT/cohort data found for GenAI EDA."
+                if is_genai
+                else "No STUDENT schema files found in batch for EDA."
+            ),
         )
 
     eda = EdaSummary(
         df_cohort=df_cohort,
-        df_course=file_dataframes.get("COURSE"),
+        df_course=df_course,
     )
-    result = EdaDataResponse.from_eda_summary(eda)
+    result = EdaDataResponse.from_eda_summary(eda, eda_status="ready")
     EDA_CACHE[cache_key] = result
 
     return result

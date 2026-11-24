@@ -1478,3 +1478,36 @@ class DatabricksControl(BaseModel):
                     return key
 
         return None
+
+    def load_genai_mapped_eda_data(
+        self,
+        *,
+        inst_name: str,
+        batch_id: str,
+        warehouse_id: str | None = None,
+    ) -> Any:
+        """
+        Load GenAI mapped cohort/course DataFrames for webapp batch EDA.
+
+        Looks up ``genai_mapping.pipeline_runs`` for ``gcs_uploads/{batch_id}``, then
+        reads ``pipeline_input/*.parquet`` for the latest completed execute run.
+        """
+        from .eda_genai import resolve_genai_mapped_eda
+
+        wh = (warehouse_id or env_vars.get("SQL_WAREHOUSE_ID") or "").strip()
+        catalog = (databricks_vars.get("CATALOG_NAME") or "").strip()
+        if not wh:
+            raise ValueError("SQL_WAREHOUSE_ID is required for GenAI EDA mapped lookup.")
+        if not catalog:
+            raise ValueError("CATALOG_NAME is required for GenAI EDA mapped lookup.")
+        if not databricks_vars.get("DATABRICKS_HOST_URL"):
+            raise ValueError("Databricks integration not configured.")
+
+        workspace = _create_databricks_workspace_client("load_genai_mapped_eda_data")
+        return resolve_genai_mapped_eda(
+            workspace,
+            warehouse_id=wh,
+            catalog=catalog,
+            inst_name=inst_name,
+            batch_id=batch_id,
+        )
