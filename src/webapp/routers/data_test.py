@@ -1695,6 +1695,7 @@ def test_get_eda_data_genai_pending_mapping_not_cached(
     genai_session.add(eda_batch)
     genai_session.commit()
 
+    MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
     MOCK_DATABRICKS.load_genai_mapped_eda_data.return_value = SimpleNamespace(
         status="pending_mapping",
         message="EDA will be available when GenAI mapping finishes for this batch.",
@@ -1703,25 +1704,28 @@ def test_get_eda_data_genai_pending_mapping_not_cached(
         execute_run_id=None,
     )
 
-    base_path = (
-        "/institutions/"
-        + uuid_to_str(GENAI_INST_UUID)
-        + "/batch/"
-        + uuid_to_str(eda_batch.id)
-        + "/eda"
-    )
-    r1 = genai_client.get(base_path)
-    assert r1.status_code == 200
-    body = r1.json()
-    assert body["eda_status"] == "pending_mapping"
-    assert body["total_students"] is None
-    assert MOCK_DATABRICKS.load_genai_mapped_eda_data.call_count == 1
+    try:
+        base_path = (
+            "/institutions/"
+            + uuid_to_str(GENAI_INST_UUID)
+            + "/batch/"
+            + uuid_to_str(eda_batch.id)
+            + "/eda"
+        )
+        r1 = genai_client.get(base_path)
+        assert r1.status_code == 200
+        body = r1.json()
+        assert body["eda_status"] == "pending_mapping"
+        assert body["total_students"] is None
+        assert MOCK_DATABRICKS.load_genai_mapped_eda_data.call_count == 1
 
-    r2 = genai_client.get(base_path)
-    assert r2.status_code == 200
-    assert r2.json()["eda_status"] == "pending_mapping"
-    # Pending must not be cached — Databricks lookup runs again.
-    assert MOCK_DATABRICKS.load_genai_mapped_eda_data.call_count == 2
+        r2 = genai_client.get(base_path)
+        assert r2.status_code == 200
+        assert r2.json()["eda_status"] == "pending_mapping"
+        # Pending must not be cached — Databricks lookup runs again.
+        assert MOCK_DATABRICKS.load_genai_mapped_eda_data.call_count == 2
+    finally:
+        MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
 
 
 def test_get_eda_data_genai_uses_mapped_dataframes(
@@ -1753,6 +1757,7 @@ def test_get_eda_data_genai_uses_mapped_dataframes(
         }
     )
     course = pd.DataFrame({"student_id": ["L1"], "grade": ["3.0"]})
+    MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
     MOCK_DATABRICKS.load_genai_mapped_eda_data.return_value = SimpleNamespace(
         status="ready",
         message=None,
@@ -1761,19 +1766,22 @@ def test_get_eda_data_genai_uses_mapped_dataframes(
         execute_run_id="ex-1",
     )
 
-    response = genai_client.get(
-        "/institutions/"
-        + uuid_to_str(GENAI_INST_UUID)
-        + "/batch/"
-        + uuid_to_str(eda_batch.id)
-        + "/eda"
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["eda_status"] == "ready"
-    assert data["total_students"]["value"] == 2
-    MOCK_DATABRICKS.load_genai_mapped_eda_data.assert_called_once()
-    MOCK_STORAGE.read_csv_as_dataframe.assert_not_called()
+    try:
+        response = genai_client.get(
+            "/institutions/"
+            + uuid_to_str(GENAI_INST_UUID)
+            + "/batch/"
+            + uuid_to_str(eda_batch.id)
+            + "/eda"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["eda_status"] == "ready"
+        assert data["total_students"]["value"] == 2
+        MOCK_DATABRICKS.load_genai_mapped_eda_data.assert_called_once()
+        MOCK_STORAGE.read_csv_as_dataframe.assert_not_called()
+    finally:
+        MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
 
 
 # ==================== EDVISE VALIDATION TESTS ====================

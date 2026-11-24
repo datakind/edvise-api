@@ -1494,10 +1494,12 @@ class DatabricksControl(BaseModel):
         """
         from .eda_genai import resolve_genai_mapped_eda
 
-        wh = (warehouse_id or env_vars.get("SQL_WAREHOUSE_ID") or "").strip()
-        catalog = (databricks_vars.get("CATALOG_NAME") or "").strip()
+        wh = str(warehouse_id or env_vars.get("SQL_WAREHOUSE_ID") or "").strip()
+        catalog = str(databricks_vars.get("CATALOG_NAME") or "").strip()
         if not wh:
-            raise ValueError("SQL_WAREHOUSE_ID is required for GenAI EDA mapped lookup.")
+            raise ValueError(
+                "SQL_WAREHOUSE_ID is required for GenAI EDA mapped lookup."
+            )
         if not catalog:
             raise ValueError("CATALOG_NAME is required for GenAI EDA mapped lookup.")
         if not databricks_vars.get("DATABRICKS_HOST_URL"):

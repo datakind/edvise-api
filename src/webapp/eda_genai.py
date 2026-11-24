@@ -30,9 +30,7 @@ LOGGER = logging.getLogger(__name__)
 
 GenaiEdaStatus = Literal["ready", "pending_mapping", "unavailable"]
 
-_PENDING_MESSAGE = (
-    "EDA will be available when GenAI mapping finishes for this batch."
-)
+_PENDING_MESSAGE = "EDA will be available when GenAI mapping finishes for this batch."
 _UNAVAILABLE_MESSAGE = (
     "Could not load GenAI mapped data for EDA. Try again after mapping completes."
 )
@@ -113,7 +111,11 @@ def _execute_sql(
             "Databricks SQL did not succeed for GenAI EDA lookup "
             f"(state={getattr(resp.status, 'state', None)!r})"
         )
-    cols = [c.name for c in (resp.manifest.schema.columns or [])]  # type: ignore[union-attr]
+    cols: list[str] = [
+        str(c.name)
+        for c in (resp.manifest.schema.columns or [])  # type: ignore[union-attr]
+        if c.name is not None
+    ]
     rows = resp.result.data_array or []  # type: ignore[union-attr]
     return [dict(zip(cols, row)) for row in rows]
 
@@ -141,7 +143,7 @@ SELECT execute_run_id, status, updated_at, input_file_paths
 FROM {table}
 WHERE institution_id = {_sql_string_literal(institution_id)}
   AND execute_run_id IS NOT NULL
-  AND input_file_paths LIKE {_sql_string_literal('%' + needle + '%')}
+  AND input_file_paths LIKE {_sql_string_literal("%" + needle + "%")}
 ORDER BY updated_at DESC
 LIMIT 20
 """
