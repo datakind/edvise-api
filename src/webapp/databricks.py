@@ -1489,13 +1489,17 @@ class DatabricksControl(BaseModel):
         """
         Load GenAI mapped cohort/course DataFrames for webapp batch EDA.
 
-        Looks up ``genai_mapping.pipeline_runs`` for ``gcs_uploads/{batch_id}``, then
-        reads ``pipeline_input/*.parquet`` for the latest completed execute run.
+        Resolves API env (warehouse / catalog), then delegates pipeline_runs +
+        silver ``pipeline_input`` resolution to edvise.
         """
         from .eda_genai import resolve_genai_mapped_eda
 
         wh = str(warehouse_id or env_vars.get("SQL_WAREHOUSE_ID") or "").strip()
-        catalog = str(databricks_vars.get("CATALOG_NAME") or "").strip()
+        env = str(env_vars.get("ENV") or "").strip().upper()
+        catalog = (
+            ENV_TO_VOLUME_SCHEMA.get(env)
+            or str(databricks_vars.get("CATALOG_NAME") or "").strip()
+        )
         if not wh:
             raise ValueError(
                 "SQL_WAREHOUSE_ID is required for GenAI EDA mapped lookup."
