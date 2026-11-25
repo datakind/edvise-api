@@ -11,9 +11,11 @@ import logging
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-import pandas as pd
 from databricks.sdk import WorkspaceClient
-from edvise.dataio.genai_eda_inputs import resolve_genai_mapped_inputs_for_batch
+from edvise.dataio.genai_eda_inputs import (
+    GenaiMappedInputs,
+    resolve_genai_mapped_inputs_for_batch,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,13 +29,11 @@ _UNAVAILABLE_MESSAGE = (
 
 @dataclass(frozen=True)
 class GenaiMappedEdaResult:
-    """Outcome of resolving mapped GenAI files for a webapp batch."""
+    """API-facing outcome of resolving mapped GenAI files for a webapp batch."""
 
     status: GenaiEdaStatus
     message: Optional[str] = None
-    df_cohort: Optional[pd.DataFrame] = None
-    df_course: Optional[pd.DataFrame] = None
-    execute_run_id: Optional[str] = None
+    inputs: Optional[GenaiMappedInputs] = None
 
 
 def resolve_genai_mapped_eda(
@@ -76,9 +76,4 @@ def resolve_genai_mapped_eda(
             message=_PENDING_MESSAGE,
         )
 
-    return GenaiMappedEdaResult(
-        status="ready",
-        df_cohort=mapped.df_cohort,
-        df_course=mapped.df_course,
-        execute_run_id=mapped.execute_run_id,
-    )
+    return GenaiMappedEdaResult(status="ready", inputs=mapped)

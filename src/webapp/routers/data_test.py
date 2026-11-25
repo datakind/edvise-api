@@ -1699,9 +1699,7 @@ def test_get_eda_data_genai_pending_mapping_not_cached(
     MOCK_DATABRICKS.load_genai_mapped_eda_data.return_value = SimpleNamespace(
         status="pending_mapping",
         message="EDA will be available when GenAI mapping finishes for this batch.",
-        df_cohort=None,
-        df_course=None,
-        execute_run_id=None,
+        inputs=None,
     )
 
     try:
@@ -1761,9 +1759,11 @@ def test_get_eda_data_genai_uses_mapped_dataframes(
     MOCK_DATABRICKS.load_genai_mapped_eda_data.return_value = SimpleNamespace(
         status="ready",
         message=None,
-        df_cohort=cohort,
-        df_course=course,
-        execute_run_id="ex-1",
+        inputs=SimpleNamespace(
+            execute_run_id="ex-1",
+            df_cohort=cohort,
+            df_course=course,
+        ),
     )
 
     try:

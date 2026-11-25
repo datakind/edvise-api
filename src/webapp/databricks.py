@@ -19,7 +19,7 @@ from edvise.shared.schema_type import project_config_class
 
 from .config import ENV_TO_VOLUME_SCHEMA, databricks_vars, env_vars, gcs_vars
 from .utilities import databricksify_inst_name, SchemaType, uc_model_name
-from typing import List, Any, Dict, Optional
+from typing import TYPE_CHECKING, List, Any, Dict, Optional
 import requests
 import hashlib
 import json
@@ -27,6 +27,9 @@ import gzip
 from cachetools import TTLCache
 import threading
 import re
+
+if TYPE_CHECKING:
+    from .eda_genai import GenaiMappedEdaResult
 
 # Setting up logger
 LOGGER = logging.getLogger(__name__)
@@ -1485,14 +1488,14 @@ class DatabricksControl(BaseModel):
         inst_name: str,
         batch_id: str,
         warehouse_id: str | None = None,
-    ) -> Any:
+    ) -> "GenaiMappedEdaResult":
         """
         Load GenAI mapped cohort/course DataFrames for webapp batch EDA.
 
         Resolves API env (warehouse / catalog), then delegates pipeline_runs +
         silver ``pipeline_input`` resolution to edvise.
         """
-        from .eda_genai import resolve_genai_mapped_eda
+        from .eda_genai import GenaiMappedEdaResult, resolve_genai_mapped_eda
 
         wh = str(warehouse_id or env_vars.get("SQL_WAREHOUSE_ID") or "").strip()
         env = str(env_vars.get("ENV") or "").strip().upper()
@@ -1505,15 +1508,19 @@ class DatabricksControl(BaseModel):
                 "SQL_WAREHOUSE_ID is required for GenAI EDA mapped lookup."
             )
         if not catalog:
-            raise ValueError("CATALOG_NAME is required for GenAI EDA mapped lookup.")
+            raise ValueError(
+                "Unity Catalog name is required for GenAI EDA mapped lookup "
+                "(set ENV to DEV/STAGING or configure CATALOG_NAME)."
+            )
         if not databricks_vars.get("DATABRICKS_HOST_URL"):
             raise ValueError("Databricks integration not configured.")
 
         workspace = _create_databricks_workspace_client("load_genai_mapped_eda_data")
-        return resolve_genai_mapped_eda(
+        result: GenaiMappedEdaResult = resolve_genai_mapped_eda(
             workspace,
             warehouse_id=wh,
             catalog=catalog,
             inst_name=inst_name,
             batch_id=batch_id,
         )
+        return result

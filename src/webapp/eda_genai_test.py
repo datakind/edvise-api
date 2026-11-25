@@ -23,8 +23,8 @@ def test_resolve_pending_when_edvise_returns_none() -> None:
             batch_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
     assert result.status == "pending_mapping"
-    assert result.df_cohort is None
-    assert "mapping finishes" in (result.message or "")
+    assert result.inputs is None
+    assert result.message == eda_genai._PENDING_MESSAGE
 
 
 def test_resolve_unavailable_when_edvise_raises() -> None:
@@ -42,8 +42,8 @@ def test_resolve_unavailable_when_edvise_raises() -> None:
             batch_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
     assert result.status == "unavailable"
-    assert result.df_cohort is None
-    assert "Could not load" in (result.message or "")
+    assert result.inputs is None
+    assert result.message == eda_genai._UNAVAILABLE_MESSAGE
 
 
 def test_resolve_ready_maps_edvise_inputs() -> None:
@@ -67,8 +67,7 @@ def test_resolve_ready_maps_edvise_inputs() -> None:
         )
 
     assert result.status == "ready"
-    assert result.execute_run_id == "ex-ready"
-    assert result.df_cohort is not None
-    assert list(result.df_cohort["learner_id"]) == ["L1"]
-    assert result.df_course is not None
     assert result.message is None
+    assert result.inputs is not None
+    assert result.inputs.execute_run_id == "ex-ready"
+    assert list(result.inputs.df_cohort["learner_id"]) == ["L1"]

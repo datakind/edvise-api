@@ -1368,19 +1368,23 @@ def get_eda_data(
                 detail=f"Failed to load GenAI mapped data for EDA: {exc}",
             ) from exc
 
-        if mapped.status != "ready":
+        if mapped.status != "ready" or mapped.inputs is None:
             # Do not cache pending/unavailable so a later mapping run is visible.
+            if mapped.status == "pending_mapping":
+                return EdaDataResponse.pending_mapping(
+                    mapped.message
+                    or "EDA will be available when GenAI mapping finishes for this batch."
+                )
             return EdaDataResponse(
                 eda_status=mapped.status,
-                eda_message=mapped.message
-                or "EDA will be available when GenAI mapping finishes for this batch.",
+                eda_message=mapped.message,
             )
 
-        df_cohort = mapped.df_cohort
-        df_course = mapped.df_course
+        df_cohort = mapped.inputs.df_cohort
+        df_course = mapped.inputs.df_course
         logger.info(
             "GenAI EDA using mapped pipeline_input (execute_run_id=%s batch_id=%s)",
-            mapped.execute_run_id,
+            mapped.inputs.execute_run_id,
             batch_id,
         )
     else:
