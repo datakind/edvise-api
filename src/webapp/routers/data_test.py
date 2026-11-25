@@ -1677,6 +1677,113 @@ def test_get_eda_data_clear_cache(
         MOCK_STORAGE.reset_mock()
 
 
+def test_get_eda_data_genai_pending_mapping_not_cached(
+    genai_client: TestClient, genai_session: sqlalchemy.orm.Session
+) -> None:
+    """GenAI EDA returns pending_mapping and does not cache that response."""
+    from types import SimpleNamespace
+
+    eda_batch = BatchTable(
+        id=uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        inst_id=GENAI_INST_UUID,
+        name="batch_genai_eda_pending",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        completed=True,
+    )
+    genai_session.add(eda_batch)
+    genai_session.commit()
+
+    MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
+    MOCK_DATABRICKS.load_genai_mapped_eda_data.return_value = SimpleNamespace(
+        status="pending_mapping",
+        message="EDA will be available when GenAI mapping finishes for this batch.",
+        inputs=None,
+    )
+
+    try:
+        base_path = (
+            "/institutions/"
+            + uuid_to_str(GENAI_INST_UUID)
+            + "/batch/"
+            + uuid_to_str(eda_batch.id)
+            + "/eda"
+        )
+        r1 = genai_client.get(base_path)
+        assert r1.status_code == 200
+        body = r1.json()
+        assert body["eda_status"] == "pending_mapping"
+        assert body["total_students"] is None
+        assert MOCK_DATABRICKS.load_genai_mapped_eda_data.call_count == 1
+
+        r2 = genai_client.get(base_path)
+        assert r2.status_code == 200
+        assert r2.json()["eda_status"] == "pending_mapping"
+        # Pending must not be cached — Databricks lookup runs again.
+        assert MOCK_DATABRICKS.load_genai_mapped_eda_data.call_count == 2
+    finally:
+        MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
+
+
+def test_get_eda_data_genai_uses_mapped_dataframes(
+    genai_client: TestClient, genai_session: sqlalchemy.orm.Session
+) -> None:
+    """GenAI EDA builds charts from mapped cohort/course, not raw batch uploads."""
+    import pandas as pd
+    from types import SimpleNamespace
+
+    eda_batch = BatchTable(
+        id=uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"),
+        inst_id=GENAI_INST_UUID,
+        name="batch_genai_eda_ready",
+        created_by=CREATOR_UUID,
+        created_at=DATETIME_TESTING,
+        updated_at=DATETIME_TESTING,
+        completed=True,
+    )
+    genai_session.add(eda_batch)
+    genai_session.commit()
+
+    # Use PDP column names so this API unit test does not depend on the ES alias
+    # release; production GenAI silver is ES-shaped and relies on that edvise change.
+    cohort = pd.DataFrame(
+        {
+            "student_id": ["L1", "L2"],
+            "cohort": ["2020-21", "2020-21"],
+            "cohort_term": ["Fall", "Spring"],
+        }
+    )
+    course = pd.DataFrame({"student_id": ["L1"], "grade": ["3.0"]})
+    MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
+    MOCK_DATABRICKS.load_genai_mapped_eda_data.return_value = SimpleNamespace(
+        status="ready",
+        message=None,
+        inputs=SimpleNamespace(
+            execute_run_id="ex-1",
+            df_cohort=cohort,
+            df_course=course,
+        ),
+    )
+
+    try:
+        response = genai_client.get(
+            "/institutions/"
+            + uuid_to_str(GENAI_INST_UUID)
+            + "/batch/"
+            + uuid_to_str(eda_batch.id)
+            + "/eda"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["eda_status"] == "ready"
+        assert data["total_students"]["value"] == 2
+        MOCK_DATABRICKS.load_genai_mapped_eda_data.assert_called_once()
+        MOCK_STORAGE.read_csv_as_dataframe.assert_not_called()
+    finally:
+        MOCK_DATABRICKS.load_genai_mapped_eda_data.reset_mock()
+
+
 # ==================== EDVISE VALIDATION TESTS ====================
 
 EDVISE_INST_UUID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
