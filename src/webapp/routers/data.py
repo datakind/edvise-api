@@ -1192,11 +1192,6 @@ class EdaDataResponse(BaseModel):
             race_by_pell_status=eda.race_by_pell_status,
         )
 
-    @classmethod
-    def pending_mapping(cls, message: str) -> "EdaDataResponse":
-        """Placeholder when GenAI mapping for this batch is not ready yet."""
-        return cls(eda_status="pending_mapping", eda_message=message)
-
 
 def read_batch_files_as_dataframes(
     inst_id: str,
@@ -1370,11 +1365,6 @@ def get_eda_data(
 
         if mapped.status != "ready" or mapped.inputs is None:
             # Do not cache pending/unavailable so a later mapping run is visible.
-            if mapped.status == "pending_mapping":
-                return EdaDataResponse.pending_mapping(
-                    mapped.message
-                    or "EDA will be available when GenAI mapping finishes for this batch."
-                )
             return EdaDataResponse(
                 eda_status=mapped.status,
                 eda_message=mapped.message,

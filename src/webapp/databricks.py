@@ -1495,7 +1495,7 @@ class DatabricksControl(BaseModel):
         Resolves API env (warehouse / catalog), then delegates pipeline_runs +
         silver ``pipeline_input`` resolution to edvise.
         """
-        from .eda_genai import GenaiMappedEdaResult, resolve_genai_mapped_eda
+        from .eda_genai import resolve_genai_mapped_eda
 
         wh = str(warehouse_id or env_vars.get("SQL_WAREHOUSE_ID") or "").strip()
         env = str(env_vars.get("ENV") or "").strip().upper()
@@ -1516,11 +1516,10 @@ class DatabricksControl(BaseModel):
             raise ValueError("Databricks integration not configured.")
 
         workspace = _create_databricks_workspace_client("load_genai_mapped_eda_data")
-        result: GenaiMappedEdaResult = resolve_genai_mapped_eda(
+        return resolve_genai_mapped_eda(
             workspace,
             warehouse_id=wh,
             catalog=catalog,
             inst_name=inst_name,
             batch_id=batch_id,
         )
-        return result
